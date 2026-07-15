@@ -1,0 +1,20 @@
+{
+  "name": "localapi",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local API relay with Quiet Console UI on a single port",
+  "engines": {
+    "node": ">=22 <27"
+  },
+  "scripts": {
+    "build": "npm run build --prefix web && npm run build --prefix server",
+    "build:web": "npm run build --prefix web",
+    "dev": "npm run build --prefix web && npm run dev --prefix server",
+    "dev:server": "npm run dev --prefix server",
+    "start": "npm run build --prefix web && npm run build --prefix server && npm run start --prefix server",
+    "mock": "npm run mock --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
