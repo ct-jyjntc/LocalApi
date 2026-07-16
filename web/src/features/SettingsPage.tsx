@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useI18n, type Locale } from "@/lib/i18n";
 
@@ -32,6 +33,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [retryDelayMs, setRetryDelayMs] = useState(400);
   const [brandName, setBrandName] = useState("LocalAPI");
   const [companyName, setCompanyName] = useState("");
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
 
   useEffect(() => {
     document.documentElement.style.removeProperty("font-size");
@@ -44,6 +46,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setRetryDelayMs(Number(data.retry_delay_ms ?? 400));
     setBrandName(data.brand_name || "LocalAPI");
     setCompanyName(data.company_name || "");
+    setRegistrationEnabled(Boolean(data.registration_enabled));
   }, [data]);
 
   const savePassword = useMutation({
@@ -101,6 +104,16 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const saveRegistration = useMutation({
+    mutationFn: async () => api.settings.update({ registration_enabled: registrationEnabled }),
+    onSuccess: () => {
+      toast.success(t("settings.registrationSaved"));
+      qc.invalidateQueries({ queryKey: ["settings"] });
+      qc.invalidateQueries({ queryKey: ["user-config"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const themes = [
     { id: "light" as const, label: t("settings.theme.light") },
     { id: "dark" as const, label: t("settings.theme.dark") },
@@ -151,6 +164,25 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
             value={locale}
             onChange={(v) => setLocale(v)}
           />
+        </div>
+      </Card>
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t("settings.registration")}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.registrationHint")}</p>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
+          <div>
+            <p className="text-xs font-medium">{t("settings.registrationOpen")}</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">{registrationEnabled ? t("settings.registrationOpenHint") : t("settings.registrationClosedHint")}</p>
+          </div>
+          <Switch checked={registrationEnabled} onCheckedChange={setRegistrationEnabled} />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" disabled={saveRegistration.isPending} onClick={() => saveRegistration.mutate()}>
+            {saveRegistration.isPending ? t("common.loading") : t("settings.saveRegistration")}
+          </Button>
         </div>
       </Card>
 

@@ -328,6 +328,7 @@ export function initDb() {
     retry_delay_ms: "400",
     brand_name: "LocalAPI",
     company_name: "",
+    registration_enabled: "false",
   };
 
   const insert = db.prepare(

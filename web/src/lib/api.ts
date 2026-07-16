@@ -296,6 +296,7 @@ export type Settings = {
   cache_paths: string[];
   brand_name: string;
   company_name: string;
+  registration_enabled: boolean;
 };
 
 export type Branding = {
@@ -383,6 +384,7 @@ export const api = {
       retry_delay_ms?: number;
       brand_name?: string;
       company_name?: string;
+      registration_enabled?: boolean;
     }) =>
       request<Settings>("/admin/api/settings", {
         method: "PATCH",
@@ -465,10 +467,17 @@ export const api = {
 };
 
 export const userApi = {
+  config: () => request<{ registration_enabled: boolean }>("/user/api/config", {}, { auth: false }),
   login: (username: string, password: string) =>
     request<{ token: string; expires_at: string; user: UserRow }>(
       "/user/api/login",
       { method: "POST", body: JSON.stringify({ username, password }) },
+      { auth: false },
+    ),
+  register: (username: string, password: string, display_name?: string) =>
+    request<{ token: string; expires_at: string; user: UserRow }>(
+      "/user/api/register",
+      { method: "POST", body: JSON.stringify({ username, password, display_name }) },
       { auth: false },
     ),
   logout: () => request<{ ok: boolean }>("/user/api/logout", { method: "POST" }, { auth: "user" }),

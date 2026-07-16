@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
-import type { User } from "../db";
+import { getSetting, type User } from "../db";
 import { requireUser } from "../middleware/auth";
 import { createApiKey, deleteApiKey, listApiKeys, updateApiKey } from "../services/keys";
 import { getActiveSubscription } from "../services/plans";
@@ -17,8 +17,11 @@ import {
   createUserSession,
   publicUser,
   revokeUserSession,
+  createUser,
+  getUserByUsername,
 } from "../services/users";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { writeAudit } from "../services/audit";
 
 export const userRouter = Router();
 
@@ -31,6 +34,11 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | n
 
 const loginSchema = z.object({
   username: z.string().trim().min(1).max(120),
+  password: z.string().min(8).max(256),
+});
+const registerSchema = z.object({
+  username: z.string().trim().min(2).max(120),
+  display_name: z.string().trim().max(120).optional(),
   password: z.string().min(8).max(256),
 });
 const keySchema = z.object({
@@ -57,6 +65,40 @@ userRouter.post("/login", (req, res) => {
   resetRateLimit(limiterKey);
   const session = createUserSession(user.id);
   return res.json({ ...session, user: publicUser(user) });
+});
+
+userRouter.get("/config", (_req, res) => {
+  return res.json({ registration_enabled: getSetting("registration_enabled") === "true" });
+});
+
+userRouter.post("/register", (req, res) => {
+  if (getSetting("registration_enabled") !== "true") {
+    return res.status(403).json({ error: "Registration is currently closed", code: "registration_closed" });
+  }
+  const body = parseBody(registerSchema, req.body, res);
+  if (!body) return;
+  const limiterKey = `user-register:${req.ip || req.socket.remoteAddress || "unknown"}:${body.username.toLowerCase()}`;
+  const rate = consumeRateLimit(limiterKey, 3, 15 * 60_000);
+  if (!rate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).json({ error: "Too many registration attempts" });
+  }
+  if (getUserByUsername(body.username)) {
+    return res.status(409).json({ error: "Username is already registered", code: "username_taken" });
+  }
+  try {
+    const user = createUser({
+      username: body.username,
+      display_name: body.display_name || body.username,
+      password: body.password,
+    });
+    writeAudit({ action: "user.register", target_type: "user", target_id: user.id, detail: { username: user.username } });
+    resetRateLimit(limiterKey);
+    const session = createUserSession(user.id);
+    return res.status(201).json({ ...session, user });
+  } catch (error) {
+    return res.status(409).json({ error: error instanceof Error ? error.message : "Unable to register" });
+  }
 });
 
 userRouter.use(requireUser);

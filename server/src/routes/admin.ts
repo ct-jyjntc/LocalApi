@@ -78,6 +78,7 @@ const settingsSchema = z.object({
   cache_paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
   brand_name: z.string().trim().min(1).max(80).optional(),
   company_name: z.string().trim().max(160).optional(),
+  registration_enabled: z.boolean().optional(),
 });
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
@@ -244,6 +245,7 @@ adminRouter.get("/settings", (_req, res) => {
     cache_paths: JSON.parse(all.cache_paths || "[]"),
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
+    registration_enabled: all.registration_enabled === "true",
   });
 });
 
@@ -282,6 +284,9 @@ adminRouter.patch("/settings", (req, res) => {
   }
   if (body.brand_name !== undefined) setSetting("brand_name", body.brand_name);
   if (body.company_name !== undefined) setSetting("company_name", body.company_name);
+  if (body.registration_enabled !== undefined) {
+    setSetting("registration_enabled", body.registration_enabled ? "true" : "false");
+  }
 
   const all = getAllSettings();
   res.json({
@@ -297,6 +302,7 @@ adminRouter.patch("/settings", (req, res) => {
     cache_paths: JSON.parse(all.cache_paths || "[]"),
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
+    registration_enabled: all.registration_enabled === "true",
   });
 });
 
