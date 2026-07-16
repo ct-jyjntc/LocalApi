@@ -92,11 +92,18 @@ function LogItem({
   onToggle: () => void;
 }) {
   const { t } = useI18n();
-  const inputTok = log.prompt_tokens ?? 0;
-  const outputTok = log.completion_tokens ?? 0;
-  const cacheTok = log.cached_tokens ?? 0;
-  const reasonTok = log.reasoning_tokens ?? 0;
-  const totalTok = log.total_tokens ?? inputTok + outputTok;
+  const { data: detail, isLoading: detailLoading } = useQuery({
+    queryKey: ["logs", log.id],
+    queryFn: () => api.logs.get(log.id),
+    enabled: open,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const fullLog = detail ?? log;
+  const inputTok = fullLog.prompt_tokens ?? 0;
+  const outputTok = fullLog.completion_tokens ?? 0;
+  const cacheTok = fullLog.cached_tokens ?? 0;
+  const reasonTok = fullLog.reasoning_tokens ?? 0;
+  const totalTok = fullLog.total_tokens ?? inputTok + outputTok;
 
   return (
     <div className="text-xs">
@@ -171,10 +178,10 @@ function LogItem({
       {open ? (
         <div className="space-y-3 border-t border-border/30 bg-secondary/20 px-3 py-3 sm:px-4">
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-            <span>{log.provider_name || "—"}</span>
+            <span>{fullLog.provider_name || "—"}</span>
             <span>·</span>
             <span>
-              {formatBytes(log.request_bytes)} → {formatBytes(log.response_bytes)}
+              {formatBytes(fullLog.request_bytes)} → {formatBytes(fullLog.response_bytes)}
             </span>
             <span>·</span>
             <span className="tabular-nums">
@@ -188,33 +195,43 @@ function LogItem({
               {" · "}
               {t("logs.totalTokens")} {totalTok}
             </span>
-            {log.api_key_name ? (
+            {fullLog.api_key_name ? (
               <>
                 <span>·</span>
-                <span>{log.api_key_name}</span>
+                <span>{fullLog.api_key_name}</span>
               </>
             ) : null}
           </div>
 
-          {log.error ? (
+          {fullLog.error ? (
             <DetailBlock label={t("logs.error")} tone="error">
-              {log.error}
+              {fullLog.error}
             </DetailBlock>
           ) : null}
 
           <div className="grid gap-3 lg:grid-cols-2">
             <DetailBlock label={t("logs.input")}>
-              {log.input_text?.trim() ? log.input_text : t("logs.noInput")}
+              {detailLoading
+                ? t("common.loading")
+                : fullLog.input_text?.trim()
+                  ? fullLog.input_text
+                  : t("logs.noInput")}
             </DetailBlock>
             <DetailBlock label={t("logs.output")}>
-              {log.output_text?.trim() ? log.output_text : t("logs.noOutput")}
+              {detailLoading
+                ? t("common.loading")
+                : fullLog.output_text?.trim()
+                  ? fullLog.output_text
+                  : t("logs.noOutput")}
             </DetailBlock>
           </div>
 
           <DetailBlock label={t("logs.reasoning")}>
-            {log.reasoning_text?.trim()
-              ? log.reasoning_text
-              : t("logs.noReasoning")}
+            {detailLoading
+              ? t("common.loading")
+              : fullLog.reasoning_text?.trim()
+                ? fullLog.reasoning_text
+                : t("logs.noReasoning")}
           </DetailBlock>
         </div>
       ) : null}

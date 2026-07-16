@@ -2,6 +2,7 @@ import { v4 as uuid } from "uuid";
 import { ApiKey, db } from "../db";
 import { generateApiKey, hashApiKey } from "../utils/hash";
 import { nowIso } from "../utils/time";
+import { decryptSecret, encryptSecret } from "../utils/secrets";
 
 const keyByHash = new Map<string, ApiKey>();
 const pendingLastUsed = new Map<string, string>();
@@ -44,7 +45,7 @@ export function listApiKeys() {
   const rows = db
     .prepare("SELECT * FROM api_keys ORDER BY created_at DESC")
     .all() as ApiKey[];
-  return rows.map(publicKey);
+  return rows.map((row) => publicKey(row));
 }
 
 export function createApiKey(input: {
@@ -64,13 +65,16 @@ export function createApiKey(input: {
     input.name,
     hashApiKey(raw),
     raw.slice(0, 10),
-    raw,
+    encryptSecret(raw),
     input.enabled === false ? 0 : 1,
     input.rate_limit ?? 0,
     now,
   );
   refreshApiKeyCache();
-  return publicKey(db.prepare("SELECT * FROM api_keys WHERE id = ?").get(id) as ApiKey);
+  return publicKey(
+    db.prepare("SELECT * FROM api_keys WHERE id = ?").get(id) as ApiKey,
+    raw,
+  );
 }
 
 export function updateApiKey(
@@ -120,14 +124,13 @@ export function authenticateApiKey(raw: string | undefined | null) {
   return row;
 }
 
-/** Always expose full key when stored — user wants to copy anytime. */
-function publicKey(row: ApiKey) {
-  const plain = row.key_plain || null;
+function publicKey(row: ApiKey, oneTimeSecret?: string) {
+  const storedSecret = row.key_plain ? decryptSecret(row.key_plain) : null;
   return {
     id: row.id,
     name: row.name,
     key_prefix: row.key_prefix,
-    key: plain,
+    key: oneTimeSecret ?? storedSecret,
     enabled: row.enabled === 1,
     rate_limit: row.rate_limit,
     created_at: row.created_at,

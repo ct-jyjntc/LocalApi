@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { requireApiKey } from "../middleware/auth";
 import { listProviders } from "../services/providers";
 import { handleProxyHttp } from "../services/proxy";
+import { lookupCache, storeCache } from "../services/cache";
 
 export const proxyRouter = Router();
 const MAX_BUFFERED_BODY = 20 * 1024 * 1024;
@@ -45,12 +46,40 @@ function readRawBody(req: Request): Promise<Buffer> {
   });
 }
 
+function ensureStreamUsage(body: unknown, path: string) {
+  if (!body || typeof body !== "object") return body;
+  const record = body as Record<string, unknown>;
+  if (record.stream !== true) return body;
+  if (path !== "/v1/chat/completions" && path !== "/v1/completions") return body;
+  const existing =
+    record.stream_options && typeof record.stream_options === "object"
+      ? (record.stream_options as Record<string, unknown>)
+      : {};
+  return {
+    ...record,
+    stream_options: { ...existing, include_usage: true },
+  };
+}
+
 // Only protect API proxy paths — never intercept the admin SPA/static files.
 const v1 = Router();
 v1.use(requireApiKey);
 
 // OpenAI-compatible models list (aggregated)
 v1.get("/models", async (req: Request, res: Response) => {
+  const cached = lookupCache({
+    method: "GET",
+    path: "/v1/models",
+    query: req.query as Record<string, unknown>,
+  });
+  if (cached.hit) {
+    const headers = JSON.parse(cached.entry.response_headers) as Record<string, string>;
+    for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
+    res.setHeader("x-cache", "HIT");
+    res.status(cached.entry.status_code).send(cached.entry.response_body);
+    return;
+  }
+
   const providers = listProviders().filter((p) => p.enabled === 1);
   const data: Array<{ id: string; object: string; owned_by: string }> = [];
 
@@ -83,7 +112,17 @@ v1.get("/models", async (req: Request, res: Response) => {
     return;
   }
 
-  return res.json({ object: "list", data });
+  const payload = JSON.stringify({ object: "list", data });
+  storeCache({
+    method: "GET",
+    path: "/v1/models",
+    query: req.query as Record<string, unknown>,
+    statusCode: 200,
+    responseHeaders: { "content-type": "application/json; charset=utf-8" },
+    responseBody: payload,
+  });
+  res.setHeader("x-cache", "MISS");
+  res.type("application/json").send(payload);
 });
 
 async function handleProxy(req: Request, res: Response) {
@@ -104,6 +143,8 @@ async function handleProxy(req: Request, res: Response) {
           if (contentType.startsWith("application/json") || contentType.includes("+json")) {
             try {
               body = JSON.parse(rawBody.toString("utf8"));
+              body = ensureStreamUsage(body, path);
+              rawBody = Buffer.from(JSON.stringify(body));
             } catch {
               res.status(400).json({ error: { message: "Invalid JSON body", type: "invalid_request_error" } });
               return;

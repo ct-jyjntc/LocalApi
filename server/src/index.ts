@@ -13,6 +13,7 @@ initDb();
 
 // Single-port app
 const SINGLE_PORT = Number(process.env.PORT || 5555);
+const LISTEN_HOST = process.env.HOST?.trim() || "127.0.0.1";
 if (getSetting("port") !== String(SINGLE_PORT)) {
   setSetting("port", String(SINGLE_PORT));
 }
@@ -31,7 +32,7 @@ function seedIfEmpty() {
   if (listApiKeys().length === 0) {
     const key = createApiKey({ name: "default" });
     console.log(`[seed] Default API key created: ${key.key}`);
-    console.log(`[seed] Admin password: ${getSetting("admin_token")}`);
+    console.log("[seed] Admin password initialized");
   }
 }
 
@@ -39,7 +40,18 @@ seedIfEmpty();
 
 const app = express();
 app.disable("x-powered-by");
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(null, false);
+    },
+  }),
+);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "localapi", port: SINGLE_PORT });
@@ -86,11 +98,11 @@ if (webDist) {
   );
 }
 
-const server = app.listen(SINGLE_PORT, "0.0.0.0", () => {
-  console.log(`LocalAPI on http://127.0.0.1:${SINGLE_PORT}`);
-  console.log(`  Admin UI : http://127.0.0.1:${SINGLE_PORT}/`);
-  console.log(`  Admin API: http://127.0.0.1:${SINGLE_PORT}/admin/api`);
-  console.log(`  Proxy    : http://127.0.0.1:${SINGLE_PORT}/v1/*`);
+const server = app.listen(SINGLE_PORT, LISTEN_HOST, () => {
+  console.log(`LocalAPI on http://${LISTEN_HOST}:${SINGLE_PORT}`);
+  console.log(`  Admin UI : http://${LISTEN_HOST}:${SINGLE_PORT}/`);
+  console.log(`  Admin API: http://${LISTEN_HOST}:${SINGLE_PORT}/admin/api`);
+  console.log(`  Proxy    : http://${LISTEN_HOST}:${SINGLE_PORT}/v1/*`);
 });
 
 const configuredKeepAlive = Number(process.env.CLIENT_KEEP_ALIVE_MS || 65_000);

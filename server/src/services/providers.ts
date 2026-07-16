@@ -1,11 +1,12 @@
 import { v4 as uuid } from "uuid";
 import { db, Provider } from "../db";
 import { nowIso } from "../utils/time";
+import { decryptSecret, encryptSecret } from "../utils/secrets";
 
 /** Parse stored provider key field into a list of non-empty keys. */
 export function parseProviderKeys(raw: string | null | undefined): string[] {
   if (!raw) return [];
-  const s = raw.trim();
+  const s = decryptSecret(raw).trim();
   if (!s) return [];
 
   // JSON array
@@ -31,25 +32,37 @@ export function parseProviderKeys(raw: string | null | undefined): string[] {
 export function serializeProviderKeys(keys: string[]): string {
   const clean = keys.map((k) => k.trim()).filter(Boolean);
   if (clean.length === 0) return "";
-  if (clean.length === 1) return clean[0];
-  return JSON.stringify(clean);
+  const serialized = clean.length === 1 ? clean[0] : JSON.stringify(clean);
+  return encryptSecret(serialized);
 }
 
 /** Round-robin pick for multi-key providers. */
 const keyCursor = new Map<string, number>();
 let providerCache: Provider[] | null = null;
 
-function ensureProviderCache() {
-  if (providerCache) return;
-  providerCache = db
+function loadProviders() {
+  const rows = db
     .prepare("SELECT * FROM providers ORDER BY created_at DESC")
     .all() as Provider[];
+  const update = db.prepare("UPDATE providers SET api_key = ? WHERE id = ?");
+  for (const row of rows) {
+    if (!row.api_key) continue;
+    const encrypted = encryptSecret(row.api_key);
+    if (encrypted !== row.api_key) {
+      update.run(encrypted, row.id);
+      row.api_key = encrypted;
+    }
+  }
+  return rows;
+}
+
+function ensureProviderCache() {
+  if (providerCache) return;
+  providerCache = loadProviders();
 }
 
 export function refreshProviderCache() {
-  providerCache = db
-    .prepare("SELECT * FROM providers ORDER BY created_at DESC")
-    .all() as Provider[];
+  providerCache = loadProviders();
 }
 
 export function pickProviderKey(provider: Provider): string {
@@ -189,10 +202,9 @@ export function resolveProviderForModel(model?: string | null): Provider | null 
       return false;
     }
   });
-  return fuzzy ?? providers[0];
+  return fuzzy ?? null;
 }
 
-/** Admin UI wants full keys visible and editable — no masking. */
 export function sanitizeProvider(p: Provider) {
   const keys = parseProviderKeys(p.api_key);
   return {

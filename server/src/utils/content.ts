@@ -1,4 +1,4 @@
-const MAX_FIELD = 8000;
+import { StringDecoder } from "string_decoder";
 
 export type ExtractedIO = {
   input_text: string | null;
@@ -16,8 +16,7 @@ function clamp(text: string | null | undefined): string | null {
   if (text == null) return null;
   const s = String(text);
   if (!s) return null;
-  if (s.length <= MAX_FIELD) return s;
-  return `${s.slice(0, MAX_FIELD)}…`;
+  return s;
 }
 
 function asText(value: unknown): string | null {
@@ -356,6 +355,107 @@ function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
     output_text: clamp(contents.join("") || null),
     reasoning_text: clamp(reasons.join("") || null),
     ...parseUsage(usageRaw),
+  };
+}
+
+export type ResponseLogCollector = {
+  push: (chunk: Buffer) => void;
+  finish: () => ReturnType<typeof extractFromResponse>;
+};
+
+function isTextualResponse(contentType: string): boolean {
+  if (!contentType) return true;
+  return (
+    contentType.startsWith("application/json") ||
+    contentType.includes("+json") ||
+    contentType.startsWith("text/") ||
+    contentType.includes("xml") ||
+    contentType.includes("x-www-form-urlencoded")
+  );
+}
+
+export function createResponseLogCollector(params: {
+  stream: boolean;
+  contentType?: string | null;
+}): ResponseLogCollector {
+  const contentType = (params.contentType || "").toLowerCase();
+  const sse = params.stream || /\btext\/event-stream\b/.test(contentType);
+
+  if (!sse) {
+    const chunks: Buffer[] = [];
+    const textual = isTextualResponse(contentType);
+    return {
+      push: (chunk) => {
+        if (textual) chunks.push(Buffer.from(chunk));
+      },
+      finish: () =>
+        textual ? extractFromResponse(Buffer.concat(chunks)) : extractFromResponse(null),
+    };
+  }
+
+  const decoder = new StringDecoder("utf8");
+  const contents: string[] = [];
+  const reasons: string[] = [];
+  let usageRaw: unknown = null;
+  let pending = "";
+
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+
+    try {
+      const data = JSON.parse(payload) as Record<string, unknown>;
+      if (data.usage && typeof data.usage === "object") usageRaw = data.usage;
+      if (data.response && typeof data.response === "object") {
+        const response = data.response as Record<string, unknown>;
+        if (response.usage && typeof response.usage === "object") {
+          usageRaw = response.usage;
+        }
+      }
+
+      if (Array.isArray(data.choices) && data.choices[0]) {
+        const choice = data.choices[0] as Record<string, unknown>;
+        const delta =
+          (choice.delta as Record<string, unknown> | undefined) ||
+          (choice.message as Record<string, unknown> | undefined) ||
+          {};
+        const content = messageContent(delta);
+        if (content) contents.push(content);
+        const reasoning = collectReasoningFromMessage(delta);
+        if (reasoning) reasons.push(reasoning);
+        if (typeof choice.text === "string") contents.push(choice.text);
+      }
+
+      const eventType = typeof data.type === "string" ? data.type : "";
+      if (typeof data.delta === "string") {
+        if (/reasoning|thinking/.test(eventType)) reasons.push(data.delta);
+        else if (/output_text|content/.test(eventType)) contents.push(data.delta);
+      }
+    } catch {
+      // Ignore malformed upstream events while preserving the live response.
+    }
+  };
+
+  const consumeText = (text: string, flush = false) => {
+    pending += text;
+    const lines = pending.split(/\r?\n/);
+    pending = flush ? "" : (lines.pop() ?? "");
+    for (const line of lines) consumeLine(line);
+    if (flush && pending) consumeLine(pending);
+  };
+
+  return {
+    push: (chunk) => consumeText(decoder.write(chunk)),
+    finish: () => {
+      consumeText(decoder.end(), true);
+      return {
+        output_text: clamp(contents.join("") || null),
+        reasoning_text: clamp(reasons.join("") || null),
+        ...parseUsage(usageRaw),
+      };
+    },
   };
 }
 

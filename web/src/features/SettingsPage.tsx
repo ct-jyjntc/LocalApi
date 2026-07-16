@@ -47,7 +47,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
       if (!newPassword.trim()) {
         throw new Error(t("settings.passwordRequired"));
       }
-      if (newPassword.trim().length < 4) {
+      if (newPassword.trim().length < 8) {
         throw new Error(t("settings.passwordTooShort"));
       }
       if (newPassword !== confirmPassword) {
@@ -74,7 +74,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const saveRelay = useMutation({
     mutationFn: async () =>
       api.settings.update({
-        max_retries: Math.max(0, Math.min(10, Number(maxRetries) || 0)),
+        max_retries: Math.max(0, Math.floor(Number(maxRetries) || 0)),
         retry_delay_ms: Math.max(0, Math.min(10_000, Number(retryDelayMs) || 0)),
       }),
     onSuccess: () => {
@@ -150,7 +150,6 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
             <Input
               type="number"
               min={0}
-              max={10}
               value={maxRetries}
               onChange={(e) => setMaxRetries(Number(e.target.value))}
             />

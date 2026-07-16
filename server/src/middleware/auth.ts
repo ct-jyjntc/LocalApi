@@ -1,13 +1,24 @@
 import { Request, Response, NextFunction } from "express";
+import crypto from "crypto";
 import { getSetting } from "../db";
 import { authenticateApiKey } from "../services/keys";
+import { consumeRateLimit } from "../services/rate-limit";
+
+function secretEquals(left: string, right: string) {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export function verifyAdminToken(token: string) {
+  const admin = getSetting("admin_token") || "";
+  return Boolean(token && admin && secretEquals(token, admin));
+}
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const header = req.header("x-admin-token") || req.header("authorization");
   const token = header?.replace(/^Bearer\s+/i, "").trim();
-  const admin = getSetting("admin_token") || "a2366021253";
-
-  if (!token || token !== admin) {
+  if (!token || !verifyAdminToken(token)) {
     return res.status(401).json({ error: "Unauthorized admin password" });
   }
   return next();
@@ -17,22 +28,26 @@ export function requireApiKey(req: Request, res: Response, next: NextFunction) {
   const auth = req.header("authorization");
   const key = authenticateApiKey(auth);
   if (!key) {
-    // Allow admin token as super-key for testing
-    const admin = getSetting("admin_token") || "localapi-admin";
-    const raw = auth?.replace(/^Bearer\s+/i, "").trim();
-    if (raw && raw === admin) {
-      (req as Request & { apiKey?: { id: string; name: string } }).apiKey = {
-        id: "admin",
-        name: "admin",
-      };
-      return next();
-    }
     return res.status(401).json({
       error: {
         message: "Invalid or missing API key",
         type: "authentication_error",
       },
     });
+  }
+
+  const rate = consumeRateLimit(`api:${key.id}`, key.rate_limit);
+  if (!rate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).json({
+      error: {
+        message: "API key rate limit exceeded",
+        type: "rate_limit_error",
+      },
+    });
+  }
+  if (Number.isFinite(rate.remaining)) {
+    res.setHeader("x-ratelimit-remaining", String(rate.remaining));
   }
   (req as Request & { apiKey?: { id: string; name: string } }).apiKey = {
     id: key.id,

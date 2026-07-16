@@ -57,8 +57,8 @@ export function ProvidersPage() {
         return api.providers.update(editing.id, {
           name: form.name,
           base_url: form.base_url,
-          // Full key list is always editable & visible — save as shown
-          api_keys: keys,
+          // A blank field preserves encrypted credentials already on the server.
+          ...(keys.length > 0 ? { api_keys: keys } : {}),
           models,
           enabled: form.enabled,
           timeout_ms: form.timeout_ms,
@@ -122,7 +122,6 @@ export function ProvidersPage() {
     setForm({
       name: p.name,
       base_url: p.base_url,
-      // Full keys prefilled — visible and editable anytime
       api_keys: existingKeys.join("\n"),
       models: p.models.join("\n"),
       enabled: p.enabled,

@@ -214,6 +214,7 @@ export const api = {
       request<{ items: LogRow[]; total: number }>(
         `/admin/api/logs?limit=${limit}`,
       ),
+    get: (id: string) => request<LogRow>(`/admin/api/logs/${id}`),
     clear: () =>
       request<{ ok: boolean; removed: number }>("/admin/api/logs", {
         method: "DELETE",

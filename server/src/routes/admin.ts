@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { Router, Response } from "express";
+import { z } from "zod";
 import {
   clearCache,
   deleteCacheEntry,
@@ -12,7 +13,7 @@ import {
   listApiKeys,
   updateApiKey,
 } from "../services/keys";
-import { clearLogs, getDashboardStats, listLogs } from "../services/logs";
+import { clearLogs, getDashboardStats, getLog, listLogs } from "../services/logs";
 import {
   createProvider,
   deleteProvider,
@@ -21,9 +22,65 @@ import {
   updateProvider,
 } from "../services/providers";
 import { getAllSettings, getSetting, setSetting } from "../db";
-import { requireAdmin } from "../middleware/auth";
+import { requireAdmin, verifyAdminToken } from "../middleware/auth";
+import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
 
 export const adminRouter = Router();
+
+const httpUrl = z
+  .string()
+  .trim()
+  .url()
+  .refine((value) => value.startsWith("http://") || value.startsWith("https://"), {
+    message: "base_url must use http or https",
+  });
+const providerSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  base_url: httpUrl,
+  api_key: z.string().max(16_384).optional(),
+  api_keys: z.array(z.string().trim().min(1).max(4096)).max(64).optional(),
+  models: z.array(z.string().trim().min(1).max(200)).max(256).optional(),
+  enabled: z.boolean().optional(),
+  timeout_ms: z.coerce.number().int().min(100).max(600_000).optional(),
+});
+const providerPatchSchema = providerSchema.partial();
+const keySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  rate_limit: z.coerce.number().int().min(0).max(1_000_000).optional(),
+  enabled: z.boolean().optional(),
+});
+const keyPatchSchema = keySchema.partial();
+const cacheConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  ttl_seconds: z.coerce.number().int().min(1).max(604_800).optional(),
+  ttlSeconds: z.coerce.number().int().min(1).max(604_800).optional(),
+  max_entries: z.coerce.number().int().min(10).max(100_000).optional(),
+  maxEntries: z.coerce.number().int().min(10).max(100_000).optional(),
+  methods: z.array(z.enum(["GET", "POST"])).max(2).optional(),
+  paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
+});
+const settingsSchema = z.object({
+  admin_password: z.string().trim().min(8).max(256).optional(),
+  current_admin_password: z.string().max(256).optional(),
+  port: z.coerce.number().int().min(1).max(65_535).optional(),
+  max_retries: z.coerce.number().int().min(0).optional(),
+  retry_delay_ms: z.coerce.number().int().min(0).max(10_000).optional(),
+  cache_enabled: z.boolean().optional(),
+  cache_ttl_seconds: z.coerce.number().int().min(1).max(604_800).optional(),
+  cache_max_entries: z.coerce.number().int().min(10).max(100_000).optional(),
+  cache_methods: z.array(z.enum(["GET", "POST"])).max(2).optional(),
+  cache_paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
+});
+
+function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return parsed.data;
+  res.status(400).json({
+    error: "Invalid request body",
+    issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+  });
+  return null;
+}
 
 // Public login (must be before requireAdmin)
 adminRouter.post("/login", (req, res) => {
@@ -31,10 +88,16 @@ adminRouter.post("/login", (req, res) => {
     (typeof req.body?.password === "string" && req.body.password) ||
     (typeof req.body?.admin_password === "string" && req.body.admin_password) ||
     "";
-  const admin = getSetting("admin_token") || "a2366021253";
-  if (!password || password !== admin) {
+  const limiterKey = `admin-login:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const rate = consumeRateLimit(limiterKey, 5, 5 * 60_000);
+  if (!rate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).json({ error: "Too many login attempts", ok: false });
+  }
+  if (!password || !verifyAdminToken(password)) {
     return res.status(401).json({ error: "Invalid admin password", ok: false });
   }
+  resetRateLimit(limiterKey);
   return res.json({ ok: true });
 });
 
@@ -54,36 +117,26 @@ adminRouter.get("/providers", (_req, res) => {
 });
 
 adminRouter.post("/providers", (req, res) => {
-  const { name, base_url, api_key, api_keys, models, enabled, timeout_ms } =
-    req.body ?? {};
-  if (!name || !base_url) {
-    return res.status(400).json({ error: "name and base_url are required" });
-  }
-  const provider = createProvider({
-    name,
-    base_url,
-    api_key,
-    api_keys: Array.isArray(api_keys) ? api_keys : undefined,
-    models,
-    enabled,
-    timeout_ms,
-  });
+  const body = parseBody(providerSchema, req.body, res);
+  if (!body) return;
+  const provider = createProvider(body);
+  clearCache();
   return res.status(201).json(sanitizeProvider(provider));
 });
 
 adminRouter.patch("/providers/:id", (req, res) => {
-  const body = req.body ?? {};
-  const updated = updateProvider(req.params.id, {
-    ...body,
-    api_keys: Array.isArray(body.api_keys) ? body.api_keys : undefined,
-  });
+  const body = parseBody(providerPatchSchema, req.body, res);
+  if (!body) return;
+  const updated = updateProvider(req.params.id, body);
   if (!updated) return res.status(404).json({ error: "Provider not found" });
+  clearCache();
   return res.json(sanitizeProvider(updated));
 });
 
 adminRouter.delete("/providers/:id", (req, res) => {
   const ok = deleteProvider(req.params.id);
   if (!ok) return res.status(404).json({ error: "Provider not found" });
+  clearCache();
   return res.json({ ok: true });
 });
 
@@ -93,14 +146,16 @@ adminRouter.get("/keys", (_req, res) => {
 });
 
 adminRouter.post("/keys", (req, res) => {
-  const { name, rate_limit, enabled } = req.body ?? {};
-  if (!name) return res.status(400).json({ error: "name is required" });
-  const key = createApiKey({ name, rate_limit, enabled });
+  const body = parseBody(keySchema, req.body, res);
+  if (!body) return;
+  const key = createApiKey(body);
   return res.status(201).json(key);
 });
 
 adminRouter.patch("/keys/:id", (req, res) => {
-  const updated = updateApiKey(req.params.id, req.body ?? {});
+  const body = parseBody(keyPatchSchema, req.body, res);
+  if (!body) return;
+  const updated = updateApiKey(req.params.id, body);
   if (!updated) return res.status(404).json({ error: "Key not found" });
   return res.json(updated);
 });
@@ -123,7 +178,8 @@ adminRouter.get("/cache/stats", (_req, res) => {
 });
 
 adminRouter.patch("/cache/config", (req, res) => {
-  const body = req.body ?? {};
+  const body = parseBody(cacheConfigSchema, req.body, res);
+  if (!body) return;
   const config = updateCacheConfig({
     enabled: body.enabled,
     ttlSeconds: body.ttl_seconds ?? body.ttlSeconds,
@@ -152,6 +208,12 @@ adminRouter.get("/logs", (req, res) => {
   res.json(listLogs(limit, offset));
 });
 
+adminRouter.get("/logs/:id", (req, res) => {
+  const log = getLog(req.params.id);
+  if (!log) return res.status(404).json({ error: "Log not found" });
+  return res.json(log);
+});
+
 adminRouter.delete("/logs", (_req, res) => {
   res.json({ ok: true, removed: clearLogs() });
 });
@@ -175,36 +237,22 @@ adminRouter.get("/settings", (_req, res) => {
 });
 
 adminRouter.patch("/settings", (req, res) => {
-  const body = req.body ?? {};
+  const body = parseBody(settingsSchema, req.body, res);
+  if (!body) return;
 
-  // Change admin password (optional confirmation with current)
-  if (typeof body.admin_password === "string" && body.admin_password.trim()) {
-    const next = body.admin_password.trim();
-    if (next.length < 4) {
-      return res.status(400).json({ error: "Admin password must be at least 4 characters" });
+  if (body.admin_password) {
+    if (!body.current_admin_password || !verifyAdminToken(body.current_admin_password)) {
+      return res.status(403).json({ error: "Current admin password is incorrect" });
     }
-    if (typeof body.current_admin_password === "string") {
-      const current = getSetting("admin_token") || "";
-      if (body.current_admin_password !== current) {
-        return res.status(403).json({ error: "Current admin password is incorrect" });
-      }
-    }
-    setSetting("admin_token", next);
-  }
-
-  // Legacy field name still accepted
-  if (typeof body.admin_token === "string" && body.admin_token.trim()) {
-    setSetting("admin_token", body.admin_token.trim());
+    setSetting("admin_token", body.admin_password);
   }
 
   if (body.port !== undefined) setSetting("port", String(body.port));
   if (body.max_retries !== undefined) {
-    const n = Math.max(0, Math.min(10, Number(body.max_retries) || 0));
-    setSetting("max_retries", String(n));
+    setSetting("max_retries", String(body.max_retries));
   }
   if (body.retry_delay_ms !== undefined) {
-    const n = Math.max(0, Math.min(10_000, Number(body.retry_delay_ms) || 0));
-    setSetting("retry_delay_ms", String(n));
+    setSetting("retry_delay_ms", String(body.retry_delay_ms));
   }
   if (body.cache_enabled !== undefined) {
     setSetting("cache_enabled", body.cache_enabled ? "true" : "false");

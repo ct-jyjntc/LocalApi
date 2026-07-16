@@ -27,12 +27,10 @@ export function getCacheConfig() {
     enabled: getSetting("cache_enabled") !== "false",
     ttlSeconds: Math.max(1, Number(getSetting("cache_ttl_seconds") || 3600)),
     maxEntries: Math.max(10, Number(getSetting("cache_max_entries") || 1000)),
-    methods: parseJsonArray(getSetting("cache_methods"), ["GET", "POST"]).map(
+    methods: parseJsonArray(getSetting("cache_methods"), ["GET"]).map(
       (m) => m.toUpperCase(),
     ),
     paths: parseJsonArray(getSetting("cache_paths"), [
-      "/v1/chat/completions",
-      "/v1/embeddings",
       "/v1/models",
     ]),
   };

@@ -14,7 +14,7 @@ Local OpenAI-compatible API relay with a Quiet Console admin UI.
 ## Features
 
 - **Proxy relay** — Forward `/v1/*` to configured upstream providers
-- **API keys** — Client authentication for the proxy (full key always visible)
+- **API keys** — Client authentication for the proxy (full secret visible in the authenticated admin console)
 - **Providers** — Multiple upstreams, multi-key round-robin, model routing
 - **Retries** — Configurable max retries for network / 429 / 5xx
 - **Streaming** — Transparent SSE passthrough (`stream: true`)
@@ -49,9 +49,16 @@ the connection pools and client-side timeouts when needed:
 | `UPSTREAM_MAX_SOCKETS` | `256` | Maximum concurrent sockets per upstream protocol |
 | `CLIENT_KEEP_ALIVE_MS` | `65000` | Client keep-alive window |
 | `CLIENT_REQUEST_TIMEOUT_MS` | `120000` | Maximum time allowed to receive a request body |
+| `HOST` | `127.0.0.1` | Address used by the Node server |
+| `CORS_ORIGINS` | empty | Comma-separated browser origins allowed to call the API |
+| `ADMIN_TOKEN` | built-in fallback | Admin password injected at startup/deployment |
+| `SECRETS_KEY` | empty | Encryption key for provider credentials at rest |
+| `LOG_CONTENT` | `false` | Set to `true` only when prompt/output logging is explicitly required |
 
 Large uploads are streamed and are not retried because a live request body cannot
 be replayed safely. JSON requests remain replayable for configured upstream retries.
+Non-idempotent requests are retried only when the caller supplies an
+`Idempotency-Key` or `X-Idempotency-Key` header.
 
 Default **admin password**: `a2366021253`  
 A default client API key is printed on first server boot (also listed under **API Keys**).

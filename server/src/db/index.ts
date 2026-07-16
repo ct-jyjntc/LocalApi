@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { encryptSecret } from "../utils/secrets";
 
 const dataDir = path.resolve(process.cwd(), "data");
 if (!fs.existsSync(dataDir)) {
@@ -106,6 +107,16 @@ export function initDb() {
   if (!keyCols.includes("key_plain")) {
     db.exec("ALTER TABLE api_keys ADD COLUMN key_plain TEXT");
   }
+  // Encrypt legacy client secrets in place; the admin API may decrypt them
+  // after authentication when the operator explicitly requests visibility.
+  const plainKeys = db
+    .prepare("SELECT id, key_plain FROM api_keys WHERE key_plain IS NOT NULL")
+    .all() as Array<{ id: string; key_plain: string }>;
+  const encryptKey = db.prepare("UPDATE api_keys SET key_plain = ? WHERE id = ?");
+  for (const row of plainKeys) {
+    const encrypted = encryptSecret(row.key_plain);
+    if (encrypted !== row.key_plain) encryptKey.run(encrypted, row.id);
+  }
 
   const logCols = (
     db.prepare("PRAGMA table_info(request_logs)").all() as Array<{ name: string }>
@@ -134,13 +145,12 @@ export function initDb() {
   `);
 
   const defaults: Record<string, string> = {
-    // Local response cache is disabled — only upstream usage.cached_tokens is tracked.
     cache_enabled: "false",
     cache_ttl_seconds: "3600",
     cache_max_entries: "1000",
-    cache_methods: '["GET","POST"]',
-    cache_paths: '["/v1/chat/completions","/v1/embeddings","/v1/models"]',
-    admin_token: "a2366021253",
+    cache_methods: '["GET"]',
+    cache_paths: '["/v1/models"]',
+    admin_token: process.env.ADMIN_TOKEN?.trim() || "a2366021253",
     port: "5555",
     // Upstream request retries (network / 429 / 5xx). 0 = no retry.
     max_retries: "2",
@@ -154,15 +164,12 @@ export function initDb() {
     insert.run(key, value);
   }
 
-  // Force-disable any previously enabled local response cache
-  db.prepare(
-    `INSERT INTO settings (key, value) VALUES ('cache_enabled', 'false')
-     ON CONFLICT(key) DO UPDATE SET value = 'false'`,
-  ).run();
-
   // Migrate legacy default admin password → user-specified password
   const currentAdmin = getSetting("admin_token");
-  if (!currentAdmin || currentAdmin === "localapi-admin") {
+  const configuredAdmin = process.env.ADMIN_TOKEN?.trim();
+  if (configuredAdmin && currentAdmin !== configuredAdmin) {
+    setSetting("admin_token", configuredAdmin);
+  } else if (!currentAdmin || currentAdmin === "localapi-admin") {
     setSetting("admin_token", "a2366021253");
   }
 

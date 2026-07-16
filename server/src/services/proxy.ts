@@ -4,8 +4,9 @@ import fetch, { Response as FetchResponse } from "node-fetch";
 import type { Response as ExpressResponse } from "express";
 import { getSetting, Provider } from "../db";
 import { writeLog } from "./logs";
-import { pickProviderKey, resolveProviderForModel } from "./providers";
-import { extractIO } from "../utils/content";
+import { listProviders, pickProviderKey, resolveProviderForModel } from "./providers";
+import { createResponseLogCollector, extractIO } from "../utils/content";
+import { createUpstreamTimeout, upstreamTimeoutError } from "./upstream-timeout";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -20,7 +21,6 @@ const HOP_BY_HOP = new Set([
   "content-length",
 ]);
 
-const MAX_LOG_BYTES = 64 * 1024;
 const configuredMaxSockets = Number(process.env.UPSTREAM_MAX_SOCKETS || 256);
 const maxSockets = Number.isFinite(configuredMaxSockets)
   ? Math.max(16, Math.floor(configuredMaxSockets))
@@ -54,6 +54,8 @@ type UpstreamHandle = {
   response: FetchResponse;
   abort: () => void;
   clearTimeout: () => void;
+  didTimeout: () => boolean;
+  onBodyChunk: (streaming: boolean) => void;
 };
 
 function pickModel(body: unknown, query: Record<string, unknown>): string | null {
@@ -88,7 +90,7 @@ function headersToObject(
 
 function getMaxRetries(): number {
   const n = Number(getSetting("max_retries") ?? 2);
-  return Number.isFinite(n) ? Math.max(0, Math.min(10, Math.floor(n))) : 2;
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 2;
 }
 
 function getRetryDelayMs(): number {
@@ -111,6 +113,22 @@ function isRetryableError(err: unknown): boolean {
   const code = String(e.code || e.type || "");
   return ["ECONN", "ETIMEDOUT", "EAI_", "ENOTFOUND", "EPIPE", "system", "request-timeout"]
     .some((part) => code.includes(part));
+}
+
+function isRetrySafe(ctx: ProxyContext) {
+  const method = ctx.method.toUpperCase();
+  if (["GET", "HEAD", "OPTIONS", "PUT", "DELETE"].includes(method)) return true;
+  const value = ctx.headers["idempotency-key"] || ctx.headers["x-idempotency-key"];
+  return Boolean(Array.isArray(value) ? value[0] : value);
+}
+
+function canRetryStatus(ctx: ProxyContext, status: number) {
+  if (ctx.bodyStream) return false;
+  // 429 and gateway-style failures explicitly rejected the request and are
+  // safe to rotate to another provider key. A generic 500 or network failure
+  // requires caller-provided idempotency because upstream work may have run.
+  if ([408, 429, 502, 503, 504].includes(status)) return true;
+  return isRetrySafe(ctx);
 }
 
 function buildUpstreamUrl(
@@ -156,16 +174,7 @@ async function openUpstream(
   const url = buildUpstreamUrl(provider, path, ctx.query);
   const headers = buildUpstreamHeaders(provider, ctx);
   const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const clearTimeoutIfSet = () => {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-  };
-  const abort = () => {
-    clearTimeoutIfSet();
-    controller.abort();
-  };
-  timer = setTimeout(() => controller.abort(), Math.max(1, provider.timeout_ms));
+  const timeout = createUpstreamTimeout(controller, provider.timeout_ms);
 
   try {
     const init: Parameters<typeof fetch>[1] = {
@@ -190,9 +199,17 @@ async function openUpstream(
     }
 
     const response = await fetch(url, init);
-    return { response, abort, clearTimeout: clearTimeoutIfSet };
+    return {
+      response,
+      abort: timeout.abort,
+      clearTimeout: timeout.clear,
+      didTimeout: timeout.didTimeout,
+      onBodyChunk: timeout.onBodyChunk,
+    };
   } catch (error) {
-    abort();
+    const timedOut = timeout.didTimeout();
+    timeout.abort();
+    if (timedOut) throw upstreamTimeoutError(error);
     throw error;
   }
 }
@@ -248,6 +265,8 @@ async function pipeResponseToClient(params: {
   if (!res.getHeader("content-type")) {
     res.setHeader("content-type", stream ? "text/event-stream; charset=utf-8" : "application/json; charset=utf-8");
   }
+  const streamingResponse =
+    stream || /\btext\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
   res.status(upstream.status);
   let clientStatus = upstream.status;
 
@@ -274,8 +293,10 @@ async function pipeResponseToClient(params: {
     return;
   }
 
-  const sampled: Buffer[] = [];
-  let sampledBytes = 0;
+  const responseCollector = createResponseLogCollector({
+    stream: streamingResponse,
+    contentType: upstream.headers.get("content-type"),
+  });
   let responseBytes = 0;
   let bodyEnded = false;
   let clientFinished = false;
@@ -294,14 +315,9 @@ async function pipeResponseToClient(params: {
       resolve();
     };
     const onData = (chunk: Buffer) => {
+      if (responseBytes === 0) handle.onBodyChunk(streamingResponse);
       responseBytes += chunk.length;
-      if (sampledBytes < MAX_LOG_BYTES) {
-        const take = chunk.subarray(0, MAX_LOG_BYTES - sampledBytes);
-        if (take.length) {
-          sampled.push(Buffer.from(take));
-          sampledBytes += take.length;
-        }
-      }
+      responseCollector.push(chunk);
     };
     const onEnd = () => {
       bodyEnded = true;
@@ -310,11 +326,17 @@ async function pipeResponseToClient(params: {
     };
     const onError = (error: unknown) => {
       bodyEnded = true;
-      streamError = error instanceof Error ? error.message : String(error);
-      handle.abort();
       const timedOut =
-        error instanceof Error &&
-        (error.name === "AbortError" || /aborted|timeout/i.test(error.message));
+        handle.didTimeout() ||
+        (error instanceof Error && /timeout/i.test(error.message));
+      streamError =
+        streamError ||
+        (handle.didTimeout()
+          ? "Upstream response timed out"
+          : error instanceof Error
+            ? error.message
+            : String(error));
+      handle.abort();
       if (timedOut && responseBytes === 0 && !res.headersSent) {
         clientStatus = 504;
         res.status(504).json({
@@ -334,8 +356,8 @@ async function pipeResponseToClient(params: {
     body.pipe(res);
   });
 
-  const sample = Buffer.concat(sampled).toString("utf8");
-  const io = extractIO({ path, body: ctx.body, responseBody: sample, stream });
+  const baseIo = extractIO({ path, body: ctx.body, stream });
+  const io = { ...baseIo, ...responseCollector.finish() };
   writeLog({
     method: ctx.method,
     path,
@@ -358,7 +380,13 @@ async function pipeResponseToClient(params: {
     cached_tokens: io.cached_tokens,
     total_tokens: io.total_tokens,
     stream,
-    error: streamError || (attempts > 1 ? `ok after ${attempts} attempt(s)` : null),
+    error:
+      streamError ||
+      (attempts > 1
+        ? upstream.status >= 200 && upstream.status < 400
+          ? `ok after ${attempts} attempt(s)`
+          : `Upstream HTTP ${upstream.status} after ${attempts} attempt(s)`
+        : null),
   });
 }
 
@@ -373,25 +401,34 @@ export async function handleProxyHttp(
   const baseIo = extractIO({ path, body: ctx.body, stream });
   const maxRetries = getMaxRetries();
   const retryDelay = getRetryDelayMs();
-  const canReplayBody = !ctx.bodyStream;
+  const replayableBody = !ctx.bodyStream;
+  const retrySafe = isRetrySafe(ctx);
 
   const provider = resolveProviderForModel(model);
   if (!provider) {
+    const hasEnabledProvider = listProviders().some((item) => item.enabled === 1);
+    const statusCode = model && hasEnabledProvider ? 404 : 502;
+    const message = statusCode === 404
+      ? `No provider is configured for model ${model}`
+      : "No enabled upstream provider configured";
     writeLog({
       method: ctx.method,
       path,
       model,
       api_key_id: ctx.apiKeyId,
       api_key_name: ctx.apiKeyName,
-      status_code: 502,
+      status_code: statusCode,
       latency_ms: Date.now() - started,
       cached: false,
-      error: "No enabled provider configured",
+      error: message,
       input_text: baseIo.input_text,
       stream,
     });
-    res.status(502).json({
-      error: { message: "No enabled upstream provider configured", type: "proxy_error" },
+    res.status(statusCode).json({
+      error: {
+        message,
+        type: statusCode === 404 ? "model_not_found" : "proxy_error",
+      },
     });
     return;
   }
@@ -404,7 +441,11 @@ export async function handleProxyHttp(
     let handle: UpstreamHandle | undefined;
     try {
       handle = await openUpstream(provider, ctx, path);
-      const retryable = isRetryableStatus(handle.response.status) && canReplayBody && attempts <= maxRetries;
+      const retryable =
+        isRetryableStatus(handle.response.status) &&
+        replayableBody &&
+        canRetryStatus(ctx, handle.response.status) &&
+        attempts <= maxRetries;
       if (retryable) {
         try {
           await handle.response.buffer();
@@ -431,7 +472,13 @@ export async function handleProxyHttp(
     } catch (error) {
       handle?.abort();
       lastError = error instanceof Error ? error.message : String(error);
-      if (!res.headersSent && canReplayBody && attempts <= maxRetries && isRetryableError(error)) {
+      if (
+        !res.headersSent &&
+        replayableBody &&
+        retrySafe &&
+        attempts <= maxRetries &&
+        isRetryableError(error)
+      ) {
         await sleep(retryDelay * attempts);
         continue;
       }

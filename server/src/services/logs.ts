@@ -29,6 +29,7 @@ type LogInput = {
 
 const pendingLogs: Array<LogInput & { id: string }> = [];
 const MAX_PENDING_LOGS = 10_000;
+const STORE_LOG_CONTENT = process.env.LOG_CONTENT === "true";
 
 export function flushLogs(limit = 500) {
   if (pendingLogs.length === 0) return;
@@ -91,7 +92,13 @@ process.once("beforeExit", () => flushLogs(Number.MAX_SAFE_INTEGER));
 
 export function writeLog(input: LogInput) {
   const id = uuid();
-  pendingLogs.push({ ...input, id });
+  pendingLogs.push({
+    ...input,
+    id,
+    input_text: STORE_LOG_CONTENT ? input.input_text : null,
+    output_text: STORE_LOG_CONTENT ? input.output_text : null,
+    reasoning_text: STORE_LOG_CONTENT ? input.reasoning_text : null,
+  });
   if (pendingLogs.length > MAX_PENDING_LOGS) {
     pendingLogs.splice(0, pendingLogs.length - MAX_PENDING_LOGS);
   }
@@ -119,7 +126,12 @@ export function listLogs(limit = 100, offset = 0) {
   flushLogs(Number.MAX_SAFE_INTEGER);
   const items = db
     .prepare(
-      `SELECT * FROM request_logs ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT
+         id, method, path, model, provider_id, provider_name, api_key_id, api_key_name,
+         status_code, latency_ms, cached, request_bytes, response_bytes, error, created_at,
+         NULL AS input_text, NULL AS output_text, NULL AS reasoning_text,
+         prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, stream
+       FROM request_logs ORDER BY created_at DESC LIMIT ? OFFSET ?`,
     )
     .all(limit, offset) as RequestLog[];
   const total = (
@@ -200,7 +212,6 @@ export function getDashboardStats() {
   const recent = db
     .prepare(
       `SELECT id, method, path, model, status_code, latency_ms, cached, created_at,
-              input_text, output_text, reasoning_text,
               prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens
        FROM request_logs ORDER BY created_at DESC LIMIT 12`,
     )
@@ -213,9 +224,6 @@ export function getDashboardStats() {
     latency_ms: number;
     cached: number;
     created_at: string;
-    input_text: string | null;
-    output_text: string | null;
-    reasoning_text: string | null;
     prompt_tokens: number;
     completion_tokens: number;
     reasoning_tokens: number;
@@ -250,7 +258,7 @@ export function getDashboardStats() {
     last24h: last24h.c || 0,
     providers,
     keys,
-    cacheEntries: 0,
+    cacheEntries,
     // share of requests with upstream prompt-cache tokens
     hitRate:
       (totals.total || 0) > 0 ? (totals.cached || 0) / (totals.total || 1) : 0,
