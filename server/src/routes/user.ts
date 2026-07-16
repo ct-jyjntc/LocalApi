@@ -3,7 +3,6 @@ import { z } from "zod";
 import type { User } from "../db";
 import { requireUser } from "../middleware/auth";
 import { createApiKey, deleteApiKey, listApiKeys, updateApiKey } from "../services/keys";
-import { getLog, listLogs } from "../services/logs";
 import { getActiveSubscription } from "../services/plans";
 import {
   getWallet,
@@ -134,14 +133,4 @@ userRouter.get("/usage", (req, res) => {
 userRouter.get("/ledger", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 500);
   return res.json({ items: listWalletLedger(requestUser(req).id, limit) });
-});
-userRouter.get("/logs", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 100, 500);
-  const offset = Number(req.query.offset) || 0;
-  return res.json(listLogs(limit, offset, requestUser(req).id));
-});
-userRouter.get("/logs/:id", (req, res) => {
-  const log = getLog(req.params.id, requestUser(req).id);
-  if (!log) return res.status(404).json({ error: "Log not found" });
-  return res.json(log);
 });

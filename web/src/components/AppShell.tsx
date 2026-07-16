@@ -46,7 +46,6 @@ const USER_NAV: NavItem[] = [
   { to: "/", label: { zh: "概览", en: "Overview" }, icon: LayoutDashboard, end: true },
   { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
   { to: "/usage", label: { zh: "用量与账单", en: "Usage" }, icon: ChartNoAxesCombined },
-  { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
 ];
 
 const COLLAPSE_KEY = "localapi_sidebar_collapsed";

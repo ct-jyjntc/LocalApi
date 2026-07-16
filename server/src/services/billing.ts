@@ -388,10 +388,40 @@ export function listWalletLedger(userId: string, limit = 200) {
     .all(userId, limit);
 }
 
+function floorTokenCost(tokens: number, priceMicros: number) {
+  if (!Number.isFinite(tokens) || tokens <= 0 || !Number.isFinite(priceMicros) || priceMicros <= 0) return 0;
+  return Number((BigInt(Math.floor(tokens)) * BigInt(Math.floor(priceMicros))) / PRICE_TOKEN_UNIT);
+}
+
+function addBillingBreakdown(row: Record<string, unknown>) {
+  const promptTokens = Math.max(0, Number(row.prompt_tokens || 0));
+  const cachedTokens = Math.max(0, Math.min(promptTokens, Number(row.cached_tokens || 0)));
+  const ordinaryInputTokens = promptTokens - cachedTokens;
+  const cacheWriteTokens = Math.max(0, Number(row.cache_write_tokens || 0));
+  const completionTokens = Math.max(0, Number(row.completion_tokens || 0));
+  const inputCost = floorTokenCost(ordinaryInputTokens, Number(row.input_price_micros || 0));
+  const cacheReadCost = floorTokenCost(cachedTokens, Number(row.cache_read_price_micros || 0));
+  const cacheWriteCost = floorTokenCost(cacheWriteTokens, Number(row.cache_write_price_micros || 0));
+  const outputCost = floorTokenCost(completionTokens, Number(row.output_price_micros || 0));
+  // The authoritative total is rounded once in calculateCostMicros. Put the
+  // final sub-micro remainder on output so the visible components add up.
+  const remainder = Math.max(0, Number(row.cost_micros || 0) - inputCost - cacheReadCost - cacheWriteCost - outputCost);
+  return {
+    ...row,
+    ordinary_input_tokens: ordinaryInputTokens,
+    cache_read_tokens: cachedTokens,
+    input_cost_micros: inputCost,
+    cache_read_cost_micros: cacheReadCost,
+    cache_write_cost_micros: cacheWriteCost,
+    output_cost_micros: outputCost + remainder,
+  };
+}
+
 export function listUsageRecords(userId?: string, limit = 200) {
-  return userId
+  const rows = userId
     ? db.prepare("SELECT * FROM usage_records WHERE user_id = ? ORDER BY created_at DESC LIMIT ?").all(userId, limit)
     : db.prepare("SELECT * FROM usage_records ORDER BY created_at DESC LIMIT ?").all(limit);
+  return (rows as Array<Record<string, unknown>>).map(addBillingBreakdown);
 }
 
 export function cleanupStaleReservations() {

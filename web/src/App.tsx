@@ -60,7 +60,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="pricing" element={<PricingPage />} />
               <Route path="plans" element={<PlansPage />} />
               <Route path="billing" element={<CommercialUsagePage />} />
-              <Route path="logs" element={<LogsPage mode="admin" />} />
+              <Route path="logs" element={<LogsPage />} />
               <Route path="settings" element={<SettingsPage onLogout={onLogout} />} />
             </>
           ) : (
@@ -68,7 +68,6 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route index element={<UserDashboardPage />} />
               <Route path="keys" element={<UserKeysPage />} />
               <Route path="usage" element={<UserUsagePage />} />
-              <Route path="logs" element={<LogsPage mode="user" />} />
             </>
           )}
           <Route path="*" element={<Navigate to="/" replace />} />

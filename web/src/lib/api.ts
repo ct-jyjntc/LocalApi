@@ -250,6 +250,22 @@ export type UsageRow = {
   cost_micros: number;
   plan_cost_micros: number;
   wallet_cost_micros: number;
+  input_price_micros: number;
+  output_price_micros: number;
+  cache_read_price_micros: number;
+  cache_write_price_micros: number;
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
+  reserved_plan_micros: number;
+  reserved_wallet_micros: number;
+  subscription_id: string | null;
+  cache_write_tokens: number;
+  ordinary_input_tokens: number;
+  cache_read_tokens: number;
+  input_cost_micros: number;
+  cache_read_cost_micros: number;
+  cache_write_cost_micros: number;
+  output_cost_micros: number;
   created_at: string;
   completed_at: string | null;
   error: string | null;
@@ -434,8 +450,4 @@ export const userApi = {
     remove: (id: string) => request<{ ok: boolean }>(`/user/api/keys/${id}`, { method: "DELETE" }, { auth: "user" }),
   },
   usage: (limit = 200) => request<{ items: UsageRow[] }>(`/user/api/usage?limit=${limit}`, {}, { auth: "user" }),
-  logs: {
-    list: (limit = 100) => request<{ items: LogRow[]; total: number }>(`/user/api/logs?limit=${limit}`, {}, { auth: "user" }),
-    get: (id: string) => request<LogRow>(`/user/api/logs/${id}`, {}, { auth: "user" }),
-  },
 };
