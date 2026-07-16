@@ -19,7 +19,10 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/admin/api": "http://127.0.0.1:5555",
+      "/user/api": "http://127.0.0.1:5555",
       "/v1": "http://127.0.0.1:5555",
+      "/coding": "http://127.0.0.1:5555",
+      "/branding": "http://127.0.0.1:5555",
       "/health": "http://127.0.0.1:5555",
     },
   },

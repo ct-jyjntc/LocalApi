@@ -76,6 +76,8 @@ const settingsSchema = z.object({
   cache_max_entries: z.coerce.number().int().min(10).max(100_000).optional(),
   cache_methods: z.array(z.enum(["GET", "POST"])).max(2).optional(),
   cache_paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
+  brand_name: z.string().trim().min(1).max(80).optional(),
+  company_name: z.string().trim().max(160).optional(),
 });
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
@@ -240,6 +242,8 @@ adminRouter.get("/settings", (_req, res) => {
     cache_max_entries: Number(all.cache_max_entries || 1000),
     cache_methods: JSON.parse(all.cache_methods || "[]"),
     cache_paths: JSON.parse(all.cache_paths || "[]"),
+    brand_name: all.brand_name || "LocalAPI",
+    company_name: all.company_name || "",
   });
 });
 
@@ -276,6 +280,8 @@ adminRouter.patch("/settings", (req, res) => {
   if (Array.isArray(body.cache_paths)) {
     setSetting("cache_paths", JSON.stringify(body.cache_paths));
   }
+  if (body.brand_name !== undefined) setSetting("brand_name", body.brand_name);
+  if (body.company_name !== undefined) setSetting("company_name", body.company_name);
 
   const all = getAllSettings();
   res.json({
@@ -289,6 +295,8 @@ adminRouter.patch("/settings", (req, res) => {
     cache_max_entries: Number(all.cache_max_entries || 1000),
     cache_methods: JSON.parse(all.cache_methods || "[]"),
     cache_paths: JSON.parse(all.cache_paths || "[]"),
+    brand_name: all.brand_name || "LocalAPI",
+    company_name: all.company_name || "",
   });
 });
 

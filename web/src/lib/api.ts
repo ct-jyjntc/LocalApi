@@ -208,6 +208,9 @@ export type PlanRow = {
   tpm_limit: number;
   concurrency_limit: number;
   overage_enabled: boolean;
+  stock_limit: number;
+  stock_used: number;
+  stock_available: number | null;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -259,6 +262,7 @@ export type UsageRow = {
   reserved_plan_micros: number;
   reserved_wallet_micros: number;
   subscription_id: string | null;
+  billing_mode: "wallet" | "coding";
   cache_write_tokens: number;
   ordinary_input_tokens: number;
   cache_read_tokens: number;
@@ -290,9 +294,17 @@ export type Settings = {
   cache_max_entries: number;
   cache_methods: string[];
   cache_paths: string[];
+  brand_name: string;
+  company_name: string;
+};
+
+export type Branding = {
+  brand_name: string;
+  company_name: string;
 };
 
 export const api = {
+  branding: () => request<Branding>("/branding", {}, { auth: false }),
   login: (password: string) =>
     request<{ ok: boolean }>(
       "/admin/api/login",
@@ -369,6 +381,8 @@ export const api = {
       port?: string | number;
       max_retries?: number;
       retry_delay_ms?: number;
+      brand_name?: string;
+      company_name?: string;
     }) =>
       request<Settings>("/admin/api/settings", {
         method: "PATCH",
@@ -416,9 +430,33 @@ export const api = {
     },
     plans: {
       list: () => request<{ items: PlanRow[] }>("/admin/api/commercial/plans"),
-      create: (body: Omit<PlanRow, "id" | "created_at" | "updated_at">) =>
+      create: (body: {
+        name: string;
+        description?: string;
+        cycle_days?: number;
+        included_credits_micros?: number;
+        allowed_models?: string[];
+        rpm_limit?: number;
+        tpm_limit?: number;
+        concurrency_limit?: number;
+        stock_limit?: number;
+        overage_enabled?: boolean;
+        enabled?: boolean;
+      }) =>
         request<PlanRow>("/admin/api/commercial/plans", { method: "POST", body: JSON.stringify(body) }),
-      update: (id: string, body: Partial<PlanRow>) =>
+      update: (id: string, body: Partial<{
+        name: string;
+        description: string;
+        cycle_days: number;
+        included_credits_micros: number;
+        allowed_models: string[];
+        rpm_limit: number;
+        tpm_limit: number;
+        concurrency_limit: number;
+        stock_limit: number;
+        overage_enabled: boolean;
+        enabled: boolean;
+      }>) =>
         request<PlanRow>(`/admin/api/commercial/plans/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
       remove: (id: string) => request<{ ok: boolean }>(`/admin/api/commercial/plans/${id}`, { method: "DELETE" }),
     },

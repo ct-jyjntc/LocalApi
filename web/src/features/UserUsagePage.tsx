@@ -94,6 +94,7 @@ function BillingDetails({ row, zh }: { row: UsageRow; zh: boolean }) {
           {priceItems.map(([label, value]) => <DetailLine key={label} label={label} value={formatCredits(value)} />)}
         </DetailGroup>
         <DetailGroup title={zh ? "费用分解" : "Cost breakdown"}>
+          <DetailLine label={zh ? "计费方式" : "Billing mode"} value={row.billing_mode === "coding" ? "Coding Plan" : (zh ? "余额" : "Wallet")} strong />
           {costItems.map(([label, value]) => <DetailLine key={label} label={label} value={formatCredits(value)} />)}
           <DetailLine label={zh ? "总费用" : "Total cost"} value={formatCredits(row.cost_micros)} strong />
           <DetailLine label={zh ? "套餐扣除" : "Plan charged"} value={formatCredits(row.plan_cost_micros)} />

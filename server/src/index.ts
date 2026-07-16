@@ -60,6 +60,13 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "localapi", port: SINGLE_PORT });
 });
 
+app.get("/branding", (_req, res) => {
+  res.json({
+    brand_name: getSetting("brand_name") || "LocalAPI",
+    company_name: getSetting("company_name") || "",
+  });
+});
+
 // Parse bodies only for the admin API. Proxy requests are parsed selectively in
 // routes/proxy.ts so multipart and binary uploads remain true streams.
 app.use(
@@ -95,6 +102,7 @@ if (webDist) {
       req.path.startsWith("/admin/api") ||
       req.path.startsWith("/user/api") ||
       req.path.startsWith("/v1") ||
+      req.path.startsWith("/coding") ||
       req.path === "/health"
     ) {
       return next();

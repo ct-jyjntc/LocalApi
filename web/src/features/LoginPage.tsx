@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, setAdminToken, setUserToken, userApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -10,10 +11,17 @@ import { useI18n } from "@/lib/i18n";
 export function LoginPage({ onSuccess }: { onSuccess: (mode: "admin" | "user") => void }) {
   const { t, locale } = useI18n();
   const zh = locale === "zh";
+  const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
+  const brandName = branding.data?.brand_name || t("shell.brand");
+  const companyName = branding.data?.company_name?.trim() || "";
   const [mode, setMode] = useState<"admin" | "user">("user");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    document.title = brandName;
+  }, [brandName]);
 
   async function submit(e?: FormEvent) {
     e?.preventDefault();
@@ -47,7 +55,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (mode: "admin" | "user") =
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <div className="flex h-12 items-center border-b border-border/60 px-5">
-        <span className="text-sm font-semibold">{t("shell.brand")}</span>
+        <span className="text-sm font-semibold">{brandName}</span>
       </div>
       <div className="flex flex-1 items-center justify-center px-5 py-10">
         <Card className="w-full max-w-[336px] space-y-4 p-5">
@@ -96,6 +104,11 @@ export function LoginPage({ onSuccess }: { onSuccess: (mode: "admin" | "user") =
           </form>
         </Card>
       </div>
+      {companyName ? (
+        <div className="pointer-events-none fixed bottom-3 right-5 text-[11px] text-muted-foreground/75">
+          @{new Date().getFullYear()} {companyName}
+        </div>
+      ) : null}
     </div>
   );
 }

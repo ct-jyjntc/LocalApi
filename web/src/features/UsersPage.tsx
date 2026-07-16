@@ -59,7 +59,7 @@ export function UsersPage() {
           <CardTitle>{zh ? "创建用户" : "Create user"}</CardTitle>
           <CardDescription>{zh ? "用户创建后可以登录自己的控制台并创建 API Key。" : "Users can sign in and create their own API keys."}</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap items-end gap-2">
+        <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
           <Field label={zh ? "用户名" : "Username"}>
             <Input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
           </Field>
@@ -173,26 +173,26 @@ function UserManager({ user, plans, zh, onRefresh, onDelete, onClose }: {
         <Button variant="secondary" size="sm" onClick={onClose}>{zh ? "收起" : "Close"}</Button>
       </CardHeader>
       <CardContent className="grid gap-3 lg:grid-cols-3">
-        <section className="flex flex-col gap-3 rounded-md bg-secondary/35 p-3">
+        <section className="min-w-0 flex flex-col gap-3 rounded-md bg-secondary/35 p-3">
           <h3 className="text-xs font-medium">{zh ? "余额调整" : "Wallet adjustment"}</h3>
           <Field label={zh ? "额度（可填负数）" : "Credits (negative allowed)"}><Input type="number" step="0.000001" value={credit} onChange={(e) => setCredit(e.target.value)} /></Field>
           <Field label={zh ? "备注" : "Description"}><Input value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
           <Button size="sm" onClick={() => mutation.mutate("wallet")}>{zh ? "调整余额" : "Adjust"}</Button>
         </section>
-        <section className="flex flex-col gap-3 rounded-md bg-secondary/35 p-3">
+        <section className="min-w-0 flex flex-col gap-3 rounded-md bg-secondary/35 p-3">
           <h3 className="text-xs font-medium">{zh ? "套餐" : "Plan"}</h3>
           <Field label={zh ? "选择套餐" : "Select plan"}>
             <select className="h-8 w-full rounded-md border border-input bg-secondary/55 px-3 text-xs" value={planId} onChange={(e) => setPlanId(e.target.value)}>
-              <option value="">—</option>{plans.filter((p) => p.enabled).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+              <option value="">—</option>{plans.filter((p) => p.enabled).map((plan) => <option key={plan.id} value={plan.id} disabled={plan.stock_available === 0 && plan.id !== user.plan_id}>{plan.name}{plan.stock_limit > 0 ? ` · ${zh ? "库存" : "Stock"} ${plan.stock_available ?? 0}` : ""}</option>)}
             </select>
           </Field>
           <Button size="sm" disabled={!planId} onClick={() => mutation.mutate("plan")}>{zh ? "分配并重置周期" : "Assign and reset"}</Button>
           <Button variant="secondary" size="sm" onClick={() => mutation.mutate("cancel")}>{zh ? "取消当前套餐" : "Cancel current plan"}</Button>
         </section>
-        <section className="flex flex-col gap-3 rounded-md bg-secondary/35 p-3">
+        <section className="min-w-0 flex flex-col gap-3 rounded-md bg-secondary/35 p-3">
           <h3 className="text-xs font-medium">{zh ? "权限与限制" : "Access limits"}</h3>
           <Field label={zh ? "显示名称" : "Display name"}><Input value={limits.display_name} onChange={(e) => setLimits({ ...limits, display_name: e.target.value })} /></Field>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-3">
             <Field label="RPM"><Input type="number" value={limits.rpm_limit} onChange={(e) => setLimits({ ...limits, rpm_limit: e.target.value })} /></Field>
             <Field label="TPM"><Input type="number" value={limits.tpm_limit} onChange={(e) => setLimits({ ...limits, tpm_limit: e.target.value })} /></Field>
             <Field label={zh ? "并发" : "Concurrency"}><Input type="number" value={limits.concurrency_limit} onChange={(e) => setLimits({ ...limits, concurrency_limit: e.target.value })} /></Field>
@@ -210,5 +210,5 @@ function UserManager({ user, plans, zh, onRefresh, onDelete, onClose }: {
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="flex min-w-[160px] flex-1 flex-col gap-1.5"><Label>{label}</Label>{children}</label>;
+  return <label className="flex min-w-0 flex-1 flex-col gap-1.5"><Label>{label}</Label>{children}</label>;
 }

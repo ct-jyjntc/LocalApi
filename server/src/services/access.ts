@@ -78,18 +78,25 @@ export type RequestAccess = {
   release: (actualTokens: number) => void;
 };
 
-export function isModelAllowedForKey(key: ApiKey, model: string) {
+export function isModelAllowedForKey(key: ApiKey, model: string, options: { includeSubscription?: boolean } = {}) {
   const user = key.user_id ? getUser(key.user_id) : null;
   if (key.user_id && (!user || user.status !== "active")) return false;
-  const subscription = user ? getActiveSubscription(user.id) : null;
-  return [
+  const subscription = options.includeSubscription === false || !user ? null : getActiveSubscription(user.id);
+  const scopes = [
     parseModels(key.allowed_models),
     parseModels(user?.allowed_models),
-    parseModels(subscription?.plan.allowed_models),
-  ].every((models) => allows(models, model));
+  ];
+  if (options.includeSubscription !== false) scopes.push(parseModels(subscription?.plan.allowed_models));
+  return scopes.every((models) => allows(models, model));
 }
 
-export function beginRequestAccess(key: ApiKey, model: string | null, body: unknown): RequestAccess {
+export function beginRequestAccess(
+  key: ApiKey,
+  model: string | null,
+  body: unknown,
+  options: { billingMode?: "wallet" | "coding" } = {},
+): RequestAccess {
+  const billingMode = options.billingMode ?? "wallet";
   const user = key.user_id ? getUser(key.user_id) : null;
   if (key.user_id && (!user || user.status !== "active")) {
     throw new AccessError(403, "user_suspended", "User account is not active");
@@ -98,14 +105,17 @@ export function beginRequestAccess(key: ApiKey, model: string | null, body: unkn
     throw new AccessError(401, "api_key_expired", "API key has expired");
   }
 
-  const subscription = user ? getActiveSubscription(user.id) : null;
+  const subscription = billingMode === "coding" && user ? getActiveSubscription(user.id) : null;
+  if (billingMode === "coding" && key.user_id && !subscription) {
+    throw new AccessError(402, "coding_plan_required", "An active Coding Plan is required for /coding requests");
+  }
   if (model) {
-    if (!isModelAllowedForKey(key, model)) {
+    if (!isModelAllowedForKey(key, model, { includeSubscription: billingMode === "coding" })) {
       throw new AccessError(403, "model_not_allowed", `Model ${model} is not allowed for this account`);
     }
   }
 
-  const rpm = minPositive(key.rate_limit, user?.rpm_limit, subscription?.plan.rpm_limit);
+  const rpm = minPositive(key.rate_limit, user?.rpm_limit, billingMode === "coding" ? subscription?.plan.rpm_limit : undefined);
   const rpmState = consumeRateLimit(`commercial:rpm:${user?.id || key.id}`, rpm);
   if (!rpmState.allowed) {
     throw new AccessError(
@@ -119,7 +129,7 @@ export function beginRequestAccess(key: ApiKey, model: string | null, body: unkn
   const limit = minPositive(
     key.concurrency_limit,
     user?.concurrency_limit,
-    subscription?.plan.concurrency_limit,
+    billingMode === "coding" ? subscription?.plan.concurrency_limit : undefined,
   );
   const concurrencyScope = `commercial:concurrency:${user?.id || key.id}`;
   const active = concurrency.get(concurrencyScope) ?? 0;
@@ -129,7 +139,7 @@ export function beginRequestAccess(key: ApiKey, model: string | null, body: unkn
   concurrency.set(concurrencyScope, active + 1);
 
   const estimated = estimateRequestTokens(body);
-  const tpm = minPositive(key.tpm_limit, user?.tpm_limit, subscription?.plan.tpm_limit);
+  const tpm = minPositive(key.tpm_limit, user?.tpm_limit, billingMode === "coding" ? subscription?.plan.tpm_limit : undefined);
   let tokenReservation: ReturnType<typeof reserveTokenWindow>;
   try {
     tokenReservation = reserveTokenWindow(

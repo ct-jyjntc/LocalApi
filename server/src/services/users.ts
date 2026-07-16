@@ -146,7 +146,18 @@ export function updateUser(
 }
 
 export function deleteUser(id: string) {
-  return db.prepare("DELETE FROM users WHERE id = ?").run(id).changes > 0;
+  let deleted = false;
+  db.transaction(() => {
+    const active = db
+      .prepare("SELECT plan_id FROM subscriptions WHERE user_id = ? AND status = 'active'")
+      .get(id) as { plan_id: string } | undefined;
+    deleted = db.prepare("DELETE FROM users WHERE id = ?").run(id).changes > 0;
+    if (deleted && active) {
+      db.prepare("UPDATE plans SET stock_used = MAX(0, stock_used - 1), updated_at = ? WHERE id = ?")
+        .run(nowIso(), active.plan_id);
+    }
+  })();
+  return deleted;
 }
 
 export function authenticateUser(username: string, password: string): User | null {

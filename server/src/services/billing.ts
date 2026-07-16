@@ -125,6 +125,7 @@ export type BillingReservation = {
   reservedWallet: number;
   subscriptionId: string | null;
   overageEnabled: boolean;
+  billingMode: "wallet" | "coding";
 };
 
 export function reserveUsage(input: {
@@ -133,7 +134,9 @@ export function reserveUsage(input: {
   apiKeyId: string;
   model: string;
   body: unknown;
+  billingMode?: "wallet" | "coding";
 }): BillingReservation {
+  const billingMode = input.billingMode ?? "wallet";
   const price = getModelPrice(input.model);
   if (!price || price.enabled !== 1) {
     throw new BillingError(402, "model_not_priced", `Model ${input.model} has no active price`);
@@ -143,10 +146,16 @@ export function reserveUsage(input: {
     prompt_tokens: estimate.prompt,
     completion_tokens: estimate.completion,
   });
-  const subscription = getActiveSubscription(input.userId);
+  const subscription = billingMode === "coding" ? getActiveSubscription(input.userId) : null;
+  if (billingMode === "coding" && !subscription) {
+    throw new BillingError(402, "coding_plan_required", "An active Coding Plan is required for /coding requests");
+  }
   const planModels = parseAllowedModels(subscription?.plan.allowed_models);
   const planEligible = Boolean(subscription && modelAllowed(planModels, input.model));
-  const overageEnabled = subscription ? subscription.plan.overage_enabled : true;
+  if (billingMode === "coding" && !planEligible) {
+    throw new BillingError(403, "model_not_allowed", `Model ${input.model} is not included in the active Coding Plan`);
+  }
+  const overageEnabled = billingMode === "coding" ? Boolean(subscription?.plan.overage_enabled) : true;
   const usageId = uuid();
   let reservedPlan = 0;
   let reservedWallet = 0;
@@ -157,7 +166,7 @@ export function reserveUsage(input: {
       .get(input.userId) as { balance_micros: number; reserved_micros: number } | undefined;
     if (!wallet) throw new BillingError(402, "wallet_missing", "User wallet is unavailable");
 
-    if (planEligible && subscription) {
+    if (billingMode === "coding" && planEligible && subscription) {
       const availablePlan = Math.max(
         0,
         subscription.remaining_credits_micros - subscription.reserved_micros,
@@ -189,8 +198,8 @@ export function reserveUsage(input: {
         id, request_id, user_id, api_key_id, model, status,
         input_price_micros, output_price_micros, cache_read_price_micros, cache_write_price_micros,
         reserved_plan_micros, reserved_wallet_micros, estimated_prompt_tokens,
-        estimated_completion_tokens, subscription_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        estimated_completion_tokens, subscription_id, billing_mode, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       usageId,
       input.requestId,
@@ -206,6 +215,7 @@ export function reserveUsage(input: {
       estimate.prompt,
       estimate.completion,
       subscription?.id ?? null,
+      billingMode,
       nowIso(),
     );
   })();
@@ -223,6 +233,7 @@ export function reserveUsage(input: {
     reservedWallet,
     subscriptionId: subscription?.id ?? null,
     overageEnabled,
+    billingMode,
   };
 }
 

@@ -6,9 +6,12 @@ import { lookupCache, storeCache } from "../services/cache";
 import type { ApiKey } from "../db";
 import { isModelAllowedForKey } from "../services/access";
 import { getModelPrice } from "../services/billing";
+import { getActiveSubscription } from "../services/plans";
 
 export const proxyRouter = Router();
 const MAX_BUFFERED_BODY = 20 * 1024 * 1024;
+type BillingMode = "wallet" | "coding";
+type BillingRequest = Request & { billingMode?: BillingMode };
 
 function isBufferableContentType(value: string) {
   return (
@@ -71,6 +74,12 @@ v1.use(requireApiKey);
 // OpenAI-compatible models list (aggregated)
 v1.get("/models", async (req: Request, res: Response) => {
   const apiKey = (req as Request & { apiKey?: ApiKey }).apiKey;
+  const billingMode = (req as BillingRequest).billingMode ?? "wallet";
+  if (billingMode === "coding" && apiKey?.user_id && !getActiveSubscription(apiKey.user_id)) {
+    return res.status(402).json({
+      error: { message: "An active Coding Plan is required for /coding requests", type: "coding_plan_required" },
+    });
+  }
   if (!apiKey?.user_id) {
     const cached = lookupCache({
       method: "GET",
@@ -94,7 +103,7 @@ v1.get("/models", async (req: Request, res: Response) => {
       const models = JSON.parse(p.models) as string[];
       for (const m of models) {
         if (m === "*") continue;
-        if (apiKey?.user_id && (!isModelAllowedForKey(apiKey, m) || getModelPrice(m)?.enabled !== 1)) continue;
+        if (apiKey?.user_id && (!isModelAllowedForKey(apiKey, m, { includeSubscription: billingMode === "coding" }) || getModelPrice(m)?.enabled !== 1)) continue;
         data.push({ id: m, object: "model", owned_by: p.name });
       }
     } catch {
@@ -138,6 +147,8 @@ async function handleProxy(req: Request, res: Response) {
     .apiKey;
   // req.path here is relative to /v1 mount
   const path = `/v1${req.path.startsWith("/") ? req.path : `/${req.path}`}`;
+  const billingMode = (req as BillingRequest).billingMode ?? "wallet";
+  const clientPath = `${req.baseUrl}${req.path.startsWith("/") ? req.path : `/${req.path}`}`;
 
   const contentType = (req.header("content-type") || "").toLowerCase();
   let body: unknown;
@@ -189,6 +200,8 @@ async function handleProxy(req: Request, res: Response) {
       apiKeyId: apiKey?.id,
       apiKeyName: apiKey?.name,
       apiKey,
+      billingMode,
+      clientPath,
     },
     res,
   );
@@ -203,4 +216,13 @@ v1.post("/audio/speech", handleProxy);
 // Express 5 named wildcard
 v1.all("/{*rest}", handleProxy);
 
-proxyRouter.use("/v1", v1);
+function billingMode(mode: BillingMode) {
+  return (req: Request, _res: Response, next: () => void) => {
+    (req as BillingRequest).billingMode = mode;
+    next();
+  };
+}
+
+proxyRouter.use("/coding/v1", billingMode("coding"), v1);
+proxyRouter.use("/coding", billingMode("coding"), v1);
+proxyRouter.use("/v1", billingMode("wallet"), v1);

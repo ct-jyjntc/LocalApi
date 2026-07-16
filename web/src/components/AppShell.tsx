@@ -1,6 +1,8 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import {
   ChartNoAxesCombined,
+  BookOpenText,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -18,6 +20,7 @@ import {
 import { useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
 
 type NavItem = {
@@ -37,6 +40,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/plans", label: { zh: "套餐", en: "Plans" }, icon: Package },
   { to: "/billing", label: { zh: "计费用量", en: "Billing" }, icon: ChartNoAxesCombined },
   { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
+  { to: "/docs", labelKey: "nav.docs", icon: BookOpenText },
   { to: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
 
@@ -44,17 +48,25 @@ const USER_NAV: NavItem[] = [
   { to: "/", label: { zh: "概览", en: "Overview" }, icon: LayoutDashboard, end: true },
   { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
   { to: "/usage", label: { zh: "用量与账单", en: "Usage" }, icon: ChartNoAxesCombined },
+  { to: "/docs", labelKey: "nav.docs", icon: BookOpenText },
 ];
 
 const COLLAPSE_KEY = "localapi_sidebar_collapsed";
 
 export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"; onLogout?: () => void }) {
   const { t, locale } = useI18n();
+  const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
+  const brandName = branding.data?.brand_name || t("shell.brand");
+  const companyName = branding.data?.company_name?.trim() || "";
   const nav = mode === "admin" ? ADMIN_NAV : USER_NAV;
   const [collapsed, setCollapsed] = useState(() => {
     return localStorage.getItem(COLLAPSE_KEY) === "1";
   });
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    document.title = brandName;
+  }, [brandName]);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
@@ -87,7 +99,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
         style={{ width }}
       >
         <SidebarChrome
-          brand={t("shell.brand")}
+          brand={brandName}
           collapsed={collapsed}
           onToggle={() => setCollapsed((v) => !v)}
           expandLabel={t("shell.expand")}
@@ -119,7 +131,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           <aside className="absolute inset-y-0 left-0 flex w-[240px] flex-col bg-sidebar py-6 shadow-lg">
             <div className="flex h-8 shrink-0 items-center gap-1 px-3">
               <span className="min-w-0 flex-1 truncate px-0.5 text-sm font-semibold">
-                {t("shell.brand")}
+                {brandName}
               </span>
               <Button
                 type="button"
@@ -167,12 +179,17 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           >
             <Menu strokeWidth={1.8} />
           </Button>
-          <span className="text-sm font-semibold">{t("shell.brand")}</span>
+          <span className="text-sm font-semibold">{brandName}</span>
         </header>
 
-        <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 pb-6 sm:px-8">
+        <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 pb-10 sm:px-8">
           <Outlet />
         </main>
+        {companyName ? (
+          <div className="pointer-events-none fixed bottom-3 right-5 z-10 text-[11px] text-muted-foreground/75">
+            @{new Date().getFullYear()} {companyName}
+          </div>
+        ) : null}
       </div>
     </div>
   );

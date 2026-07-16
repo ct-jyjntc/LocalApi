@@ -57,6 +57,8 @@ export type ProxyContext = {
   apiKeyId?: string | null;
   apiKeyName?: string | null;
   apiKey?: ApiKey | null;
+  billingMode?: "wallet" | "coding";
+  clientPath?: string;
 };
 
 type ProxyResult = {
@@ -448,6 +450,7 @@ export async function handleProxyHttp(
   const started = Date.now();
   const model = pickModel(ctx.body, ctx.query);
   const path = ctx.path.startsWith("/") ? ctx.path : `/${ctx.path}`;
+  const logPath = ctx.clientPath || path;
   const stream = isStreamBody(ctx.body);
   const baseIo = extractIO({ path, body: ctx.body, stream });
   const maxRetries = getMaxRetries();
@@ -464,7 +467,7 @@ export async function handleProxyHttp(
       : "No enabled upstream provider configured";
     writeLog({
       method: ctx.method,
-      path,
+      path: logPath,
       model,
       api_key_id: ctx.apiKeyId,
       api_key_name: ctx.apiKeyName,
@@ -492,13 +495,13 @@ export async function handleProxyHttp(
     access?.release(tokens);
   };
   try {
-    if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body);
+    if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body, { billingMode: ctx.billingMode });
   } catch (error) {
     const accessError = error instanceof AccessError ? error : new AccessError(403, "access_denied", String(error));
     if (accessError.retryAfterSeconds) res.setHeader("retry-after", String(accessError.retryAfterSeconds));
     writeLog({
       method: ctx.method,
-      path,
+      path: logPath,
       model,
       api_key_id: ctx.apiKeyId,
       api_key_name: ctx.apiKeyName,
@@ -523,6 +526,7 @@ export async function handleProxyHttp(
         apiKeyId: ctx.apiKey.id,
         model,
         body: ctx.body,
+        billingMode: ctx.billingMode,
       });
     }
   } catch (error) {
@@ -532,7 +536,7 @@ export async function handleProxyHttp(
       : new BillingError(402, "billing_error", error instanceof Error ? error.message : String(error));
     writeLog({
       method: ctx.method,
-      path,
+      path: logPath,
       model,
       api_key_id: ctx.apiKeyId,
       api_key_name: ctx.apiKeyName,
@@ -582,7 +586,7 @@ export async function handleProxyHttp(
         started,
         stream,
       });
-      writeCompletedRequest({ ctx, path, model, provider, started, stream, result, billing, access });
+      writeCompletedRequest({ ctx, path: logPath, model, provider, started, stream, result, billing, access });
       accessReleased = true;
       return;
     } catch (error) {
@@ -613,7 +617,7 @@ export async function handleProxyHttp(
 
   writeLog({
     method: ctx.method,
-    path,
+    path: logPath,
     model,
     provider_id: provider.id,
     provider_name: provider.name,

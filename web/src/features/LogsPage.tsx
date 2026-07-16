@@ -7,6 +7,7 @@ import {
   EmptyState,
   MethodBadge,
   PageHeader,
+  TABLE_HEAD_CLASS,
 } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -58,6 +59,16 @@ export function LogsPage() {
       />
 
       <Card className="overflow-hidden">
+        <div className={TABLE_HEAD_CLASS}>
+          <span className="w-3.5 shrink-0" />
+          <span className="w-10 shrink-0">{t("common.method")}</span>
+          <span className="min-w-0 flex-1">{t("common.path")} / {t("common.model")}</span>
+          <span className="hidden w-28 shrink-0 md:block">{t("logs.channel")}</span>
+          <span className="hidden w-44 shrink-0 text-right sm:block">{t("logs.tokens")}</span>
+          <span className="w-10 shrink-0 text-right">HTTP</span>
+          <span className="hidden w-14 shrink-0 text-right md:block">{t("common.latency")}</span>
+          <span className="hidden w-36 shrink-0 text-right lg:block">{t("common.time")}</span>
+        </div>
         {!data?.items?.length ? (
           <EmptyState>
             {isLoading ? t("common.loading") : t("logs.empty")}
@@ -117,7 +128,7 @@ function LogItem({
         ) : (
           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.8} />
         )}
-        <MethodBadge method={log.method} />
+        <span className="w-10 shrink-0"><MethodBadge method={log.method} /></span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
           {log.path}
           {log.model ? (
@@ -125,9 +136,13 @@ function LogItem({
           ) : null}
         </span>
 
+        <span className="hidden w-28 shrink-0 truncate text-[11px] text-muted-foreground md:inline" title={log.provider_name || undefined}>
+          {log.provider_name || "—"}
+        </span>
+
         {/* Compact token counts: 输入 / 输出 / 缓存 / 推理 */}
         <span
-          className="hidden shrink-0 items-center gap-2 tabular-nums text-[11px] text-muted-foreground sm:inline-flex"
+          className="hidden w-44 shrink-0 items-center justify-end gap-2 tabular-nums text-[11px] text-muted-foreground sm:inline-flex"
           title={`${t("logs.tokenInput")} ${inputTok} · ${t("logs.tokenOutput")} ${outputTok} · ${t("logs.tokenCache")} ${cacheTok} · ${t("logs.tokenReasoning")} ${reasonTok}`}
         >
           <Tok n={inputTok} />
@@ -158,6 +173,8 @@ function LogItem({
 
       {/* Mobile: one compact token line */}
       <div className="flex items-center gap-2 px-3 pb-2 text-[11px] tabular-nums text-muted-foreground sm:hidden">
+        <span className="max-w-28 truncate">{t("logs.channel")} {log.provider_name || "—"}</span>
+        <span className="text-border">·</span>
         <span>
           {t("logs.input")} {inputTok}
         </span>

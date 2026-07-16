@@ -24,10 +24,11 @@ type FormState = {
   rpm: string;
   tpm: string;
   concurrency: string;
+  stock: string;
   overage: boolean;
   enabled: boolean;
 };
-const emptyForm: FormState = { name: "Coding Plan", description: "", cycle: "30", credits: "0", models: "", rpm: "0", tpm: "0", concurrency: "0", overage: true, enabled: true };
+const emptyForm: FormState = { name: "Coding Plan", description: "", cycle: "30", credits: "0", models: "", rpm: "0", tpm: "0", concurrency: "0", stock: "0", overage: true, enabled: true };
 
 export function PlansPage() {
   const { locale } = useI18n();
@@ -40,7 +41,7 @@ export function PlansPage() {
     included_credits_micros: creditsToMicros(form.credits),
     allowed_models: form.models.split(/\r?\n|,/).map((v) => v.trim()).filter(Boolean),
     rpm_limit: Number(form.rpm) || 0, tpm_limit: Number(form.tpm) || 0,
-    concurrency_limit: Number(form.concurrency) || 0, overage_enabled: form.overage, enabled: form.enabled,
+    concurrency_limit: Number(form.concurrency) || 0, stock_limit: Math.max(0, Number(form.stock) || 0), overage_enabled: form.overage, enabled: form.enabled,
   });
   const refresh = () => qc.invalidateQueries({ queryKey: ["commercial", "plans"] });
   const save = useMutation({
@@ -49,18 +50,18 @@ export function PlansPage() {
     onError: (error: Error) => toast.error(error.message),
   });
   const remove = useMutation({ mutationFn: api.commercial.plans.remove, onSuccess: refresh, onError: (e: Error) => toast.error(e.message) });
-  const edit = (plan: PlanRow) => setForm({ id: plan.id, name: plan.name, description: plan.description, cycle: String(plan.cycle_days), credits: formatCredits(plan.included_credits_micros), models: plan.allowed_models.join("\n"), rpm: String(plan.rpm_limit), tpm: String(plan.tpm_limit), concurrency: String(plan.concurrency_limit), overage: plan.overage_enabled, enabled: plan.enabled });
+  const edit = (plan: PlanRow) => setForm({ id: plan.id, name: plan.name, description: plan.description, cycle: String(plan.cycle_days), credits: formatCredits(plan.included_credits_micros), models: plan.allowed_models.join("\n"), rpm: String(plan.rpm_limit), tpm: String(plan.tpm_limit), concurrency: String(plan.concurrency_limit), stock: String(plan.stock_limit), overage: plan.overage_enabled, enabled: plan.enabled });
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={zh ? "套餐" : "Plans"} description={zh ? "创建周期额度套餐，例如 Coding Plan，并配置模型、限速、并发和超额策略。" : "Create recurring credit plans with model, rate, concurrency and overage rules."} />
+      <PageHeader title={zh ? "套餐" : "Plans"} description={zh ? "创建周期额度套餐，并配置模型、限速、并发、库存和超额策略。" : "Create recurring plans with model, rate, concurrency, inventory and overage rules."} />
       <Card>
         <CardHeader><CardTitle>{form.id ? (zh ? "编辑套餐" : "Edit plan") : (zh ? "新建套餐" : "New plan")}</CardTitle><CardDescription>{zh ? "额度会在每个周期自动重置；0 表示该项不限制。" : "Credits reset each cycle; zero means unlimited for a limit."}</CardDescription></CardHeader>
         <CardContent className="grid gap-3 lg:grid-cols-3">
           <section className="flex flex-col gap-3">
             <Field label={zh ? "名称" : "Name"}><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
             <Field label={zh ? "说明" : "Description"}><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
-            <div className="grid grid-cols-2 gap-2"><Field label={zh ? "周期（天）" : "Cycle days"}><Input type="number" value={form.cycle} onChange={(e) => setForm({ ...form, cycle: e.target.value })} /></Field><Field label={zh ? "包含额度" : "Included credits"}><Input type="number" step="0.000001" value={form.credits} onChange={(e) => setForm({ ...form, credits: e.target.value })} /></Field></div>
+            <div className="grid gap-2 sm:grid-cols-3"><Field label={zh ? "周期（天）" : "Cycle days"}><Input type="number" value={form.cycle} onChange={(e) => setForm({ ...form, cycle: e.target.value })} /></Field><Field label={zh ? "包含额度" : "Included credits"}><Input type="number" step="0.000001" value={form.credits} onChange={(e) => setForm({ ...form, credits: e.target.value })} /></Field><Field label={zh ? "库存（0 不限）" : "Inventory (0 unlimited)"}><Input type="number" min="0" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></Field></div>
           </section>
           <section className="flex flex-col gap-3">
             <Field label={zh ? "允许模型（每行一个，空为全部）" : "Allowed models (one per line)"}><Textarea rows={5} value={form.models} onChange={(e) => setForm({ ...form, models: e.target.value })} /></Field>
@@ -78,7 +79,7 @@ export function PlansPage() {
           <Card key={plan.id} className="flex flex-col">
             <CardHeader><div className="flex items-start justify-between gap-2"><div><CardTitle>{plan.name}</CardTitle><CardDescription>{plan.description || "—"}</CardDescription></div><Badge variant={plan.enabled ? "success" : "secondary"}>{plan.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge></div></CardHeader>
             <CardContent className="flex flex-1 flex-col gap-3 text-xs">
-              <div className="grid grid-cols-2 gap-2"><Stat label={zh ? "周期额度" : "Cycle credits"} value={formatCredits(plan.included_credits_micros)} /><Stat label={zh ? "周期" : "Cycle"} value={`${plan.cycle_days}d`} /><Stat label="RPM / TPM" value={`${plan.rpm_limit || "∞"} / ${plan.tpm_limit || "∞"}`} /><Stat label={zh ? "并发" : "Concurrency"} value={String(plan.concurrency_limit || "∞")} /></div>
+              <div className="grid grid-cols-2 gap-2"><Stat label={zh ? "周期额度" : "Cycle credits"} value={formatCredits(plan.included_credits_micros)} /><Stat label={zh ? "周期" : "Cycle"} value={`${plan.cycle_days}d`} /><Stat label={zh ? "库存" : "Inventory"} value={plan.stock_limit > 0 ? `${plan.stock_available ?? 0} / ${plan.stock_limit}` : "∞"} /><Stat label={zh ? "已分配" : "Assigned"} value={String(plan.stock_used)} /><Stat label="RPM / TPM" value={`${plan.rpm_limit || "∞"} / ${plan.tpm_limit || "∞"}`} /><Stat label={zh ? "并发" : "Concurrency"} value={String(plan.concurrency_limit || "∞")} /></div>
               <p className="line-clamp-2 text-[11px] text-muted-foreground">{plan.allowed_models.length ? plan.allowed_models.join(", ") : (zh ? "全部模型" : "All models")}</p>
               <div className="mt-auto flex justify-end gap-1"><Button variant="ghost" size="icon" className="size-7" onClick={() => edit(plan)}><Pencil /></Button><Button variant="ghost" size="icon" className="size-7" onClick={() => remove.mutate(plan.id)}><Trash2 /></Button></div>
             </CardContent>

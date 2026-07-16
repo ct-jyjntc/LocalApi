@@ -30,6 +30,8 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [maxRetries, setMaxRetries] = useState(2);
   const [retryDelayMs, setRetryDelayMs] = useState(400);
+  const [brandName, setBrandName] = useState("LocalAPI");
+  const [companyName, setCompanyName] = useState("");
 
   useEffect(() => {
     document.documentElement.style.removeProperty("font-size");
@@ -40,6 +42,8 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     if (!data) return;
     setMaxRetries(Number(data.max_retries ?? 2));
     setRetryDelayMs(Number(data.retry_delay_ms ?? 400));
+    setBrandName(data.brand_name || "LocalAPI");
+    setCompanyName(data.company_name || "");
   }, [data]);
 
   const savePassword = useMutation({
@@ -80,6 +84,19 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     onSuccess: () => {
       toast.success(t("settings.relaySaved"));
       qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveBranding = useMutation({
+    mutationFn: async () => api.settings.update({
+      brand_name: brandName.trim() || "LocalAPI",
+      company_name: companyName.trim(),
+    }),
+    onSuccess: () => {
+      toast.success(t("settings.brandingSaved"));
+      qc.invalidateQueries({ queryKey: ["settings"] });
+      qc.invalidateQueries({ queryKey: ["branding"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -134,6 +151,29 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
             value={locale}
             onChange={(v) => setLocale(v)}
           />
+        </div>
+      </Card>
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t("settings.branding")}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.brandingHint")}</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>{t("settings.brandName")}</Label>
+            <Input value={brandName} maxLength={80} onChange={(event) => setBrandName(event.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>{t("settings.companyName")}</Label>
+            <Input value={companyName} maxLength={160} onChange={(event) => setCompanyName(event.target.value)} />
+            <p className="text-[11px] text-muted-foreground">{t("settings.companyHint")}</p>
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" disabled={saveBranding.isPending || !brandName.trim()} onClick={() => saveBranding.mutate()}>
+            {saveBranding.isPending ? t("common.loading") : t("settings.saveBranding")}
+          </Button>
         </div>
       </Card>
 

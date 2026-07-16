@@ -20,6 +20,7 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
     upsertModelPrice,
   } = await import("../src/services/billing");
   const { createApiKey } = await import("../src/services/keys");
+  const { createPlan, assignPlan } = await import("../src/services/plans");
   const { beginRequestAccess, AccessError } = await import("../src/services/access");
 
   try {
@@ -69,6 +70,56 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
     };
     assert.equal(usage.status, "completed");
     assert.equal(usage.cost_micros, 1850);
+
+    upsertModelPrice({ model: "other-model", input_price_micros: 1_000_000, output_price_micros: 1_000_000 });
+    const codingPlan = createPlan({
+      name: "Coding Test Plan",
+      included_credits_micros: 10_000_000,
+      allowed_models: ["glm-test"],
+      stock_limit: 1,
+    });
+    const assignedCoding = assignPlan(user.id, codingPlan.id);
+    assert.ok(assignedCoding);
+    const secondUser = createUser({ username: "bob", password: "password-123" });
+    assert.throws(
+      () => assignPlan(secondUser.id, codingPlan.id),
+      /inventory is exhausted/,
+    );
+
+    const walletReservation = reserveUsage({
+      requestId: "wallet-mode-request",
+      userId: user.id,
+      apiKeyId: key.id,
+      model: "other-model",
+      body: { model: "other-model", max_tokens: 1 },
+      billingMode: "wallet",
+    });
+    assert.equal(walletReservation.subscriptionId, null);
+    assert.equal(walletReservation.billingMode, "wallet");
+    settleUsage(walletReservation, { statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2 });
+
+    const codingReservation = reserveUsage({
+      requestId: "coding-mode-request",
+      userId: user.id,
+      apiKeyId: key.id,
+      model: "glm-test",
+      body: { model: "glm-test", max_tokens: 1 },
+      billingMode: "coding",
+    });
+    assert.equal(codingReservation.subscriptionId, assignedCoding!.id);
+    assert.equal(codingReservation.billingMode, "coding");
+    settleUsage(codingReservation, { statusCode: 200, promptTokens: 1, completionTokens: 1, totalTokens: 2 });
+    assert.throws(
+      () => reserveUsage({
+        requestId: "coding-disallowed-request",
+        userId: user.id,
+        apiKeyId: key.id,
+        model: "other-model",
+        body: { model: "other-model", max_tokens: 1 },
+        billingMode: "coding",
+      }),
+      /not included in the active Coding Plan/,
+    );
 
     const limitedPublicKey = createApiKey({
       name: "limited",

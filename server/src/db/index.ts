@@ -105,6 +105,8 @@ export function initDb() {
       tpm_limit INTEGER NOT NULL DEFAULT 0,
       concurrency_limit INTEGER NOT NULL DEFAULT 0,
       overage_enabled INTEGER NOT NULL DEFAULT 1,
+      stock_limit INTEGER NOT NULL DEFAULT 0,
+      stock_used INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -152,6 +154,7 @@ export function initDb() {
       subscription_id TEXT,
       estimated_prompt_tokens INTEGER NOT NULL DEFAULT 0,
       estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
+      billing_mode TEXT NOT NULL DEFAULT 'wallet',
       created_at TEXT NOT NULL,
       completed_at TEXT,
       error TEXT
@@ -287,6 +290,22 @@ export function initDb() {
   if (!usageCols.includes("subscription_id")) {
     db.exec("ALTER TABLE usage_records ADD COLUMN subscription_id TEXT");
   }
+  if (!usageCols.includes("billing_mode")) {
+    db.exec("ALTER TABLE usage_records ADD COLUMN billing_mode TEXT NOT NULL DEFAULT 'wallet'");
+  }
+
+  const planCols = (
+    db.prepare("PRAGMA table_info(plans)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!planCols.includes("stock_limit")) {
+    db.exec("ALTER TABLE plans ADD COLUMN stock_limit INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!planCols.includes("stock_used")) {
+    db.exec("ALTER TABLE plans ADD COLUMN stock_used INTEGER NOT NULL DEFAULT 0");
+    db.exec(
+      "UPDATE plans SET stock_used = (SELECT COUNT(*) FROM subscriptions WHERE subscriptions.plan_id = plans.id AND subscriptions.status = 'active')",
+    );
+  }
 
   db.exec(`
 
@@ -307,6 +326,8 @@ export function initDb() {
     // Upstream request retries (network / 429 / 5xx). 0 = no retry.
     max_retries: "2",
     retry_delay_ms: "400",
+    brand_name: "LocalAPI",
+    company_name: "",
   };
 
   const insert = db.prepare(
@@ -400,6 +421,8 @@ export type Plan = {
   tpm_limit: number;
   concurrency_limit: number;
   overage_enabled: number;
+  stock_limit: number;
+  stock_used: number;
   enabled: number;
   created_at: string;
   updated_at: string;

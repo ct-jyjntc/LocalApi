@@ -59,6 +59,7 @@ const planSchema = z.object({
   allowed_models: models,
   ...limits,
   overage_enabled: z.boolean().optional(),
+  stock_limit: z.coerce.number().int().min(0).max(100_000_000).optional(),
   enabled: z.boolean().optional(),
 });
 
@@ -108,7 +109,15 @@ commercialAdminRouter.get("/users/:id/ledger", (req, res) => {
 commercialAdminRouter.post("/users/:id/subscription", (req, res) => {
   const body = parseBody(z.object({ plan_id: z.string().uuid(), auto_renew: z.boolean().optional() }), req.body, res);
   if (!body) return;
-  const subscription = assignPlan(req.params.id, body.plan_id, body.auto_renew !== false);
+  let subscription;
+  try {
+    subscription = assignPlan(req.params.id, body.plan_id, body.auto_renew !== false);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Plan inventory is exhausted") {
+      return res.status(409).json({ error: error.message, code: "plan_inventory_exhausted" });
+    }
+    return res.status(404).json({ error: error instanceof Error ? error.message : "Plan not found or disabled" });
+  }
   if (!subscription) return res.status(404).json({ error: "Plan not found or disabled" });
   writeAudit({ action: "subscription.assign", target_type: "user", target_id: req.params.id, detail: body });
   return res.json(subscription);
