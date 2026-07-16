@@ -6,6 +6,8 @@ import { createApiKey, deleteApiKey, listApiKeys, updateApiKey } from "../servic
 import { getActiveSubscription } from "../services/plans";
 import {
   getWallet,
+  getUsageTotals,
+  listDailyUsage,
   listModelPrices,
   listUsageRecords,
   listWalletLedger,
@@ -80,30 +82,12 @@ userRouter.get("/me", (req, res) => {
 
 userRouter.get("/dashboard", (req, res) => {
   const user = requestUser(req);
-  const usage = listUsageRecords(user.id, 500) as Array<Record<string, unknown>>;
-  const totals = usage.reduce<{
-    requests: number;
-    cost_micros: number;
-    prompt_tokens: number;
-    completion_tokens: number;
-    cached_tokens: number;
-  }>(
-    (acc, row) => {
-      acc.requests += 1;
-      acc.cost_micros += Number(row.cost_micros || 0);
-      acc.prompt_tokens += Number(row.prompt_tokens || 0);
-      acc.completion_tokens += Number(row.completion_tokens || 0);
-      acc.cached_tokens += Number(row.cached_tokens || 0);
-      return acc;
-    },
-    { requests: 0, cost_micros: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0 },
-  );
   return res.json({
     user: publicUser(user),
     wallet: getWallet(user.id) ?? null,
     subscription: getActiveSubscription(user.id),
-    totals,
-    recent: usage.slice(0, 20),
+    totals: getUsageTotals(user.id),
+    trend: listDailyUsage(user.id, 30),
   });
 });
 

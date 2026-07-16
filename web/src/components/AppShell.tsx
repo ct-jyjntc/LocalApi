@@ -1,6 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
-  Activity,
   ChartNoAxesCombined,
   KeyRound,
   LayoutDashboard,
@@ -19,7 +18,6 @@ import {
 import { useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { api, userApi } from "@/lib/api";
 import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
 
 type NavItem = {
@@ -57,30 +55,10 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
     return localStorage.getItem(COLLAPSE_KEY) === "1";
   });
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [online, setOnline] = useState<boolean | null>(null);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
-
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        if (mode === "admin") await api.health();
-        else await userApi.me();
-        if (alive) setOnline(true);
-      } catch {
-        if (alive) setOnline(false);
-      }
-    };
-    tick();
-    const id = setInterval(tick, 15000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [mode]);
 
   useEffect(() => {
     const onResize = () => {
@@ -100,13 +78,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
   }, [mobileOpen]);
 
   const width = collapsed ? 68 : 240;
-
-  const statusLabel =
-    online === true
-      ? t("shell.online")
-      : online === false
-        ? t("shell.offline")
-        : t("shell.checking");
 
   return (
     <div className="min-h-screen bg-background">
@@ -131,8 +102,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
         />
         <SidebarStatus
           collapsed={collapsed}
-          online={online}
-          statusLabel={statusLabel}
           onLogout={onLogout}
           logoutLabel={locale === "zh" ? "退出登录" : "Sign out"}
         />
@@ -172,8 +141,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
             />
             <SidebarStatus
               collapsed={false}
-              online={online}
-              statusLabel={statusLabel}
               onLogout={onLogout}
               logoutLabel={locale === "zh" ? "退出登录" : "Sign out"}
             />
@@ -201,17 +168,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
             <Menu strokeWidth={1.8} />
           </Button>
           <span className="text-sm font-semibold">{t("shell.brand")}</span>
-          <span
-            className={cn(
-              "ml-auto size-1.5 rounded-full",
-              online === true
-                ? "bg-success"
-                : online === false
-                  ? "bg-destructive"
-                  : "bg-muted-foreground/50",
-            )}
-            title={statusLabel}
-          />
         </header>
 
         <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 pb-6 sm:px-8">
@@ -318,48 +274,30 @@ function SidebarNav({
 
 function SidebarStatus({
   collapsed,
-  online,
-  statusLabel,
   onLogout,
   logoutLabel,
 }: {
   collapsed: boolean;
-  online: boolean | null;
-  statusLabel: string;
   onLogout?: () => void;
   logoutLabel: string;
 }) {
+  if (!onLogout) return null;
   return (
     <div className="mt-4 shrink-0 px-2">
-      <div
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={onLogout}
+        title={logoutLabel}
+        aria-label={logoutLabel}
         className={cn(
-          "flex items-center gap-2 rounded-md bg-secondary/55 px-2.5 py-2 text-[11px] text-muted-foreground",
+          "h-8 w-full justify-start gap-2.5 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-secondary/55 hover:text-foreground",
           collapsed && "justify-center px-0",
         )}
-        title={statusLabel}
       >
-        <span
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            online === true
-              ? "bg-success"
-              : online === false
-                ? "bg-destructive"
-                : "bg-muted-foreground/50",
-          )}
-        />
-        {!collapsed ? (
-          <span className="flex min-w-0 items-center gap-1.5 truncate">
-            <Activity className="size-3 shrink-0" strokeWidth={1.8} />
-            <span className="truncate">{statusLabel}</span>
-          </span>
-        ) : null}
-        {onLogout ? (
-          <Button variant="ghost" size="icon" className="size-6 shrink-0" onClick={onLogout} title={logoutLabel} aria-label={logoutLabel}>
-            <LogOut />
-          </Button>
-        ) : null}
-      </div>
+        <LogOut className="size-4 shrink-0" strokeWidth={1.75} />
+        {!collapsed ? <span>{logoutLabel}</span> : null}
+      </Button>
     </div>
   );
 }

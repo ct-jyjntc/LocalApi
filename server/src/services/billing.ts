@@ -424,6 +424,59 @@ export function listUsageRecords(userId?: string, limit = 200) {
   return (rows as Array<Record<string, unknown>>).map(addBillingBreakdown);
 }
 
+export function getUsageTotals(userId: string) {
+  return db.prepare(
+    `SELECT COUNT(*) AS requests,
+      COALESCE(SUM(cost_micros), 0) AS cost_micros,
+      COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+      COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+      COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+     FROM usage_records WHERE user_id = ?`,
+  ).get(userId) as {
+    requests: number;
+    cost_micros: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cached_tokens: number;
+    total_tokens: number;
+  };
+}
+
+function shanghaiDayKey(date: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+export function listDailyUsage(userId: string, days = 30) {
+  const safeDays = Math.max(1, Math.min(90, Math.floor(days)));
+  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60_000).toISOString();
+  const rows = db.prepare(
+    `SELECT strftime('%Y-%m-%d', created_at, '+8 hours') AS date,
+      COUNT(*) AS requests,
+      COALESCE(SUM(cost_micros), 0) AS cost_micros,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+     FROM usage_records
+     WHERE user_id = ? AND created_at >= ?
+     GROUP BY date ORDER BY date`,
+  ).all(userId, cutoff) as Array<{
+    date: string;
+    requests: number;
+    cost_micros: number;
+    total_tokens: number;
+  }>;
+  const byDate = new Map(rows.map((row) => [row.date, row]));
+  const now = Date.now();
+  return Array.from({ length: safeDays }, (_, index) => {
+    const date = shanghaiDayKey(new Date(now - (safeDays - 1 - index) * 24 * 60 * 60_000));
+    return byDate.get(date) ?? { date, requests: 0, cost_micros: 0, total_tokens: 0 };
+  });
+}
+
 export function cleanupStaleReservations() {
   const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
   const rows = db

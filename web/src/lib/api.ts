@@ -271,6 +271,13 @@ export type UsageRow = {
   error: string | null;
 };
 
+export type UsageTrendPoint = {
+  date: string;
+  requests: number;
+  cost_micros: number;
+  total_tokens: number;
+};
+
 export type Settings = {
   admin_password_set?: boolean;
   admin_password_hint?: string;
@@ -438,8 +445,8 @@ export const userApi = {
       user: UserRow;
       wallet: Wallet | null;
       subscription: SubscriptionRow | null;
-      totals: { requests: number; cost_micros: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number };
-      recent: UsageRow[];
+      totals: { requests: number; cost_micros: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number; total_tokens: number };
+      trend: UsageTrendPoint[];
     }>("/user/api/dashboard", {}, { auth: "user" }),
   keys: {
     list: () => request<{ items: ApiKeyRow[] }>("/user/api/keys", {}, { auth: "user" }),
