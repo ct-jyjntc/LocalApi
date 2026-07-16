@@ -6,8 +6,10 @@ import fs from "fs";
 import { initDb, getSetting, setSetting } from "./db";
 import { adminRouter } from "./routes/admin";
 import { proxyRouter } from "./routes/proxy";
+import { userRouter } from "./routes/user";
 import { createProvider, listProviders } from "./services/providers";
 import { createApiKey, listApiKeys } from "./services/keys";
+import { cleanupStaleReservations } from "./services/billing";
 
 initDb();
 
@@ -37,6 +39,7 @@ function seedIfEmpty() {
 }
 
 seedIfEmpty();
+cleanupStaleReservations();
 
 const app = express();
 app.disable("x-powered-by");
@@ -66,6 +69,12 @@ app.use(
   express.text({ type: ["text/*", "application/x-ndjson"], limit: "20mb" }),
   adminRouter,
 );
+app.use(
+  "/user/api",
+  express.json({ limit: "20mb" }),
+  express.urlencoded({ extended: true, limit: "20mb" }),
+  userRouter,
+);
 app.use(proxyRouter);
 
 // Frontend static + SPA fallback on the same port
@@ -84,6 +93,7 @@ if (webDist) {
   app.get("/{*spa}", (req, res, next) => {
     if (
       req.path.startsWith("/admin/api") ||
+      req.path.startsWith("/user/api") ||
       req.path.startsWith("/v1") ||
       req.path === "/health"
     ) {

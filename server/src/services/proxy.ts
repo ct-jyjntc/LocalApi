@@ -2,11 +2,19 @@ import http from "http";
 import https from "https";
 import fetch, { Response as FetchResponse } from "node-fetch";
 import type { Response as ExpressResponse } from "express";
-import { getSetting, Provider } from "../db";
+import { v4 as uuid } from "uuid";
+import { ApiKey, getSetting, Provider } from "../db";
 import { writeLog } from "./logs";
 import { listProviders, pickProviderKey, resolveProviderForModel } from "./providers";
 import { createResponseLogCollector, extractIO } from "../utils/content";
 import { createUpstreamTimeout, upstreamTimeoutError } from "./upstream-timeout";
+import { AccessError, beginRequestAccess, RequestAccess } from "./access";
+import {
+  BillingError,
+  BillingReservation,
+  reserveUsage,
+  settleUsage,
+} from "./billing";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -48,6 +56,14 @@ export type ProxyContext = {
   bodyStream?: NodeJS.ReadableStream;
   apiKeyId?: string | null;
   apiKeyName?: string | null;
+  apiKey?: ApiKey | null;
+};
+
+type ProxyResult = {
+  statusCode: number;
+  responseBytes: number;
+  io: ReturnType<typeof extractIO>;
+  error: string | null;
 };
 
 type UpstreamHandle = {
@@ -252,7 +268,7 @@ async function pipeResponseToClient(params: {
   attempts: number;
   started: number;
   stream: boolean;
-}) {
+}): Promise<ProxyResult> {
   const { ctx, res, handle, provider, model, path, attempts, started, stream } = params;
   const upstream = handle.response;
   applyUpstreamHeaders(res, upstream, `${provider.id}:${provider.name}`);
@@ -273,24 +289,13 @@ async function pipeResponseToClient(params: {
   const body = upstream.body;
   if (!body) {
     handle.clearTimeout();
-    writeLog({
-      method: ctx.method,
-      path,
-      model,
-      provider_id: provider.id,
-      provider_name: provider.name,
-      api_key_id: ctx.apiKeyId,
-      api_key_name: ctx.apiKeyName,
-      status_code: upstream.status,
-      latency_ms: Date.now() - started,
-      cached: false,
-      request_bytes: requestBytes(ctx),
-      response_bytes: 0,
-      input_text: extractIO({ path, body: ctx.body, stream }).input_text,
-      stream,
-    });
     res.end();
-    return;
+    return {
+      statusCode: upstream.status,
+      responseBytes: 0,
+      io: extractIO({ path, body: ctx.body, stream }),
+      error: attempts > 1 ? `ok after ${attempts} attempt(s)` : null,
+    };
   }
 
   const responseCollector = createResponseLogCollector({
@@ -358,6 +363,55 @@ async function pipeResponseToClient(params: {
 
   const baseIo = extractIO({ path, body: ctx.body, stream });
   const io = { ...baseIo, ...responseCollector.finish() };
+  return {
+    statusCode: clientStatus,
+    responseBytes,
+    io,
+    error:
+      streamError ||
+      (attempts > 1
+        ? upstream.status >= 200 && upstream.status < 400
+          ? `ok after ${attempts} attempt(s)`
+          : `Upstream HTTP ${upstream.status} after ${attempts} attempt(s)`
+        : null),
+  };
+}
+
+function writeCompletedRequest(params: {
+  ctx: ProxyContext;
+  path: string;
+  model: string | null;
+  provider: Provider;
+  started: number;
+  stream: boolean;
+  result: ProxyResult;
+  billing: BillingReservation | null;
+  access: RequestAccess | null;
+}) {
+  const { ctx, path, model, provider, started, stream, result, billing, access } = params;
+  let usageId: string | null = null;
+  let costMicros = 0;
+  let settlementError: string | null = null;
+  if (billing) {
+    try {
+      const settled = settleUsage(billing, {
+        statusCode: result.statusCode,
+        promptTokens: result.io.prompt_tokens,
+        completionTokens: result.io.completion_tokens,
+        cachedTokens: result.io.cached_tokens,
+        reasoningTokens: result.io.reasoning_tokens,
+        totalTokens: result.io.total_tokens,
+        outputText: result.io.output_text,
+        reasoningText: result.io.reasoning_text,
+        error: result.error,
+      });
+      usageId = settled.usageId;
+      costMicros = settled.costMicros;
+    } catch (error) {
+      settlementError = `Billing settlement failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  access?.release(result.io.total_tokens || result.io.prompt_tokens + result.io.completion_tokens);
   writeLog({
     method: ctx.method,
     path,
@@ -366,27 +420,24 @@ async function pipeResponseToClient(params: {
     provider_name: provider.name,
     api_key_id: ctx.apiKeyId,
     api_key_name: ctx.apiKeyName,
-    status_code: clientStatus,
+    user_id: ctx.apiKey?.user_id ?? null,
+    usage_id: usageId,
+    cost_micros: costMicros,
+    status_code: result.statusCode,
     latency_ms: Date.now() - started,
-    cached: (io.cached_tokens ?? 0) > 0,
+    cached: (result.io.cached_tokens ?? 0) > 0,
     request_bytes: requestBytes(ctx),
-    response_bytes: responseBytes,
-    input_text: io.input_text,
-    output_text: io.output_text,
-    reasoning_text: io.reasoning_text,
-    prompt_tokens: io.prompt_tokens,
-    completion_tokens: io.completion_tokens,
-    reasoning_tokens: io.reasoning_tokens,
-    cached_tokens: io.cached_tokens,
-    total_tokens: io.total_tokens,
+    response_bytes: result.responseBytes,
+    input_text: result.io.input_text,
+    output_text: result.io.output_text,
+    reasoning_text: result.io.reasoning_text,
+    prompt_tokens: result.io.prompt_tokens,
+    completion_tokens: result.io.completion_tokens,
+    reasoning_tokens: result.io.reasoning_tokens,
+    cached_tokens: result.io.cached_tokens,
+    total_tokens: result.io.total_tokens,
     stream,
-    error:
-      streamError ||
-      (attempts > 1
-        ? upstream.status >= 200 && upstream.status < 400
-          ? `ok after ${attempts} attempt(s)`
-          : `Upstream HTTP ${upstream.status} after ${attempts} attempt(s)`
-        : null),
+    error: [result.error, settlementError].filter(Boolean).join("; ") || null,
   });
 }
 
@@ -433,6 +484,69 @@ export async function handleProxyHttp(
     return;
   }
 
+  let access: RequestAccess | null = null;
+  let accessReleased = false;
+  const releaseAccess = (tokens: number) => {
+    if (accessReleased) return;
+    accessReleased = true;
+    access?.release(tokens);
+  };
+  try {
+    if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body);
+  } catch (error) {
+    const accessError = error instanceof AccessError ? error : new AccessError(403, "access_denied", String(error));
+    if (accessError.retryAfterSeconds) res.setHeader("retry-after", String(accessError.retryAfterSeconds));
+    writeLog({
+      method: ctx.method,
+      path,
+      model,
+      api_key_id: ctx.apiKeyId,
+      api_key_name: ctx.apiKeyName,
+      user_id: ctx.apiKey?.user_id ?? null,
+      status_code: accessError.status,
+      latency_ms: Date.now() - started,
+      error: accessError.message,
+      input_text: baseIo.input_text,
+      stream,
+    });
+    res.status(accessError.status).json({ error: { message: accessError.message, type: accessError.code } });
+    return;
+  }
+
+  let billing: BillingReservation | null = null;
+  try {
+    if (ctx.apiKey?.user_id) {
+      if (!model) throw new BillingError(400, "model_required", "A model is required for billed requests");
+      billing = reserveUsage({
+        requestId: uuid(),
+        userId: ctx.apiKey.user_id,
+        apiKeyId: ctx.apiKey.id,
+        model,
+        body: ctx.body,
+      });
+    }
+  } catch (error) {
+    releaseAccess(0);
+    const billingError = error instanceof BillingError
+      ? error
+      : new BillingError(402, "billing_error", error instanceof Error ? error.message : String(error));
+    writeLog({
+      method: ctx.method,
+      path,
+      model,
+      api_key_id: ctx.apiKeyId,
+      api_key_name: ctx.apiKeyName,
+      user_id: ctx.apiKey?.user_id ?? null,
+      status_code: billingError.status,
+      latency_ms: Date.now() - started,
+      error: billingError.message,
+      input_text: baseIo.input_text,
+      stream,
+    });
+    res.status(billingError.status).json({ error: { message: billingError.message, type: billingError.code } });
+    return;
+  }
+
   let lastError: string | null = null;
   let attempts = 0;
 
@@ -457,7 +571,7 @@ export async function handleProxyHttp(
         continue;
       }
 
-      await pipeResponseToClient({
+      const result = await pipeResponseToClient({
         ctx,
         res,
         handle,
@@ -468,6 +582,8 @@ export async function handleProxyHttp(
         started,
         stream,
       });
+      writeCompletedRequest({ ctx, path, model, provider, started, stream, result, billing, access });
+      accessReleased = true;
       return;
     } catch (error) {
       handle?.abort();
@@ -486,6 +602,15 @@ export async function handleProxyHttp(
     }
   }
 
+  if (billing) {
+    try {
+      settleUsage(billing, { statusCode: 502, error: lastError || "Upstream request failed" });
+    } catch {
+      // Stale reservations are recovered by the startup cleanup.
+    }
+  }
+  releaseAccess(0);
+
   writeLog({
     method: ctx.method,
     path,
@@ -494,6 +619,8 @@ export async function handleProxyHttp(
     provider_name: provider.name,
     api_key_id: ctx.apiKeyId,
     api_key_name: ctx.apiKeyName,
+    user_id: ctx.apiKey?.user_id ?? null,
+    usage_id: billing?.usageId ?? null,
     status_code: 502,
     latency_ms: Date.now() - started,
     cached: false,

@@ -24,6 +24,7 @@ import {
 import { getAllSettings, getSetting, setSetting } from "../db";
 import { requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { commercialAdminRouter } from "./commercial-admin";
 
 export const adminRouter = Router();
 
@@ -47,6 +48,11 @@ const providerPatchSchema = providerSchema.partial();
 const keySchema = z.object({
   name: z.string().trim().min(1).max(120),
   rate_limit: z.coerce.number().int().min(0).max(1_000_000).optional(),
+  tpm_limit: z.coerce.number().int().min(0).max(100_000_000).optional(),
+  concurrency_limit: z.coerce.number().int().min(0).max(10_000).optional(),
+  allowed_models: z.array(z.string().trim().min(1).max(200)).max(256).optional(),
+  expires_at: z.string().datetime().nullable().optional(),
+  user_id: z.string().uuid().nullable().optional(),
   enabled: z.boolean().optional(),
 });
 const keyPatchSchema = keySchema.partial();
@@ -102,6 +108,7 @@ adminRouter.post("/login", (req, res) => {
 });
 
 adminRouter.use(requireAdmin);
+adminRouter.use("/commercial", commercialAdminRouter);
 
 adminRouter.get("/health", (_req, res) => {
   res.json({ ok: true, service: "localapi", time: new Date().toISOString() });

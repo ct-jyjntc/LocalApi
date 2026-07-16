@@ -2,7 +2,8 @@ import { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
 import { getSetting } from "../db";
 import { authenticateApiKey } from "../services/keys";
-import { consumeRateLimit } from "../services/rate-limit";
+import { authenticateUserSession } from "../services/users";
+import type { ApiKey, User } from "../db";
 
 function secretEquals(left: string, right: string) {
   const a = Buffer.from(left);
@@ -36,22 +37,14 @@ export function requireApiKey(req: Request, res: Response, next: NextFunction) {
     });
   }
 
-  const rate = consumeRateLimit(`api:${key.id}`, key.rate_limit);
-  if (!rate.allowed) {
-    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
-    return res.status(429).json({
-      error: {
-        message: "API key rate limit exceeded",
-        type: "rate_limit_error",
-      },
-    });
-  }
-  if (Number.isFinite(rate.remaining)) {
-    res.setHeader("x-ratelimit-remaining", String(rate.remaining));
-  }
-  (req as Request & { apiKey?: { id: string; name: string } }).apiKey = {
-    id: key.id,
-    name: key.name,
-  };
+  (req as Request & { apiKey?: ApiKey }).apiKey = key;
+  return next();
+}
+
+export function requireUser(req: Request, res: Response, next: NextFunction) {
+  const header = req.header("x-user-token") || req.header("authorization");
+  const user = authenticateUserSession(header);
+  if (!user) return res.status(401).json({ error: "Invalid or expired user session" });
+  (req as Request & { user?: User }).user = user;
   return next();
 }

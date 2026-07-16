@@ -33,3 +33,13 @@ export function shortTime(iso: string): string {
     return iso;
   }
 }
+
+export function formatCredits(micros: number | null | undefined): string {
+  const value = Number(micros || 0) / 1_000_000;
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}
+
+export function creditsToMicros(value: string | number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 1_000_000) : 0;
+}

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { api, type LogRow } from "@/lib/api";
+import { api, userApi, type LogRow } from "@/lib/api";
 import {
   EmptyState,
   MethodBadge,
@@ -14,13 +14,13 @@ import { Card } from "@/components/ui/card";
 import { formatBytes, formatMs, shortTime, cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
-export function LogsPage() {
+export function LogsPage({ mode = "admin" }: { mode?: "admin" | "user" }) {
   const { t } = useI18n();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const { data, isLoading } = useQuery({
-    queryKey: ["logs"],
-    queryFn: () => api.logs.list(200),
+    queryKey: [mode, "logs"],
+    queryFn: () => mode === "admin" ? api.logs.list(200) : userApi.logs.list(200),
     refetchInterval: 4000,
   });
 
@@ -28,7 +28,7 @@ export function LogsPage() {
     mutationFn: () => api.logs.clear(),
     onSuccess: (r) => {
       toast.success(t("logs.cleared", { n: r.removed }));
-      qc.invalidateQueries({ queryKey: ["logs"] });
+      qc.invalidateQueries({ queryKey: [mode, "logs"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -44,7 +44,7 @@ export function LogsPage() {
         title={t("logs.title")}
         description={t("logs.desc")}
         actions={
-          <Button
+          mode === "admin" ? <Button
             variant="secondary"
             size="sm"
             className="text-muted-foreground"
@@ -53,7 +53,7 @@ export function LogsPage() {
             }}
           >
             {t("logs.clear")}
-          </Button>
+          </Button> : null
         }
       />
 
@@ -71,6 +71,7 @@ export function LogsPage() {
                   key={log.id}
                   log={log}
                   open={open}
+                  mode={mode}
                   onToggle={() => toggle(log.id)}
                 />
               );
@@ -86,15 +87,17 @@ function LogItem({
   log,
   open,
   onToggle,
+  mode,
 }: {
   log: LogRow;
   open: boolean;
   onToggle: () => void;
+  mode: "admin" | "user";
 }) {
   const { t } = useI18n();
   const { data: detail, isLoading: detailLoading } = useQuery({
-    queryKey: ["logs", log.id],
-    queryFn: () => api.logs.get(log.id),
+    queryKey: [mode, "logs", log.id],
+    queryFn: () => mode === "admin" ? api.logs.get(log.id) : userApi.logs.get(log.id),
     enabled: open,
     staleTime: Number.POSITIVE_INFINITY,
   });

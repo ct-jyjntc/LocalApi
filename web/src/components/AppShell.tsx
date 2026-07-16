@@ -1,39 +1,59 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
   Activity,
+  ChartNoAxesCombined,
   KeyRound,
   LayoutDashboard,
+  LogOut,
   Menu,
+  Package,
   PanelLeftClose,
   PanelLeftOpen,
   Server,
   Settings,
   ScrollText,
+  Tags,
+  Users,
   X,
 } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
-import { useI18n, type MessageKey } from "@/lib/i18n";
+import { api, userApi } from "@/lib/api";
+import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
 
-const NAV: Array<{
+type NavItem = {
   to: string;
-  labelKey: MessageKey;
+  labelKey?: MessageKey;
+  label?: { zh: string; en: string };
   icon: typeof LayoutDashboard;
   end?: boolean;
-}> = [
+};
+
+const ADMIN_NAV: NavItem[] = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true },
   { to: "/providers", labelKey: "nav.providers", icon: Server },
   { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
+  { to: "/users", label: { zh: "用户", en: "Users" }, icon: Users },
+  { to: "/pricing", label: { zh: "模型价格", en: "Pricing" }, icon: Tags },
+  { to: "/plans", label: { zh: "套餐", en: "Plans" }, icon: Package },
+  { to: "/billing", label: { zh: "计费用量", en: "Billing" }, icon: ChartNoAxesCombined },
   { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
   { to: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
 
+const USER_NAV: NavItem[] = [
+  { to: "/", label: { zh: "概览", en: "Overview" }, icon: LayoutDashboard, end: true },
+  { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
+  { to: "/usage", label: { zh: "用量与账单", en: "Usage" }, icon: ChartNoAxesCombined },
+  { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
+];
+
 const COLLAPSE_KEY = "localapi_sidebar_collapsed";
 
-export function AppShell() {
-  const { t } = useI18n();
+export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"; onLogout?: () => void }) {
+  const { t, locale } = useI18n();
+  const nav = mode === "admin" ? ADMIN_NAV : USER_NAV;
   const [collapsed, setCollapsed] = useState(() => {
     return localStorage.getItem(COLLAPSE_KEY) === "1";
   });
@@ -48,7 +68,8 @@ export function AppShell() {
     let alive = true;
     const tick = async () => {
       try {
-        await api.health();
+        if (mode === "admin") await api.health();
+        else await userApi.me();
         if (alive) setOnline(true);
       } catch {
         if (alive) setOnline(false);
@@ -60,7 +81,7 @@ export function AppShell() {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     const onResize = () => {
@@ -106,11 +127,15 @@ export function AppShell() {
           collapsed={collapsed}
           onNavigate={() => undefined}
           t={t}
+          locale={locale}
+          items={nav}
         />
         <SidebarStatus
           collapsed={collapsed}
           online={online}
           statusLabel={statusLabel}
+          onLogout={onLogout}
+          logoutLabel={locale === "zh" ? "退出登录" : "Sign out"}
         />
       </aside>
 
@@ -143,11 +168,15 @@ export function AppShell() {
               collapsed={false}
               onNavigate={() => setMobileOpen(false)}
               t={t}
+              locale={locale}
+              items={nav}
             />
             <SidebarStatus
               collapsed={false}
               online={online}
               statusLabel={statusLabel}
+              onLogout={onLogout}
+              logoutLabel={locale === "zh" ? "退出登录" : "Sign out"}
             />
           </aside>
         </div>
@@ -242,15 +271,19 @@ function SidebarNav({
   collapsed,
   onNavigate,
   t,
+  locale,
+  items,
 }: {
   collapsed: boolean;
   onNavigate: () => void;
   t: (key: MessageKey) => string;
+  locale: Locale;
+  items: NavItem[];
 }) {
   return (
     <nav className="mt-6 flex flex-1 flex-col gap-0.5 overflow-y-auto px-2">
-      {NAV.map((item) => {
-        const label = t(item.labelKey);
+      {items.map((item) => {
+        const label = item.labelKey ? t(item.labelKey) : item.label?.[locale] || item.to;
         return (
           <NavLink
             key={item.to}
@@ -288,10 +321,14 @@ function SidebarStatus({
   collapsed,
   online,
   statusLabel,
+  onLogout,
+  logoutLabel,
 }: {
   collapsed: boolean;
   online: boolean | null;
   statusLabel: string;
+  onLogout?: () => void;
+  logoutLabel: string;
 }) {
   return (
     <div className="mt-4 shrink-0 px-2">
@@ -318,8 +355,12 @@ function SidebarStatus({
             <span className="truncate">{statusLabel}</span>
           </span>
         ) : null}
+        {onLogout ? (
+          <Button variant="ghost" size="icon" className="size-6 shrink-0" onClick={onLogout} title={logoutLabel} aria-label={logoutLabel}>
+            <LogOut />
+          </Button>
+        ) : null}
       </div>
     </div>
   );
 }
-

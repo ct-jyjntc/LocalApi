@@ -3,6 +3,9 @@ import { requireApiKey } from "../middleware/auth";
 import { listProviders } from "../services/providers";
 import { handleProxyHttp } from "../services/proxy";
 import { lookupCache, storeCache } from "../services/cache";
+import type { ApiKey } from "../db";
+import { isModelAllowedForKey } from "../services/access";
+import { getModelPrice } from "../services/billing";
 
 export const proxyRouter = Router();
 const MAX_BUFFERED_BODY = 20 * 1024 * 1024;
@@ -67,17 +70,20 @@ v1.use(requireApiKey);
 
 // OpenAI-compatible models list (aggregated)
 v1.get("/models", async (req: Request, res: Response) => {
-  const cached = lookupCache({
-    method: "GET",
-    path: "/v1/models",
-    query: req.query as Record<string, unknown>,
-  });
-  if (cached.hit) {
-    const headers = JSON.parse(cached.entry.response_headers) as Record<string, string>;
-    for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
-    res.setHeader("x-cache", "HIT");
-    res.status(cached.entry.status_code).send(cached.entry.response_body);
-    return;
+  const apiKey = (req as Request & { apiKey?: ApiKey }).apiKey;
+  if (!apiKey?.user_id) {
+    const cached = lookupCache({
+      method: "GET",
+      path: "/v1/models",
+      query: req.query as Record<string, unknown>,
+    });
+    if (cached.hit) {
+      const headers = JSON.parse(cached.entry.response_headers) as Record<string, string>;
+      for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
+      res.setHeader("x-cache", "HIT");
+      res.status(cached.entry.status_code).send(cached.entry.response_body);
+      return;
+    }
   }
 
   const providers = listProviders().filter((p) => p.enabled === 1);
@@ -88,6 +94,7 @@ v1.get("/models", async (req: Request, res: Response) => {
       const models = JSON.parse(p.models) as string[];
       for (const m of models) {
         if (m === "*") continue;
+        if (apiKey?.user_id && (!isModelAllowedForKey(apiKey, m) || getModelPrice(m)?.enabled !== 1)) continue;
         data.push({ id: m, object: "model", owned_by: p.name });
       }
     } catch {
@@ -95,9 +102,7 @@ v1.get("/models", async (req: Request, res: Response) => {
     }
   }
 
-  if (data.length === 0 && providers.length > 0) {
-    const apiKey = (req as Request & { apiKey?: { id: string; name: string } })
-      .apiKey;
+  if (data.length === 0 && providers.length > 0 && !apiKey?.user_id) {
     await handleProxyHttp(
       {
         method: "GET",
@@ -106,6 +111,7 @@ v1.get("/models", async (req: Request, res: Response) => {
         headers: req.headers as Record<string, string | string[] | undefined>,
         apiKeyId: apiKey?.id,
         apiKeyName: apiKey?.name,
+        apiKey,
       },
       res,
     );
@@ -113,20 +119,22 @@ v1.get("/models", async (req: Request, res: Response) => {
   }
 
   const payload = JSON.stringify({ object: "list", data });
-  storeCache({
-    method: "GET",
-    path: "/v1/models",
-    query: req.query as Record<string, unknown>,
-    statusCode: 200,
-    responseHeaders: { "content-type": "application/json; charset=utf-8" },
-    responseBody: payload,
-  });
-  res.setHeader("x-cache", "MISS");
+  if (!apiKey?.user_id) {
+    storeCache({
+      method: "GET",
+      path: "/v1/models",
+      query: req.query as Record<string, unknown>,
+      statusCode: 200,
+      responseHeaders: { "content-type": "application/json; charset=utf-8" },
+      responseBody: payload,
+    });
+    res.setHeader("x-cache", "MISS");
+  }
   res.type("application/json").send(payload);
 });
 
 async function handleProxy(req: Request, res: Response) {
-  const apiKey = (req as Request & { apiKey?: { id: string; name: string } })
+  const apiKey = (req as Request & { apiKey?: ApiKey })
     .apiKey;
   // req.path here is relative to /v1 mount
   const path = `/v1${req.path.startsWith("/") ? req.path : `/${req.path}`}`;
@@ -180,6 +188,7 @@ async function handleProxy(req: Request, res: Response) {
       bodyStream,
       apiKeyId: apiKey?.id,
       apiKeyName: apiKey?.name,
+      apiKey,
     },
     res,
   );

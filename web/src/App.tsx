@@ -10,8 +10,22 @@ import { LoginPage } from "@/features/LoginPage";
 import { LogsPage } from "@/features/LogsPage";
 import { ProvidersPage } from "@/features/ProvidersPage";
 import { SettingsPage } from "@/features/SettingsPage";
+import { UsersPage } from "@/features/UsersPage";
+import { PricingPage } from "@/features/PricingPage";
+import { PlansPage } from "@/features/PlansPage";
+import { UserDashboardPage } from "@/features/UserDashboardPage";
+import { UserKeysPage } from "@/features/UserKeysPage";
+import { UserUsagePage } from "@/features/UserUsagePage";
+import { CommercialUsagePage } from "@/features/CommercialUsagePage";
 import { I18nProvider } from "@/lib/i18n";
-import { api, clearAdminToken, getAdminToken } from "@/lib/api";
+import {
+  api,
+  clearAdminToken,
+  clearUserToken,
+  getAdminToken,
+  getUserToken,
+  userApi,
+} from "@/lib/api";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -30,19 +44,33 @@ function ClearLegacyUiScale() {
   return null;
 }
 
-function AuthedApp({ onLogout }: { onLogout: () => void }) {
+type AuthMode = "admin" | "user";
+
+function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void }) {
   return (
     <BrowserRouter>
       <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="providers" element={<ProvidersPage />} />
-          <Route path="keys" element={<KeysPage />} />
-          <Route path="logs" element={<LogsPage />} />
-          <Route
-            path="settings"
-            element={<SettingsPage onLogout={onLogout} />}
-          />
+        <Route element={<AppShell mode={mode} onLogout={onLogout} />}>
+          {mode === "admin" ? (
+            <>
+              <Route index element={<DashboardPage />} />
+              <Route path="providers" element={<ProvidersPage />} />
+              <Route path="keys" element={<KeysPage />} />
+              <Route path="users" element={<UsersPage />} />
+              <Route path="pricing" element={<PricingPage />} />
+              <Route path="plans" element={<PlansPage />} />
+              <Route path="billing" element={<CommercialUsagePage />} />
+              <Route path="logs" element={<LogsPage mode="admin" />} />
+              <Route path="settings" element={<SettingsPage onLogout={onLogout} />} />
+            </>
+          ) : (
+            <>
+              <Route index element={<UserDashboardPage />} />
+              <Route path="keys" element={<UserKeysPage />} />
+              <Route path="usage" element={<UserUsagePage />} />
+              <Route path="logs" element={<LogsPage mode="user" />} />
+            </>
+          )}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
@@ -51,28 +79,36 @@ function AuthedApp({ onLogout }: { onLogout: () => void }) {
 }
 
 function Root() {
-  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [mode, setMode] = useState<AuthMode | null | "loading">("loading");
 
   const verify = useCallback(async () => {
-    const token = getAdminToken();
-    if (!token) {
-      setAuthed(false);
-      return;
+    const preferred = localStorage.getItem("localapi_auth_mode") as AuthMode | null;
+    const attempts: AuthMode[] = preferred === "user" ? ["user", "admin"] : ["admin", "user"];
+    for (const candidate of attempts) {
+      try {
+        if (candidate === "admin" && getAdminToken()) {
+          await api.health();
+          setMode("admin");
+          return;
+        }
+        if (candidate === "user" && getUserToken()) {
+          await userApi.me();
+          setMode("user");
+          return;
+        }
+      } catch {
+        if (candidate === "admin") clearAdminToken();
+        else clearUserToken();
+      }
     }
-    try {
-      await api.health();
-      setAuthed(true);
-    } catch {
-      clearAdminToken();
-      setAuthed(false);
-    }
+    setMode(null);
   }, []);
 
   useEffect(() => {
     verify();
   }, [verify]);
 
-  if (authed === null) {
+  if (mode === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-xs text-muted-foreground">
         …
@@ -80,15 +116,20 @@ function Root() {
     );
   }
 
-  if (!authed) {
-    return <LoginPage onSuccess={() => setAuthed(true)} />;
+  if (!mode) {
+    return <LoginPage onSuccess={(nextMode) => setMode(nextMode)} />;
   }
 
   return (
     <AuthedApp
+      mode={mode}
       onLogout={() => {
-        clearAdminToken();
-        setAuthed(false);
+        if (mode === "admin") clearAdminToken();
+        else {
+          userApi.logout().catch(() => undefined);
+          clearUserToken();
+        }
+        setMode(null);
       }}
     />
   );

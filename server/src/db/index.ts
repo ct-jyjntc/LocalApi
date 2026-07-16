@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { encryptSecret } from "../utils/secrets";
 
-const dataDir = path.resolve(process.cwd(), "data");
+const dataDir = path.resolve(process.env.LOCALAPI_DATA_DIR || path.join(process.cwd(), "data"));
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -47,6 +47,137 @@ export function initDb() {
       rate_limit INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       last_used_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      display_name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      allowed_models TEXT NOT NULL DEFAULT '[]',
+      rpm_limit INTEGER NOT NULL DEFAULT 0,
+      tpm_limit INTEGER NOT NULL DEFAULT 0,
+      concurrency_limit INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_login_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS wallet_accounts (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      balance_micros INTEGER NOT NULL DEFAULT 0,
+      reserved_micros INTEGER NOT NULL DEFAULT 0,
+      lifetime_spent_micros INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS model_prices (
+      model TEXT PRIMARY KEY,
+      input_price_micros INTEGER NOT NULL DEFAULT 0,
+      output_price_micros INTEGER NOT NULL DEFAULT 0,
+      cache_read_price_micros INTEGER NOT NULL DEFAULT 0,
+      cache_write_price_micros INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS plans (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      cycle_days INTEGER NOT NULL DEFAULT 30,
+      included_credits_micros INTEGER NOT NULL DEFAULT 0,
+      allowed_models TEXT NOT NULL DEFAULT '[]',
+      rpm_limit INTEGER NOT NULL DEFAULT 0,
+      tpm_limit INTEGER NOT NULL DEFAULT 0,
+      concurrency_limit INTEGER NOT NULL DEFAULT 0,
+      overage_enabled INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      plan_id TEXT NOT NULL REFERENCES plans(id),
+      status TEXT NOT NULL DEFAULT 'active',
+      starts_at TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      remaining_credits_micros INTEGER NOT NULL DEFAULT 0,
+      reserved_micros INTEGER NOT NULL DEFAULT 0,
+      auto_renew INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, period_end);
+
+    CREATE TABLE IF NOT EXISTS usage_records (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      api_key_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      cached_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+      total_tokens INTEGER NOT NULL DEFAULT 0,
+      input_price_micros INTEGER NOT NULL DEFAULT 0,
+      output_price_micros INTEGER NOT NULL DEFAULT 0,
+      cache_read_price_micros INTEGER NOT NULL DEFAULT 0,
+      cache_write_price_micros INTEGER NOT NULL DEFAULT 0,
+      cost_micros INTEGER NOT NULL DEFAULT 0,
+      plan_cost_micros INTEGER NOT NULL DEFAULT 0,
+      wallet_cost_micros INTEGER NOT NULL DEFAULT 0,
+      reserved_plan_micros INTEGER NOT NULL DEFAULT 0,
+      reserved_wallet_micros INTEGER NOT NULL DEFAULT 0,
+      subscription_id TEXT,
+      estimated_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_user_created ON usage_records(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_key_created ON usage_records(api_key_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS wallet_ledger (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      amount_micros INTEGER NOT NULL,
+      balance_after_micros INTEGER NOT NULL,
+      usage_id TEXT,
+      description TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user ON wallet_ledger(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      detail TEXT,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS cache_entries (
@@ -94,7 +225,10 @@ export function initDb() {
       reasoning_tokens INTEGER NOT NULL DEFAULT 0,
       cached_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
-      stream INTEGER NOT NULL DEFAULT 0
+      stream INTEGER NOT NULL DEFAULT 0,
+      user_id TEXT,
+      usage_id TEXT,
+      cost_micros INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at DESC);
@@ -107,6 +241,14 @@ export function initDb() {
   if (!keyCols.includes("key_plain")) {
     db.exec("ALTER TABLE api_keys ADD COLUMN key_plain TEXT");
   }
+  const addKeyCol = (name: string, ddl: string) => {
+    if (!keyCols.includes(name)) db.exec(`ALTER TABLE api_keys ADD COLUMN ${ddl}`);
+  };
+  addKeyCol("user_id", "user_id TEXT");
+  addKeyCol("allowed_models", "allowed_models TEXT NOT NULL DEFAULT '[]'");
+  addKeyCol("tpm_limit", "tpm_limit INTEGER NOT NULL DEFAULT 0");
+  addKeyCol("concurrency_limit", "concurrency_limit INTEGER NOT NULL DEFAULT 0");
+  addKeyCol("expires_at", "expires_at TEXT");
   // Encrypt legacy client secrets in place; the admin API may decrypt them
   // after authentication when the operator explicitly requests visibility.
   const plainKeys = db
@@ -135,6 +277,16 @@ export function initDb() {
   addLogCol("cached_tokens", "cached_tokens INTEGER NOT NULL DEFAULT 0");
   addLogCol("total_tokens", "total_tokens INTEGER NOT NULL DEFAULT 0");
   addLogCol("stream", "stream INTEGER NOT NULL DEFAULT 0");
+  addLogCol("user_id", "user_id TEXT");
+  addLogCol("usage_id", "usage_id TEXT");
+  addLogCol("cost_micros", "cost_micros INTEGER NOT NULL DEFAULT 0");
+
+  const usageCols = (
+    db.prepare("PRAGMA table_info(usage_records)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!usageCols.includes("subscription_id")) {
+    db.exec("ALTER TABLE usage_records ADD COLUMN subscription_id TEXT");
+  }
 
   db.exec(`
 
@@ -204,6 +356,68 @@ export type ApiKey = {
   rate_limit: number;
   created_at: string;
   last_used_at: string | null;
+  user_id: string | null;
+  allowed_models: string;
+  tpm_limit: number;
+  concurrency_limit: number;
+  expires_at: string | null;
+};
+
+export type User = {
+  id: string;
+  username: string;
+  display_name: string;
+  password_hash: string;
+  status: string;
+  allowed_models: string;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+};
+
+export type ModelPrice = {
+  model: string;
+  input_price_micros: number;
+  output_price_micros: number;
+  cache_read_price_micros: number;
+  cache_write_price_micros: number;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Plan = {
+  id: string;
+  name: string;
+  description: string;
+  cycle_days: number;
+  included_credits_micros: number;
+  allowed_models: string;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  overage_enabled: number;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Subscription = {
+  id: string;
+  user_id: string;
+  plan_id: string;
+  status: string;
+  starts_at: string;
+  period_start: string;
+  period_end: string;
+  remaining_credits_micros: number;
+  reserved_micros: number;
+  auto_renew: number;
+  created_at: string;
+  updated_at: string;
 };
 
 export type CacheEntry = {
@@ -249,6 +463,9 @@ export type RequestLog = {
   cached_tokens: number;
   total_tokens: number;
   stream: number;
+  user_id: string | null;
+  usage_id: string | null;
+  cost_micros: number;
 };
 
 export function getSetting(key: string): string | null {

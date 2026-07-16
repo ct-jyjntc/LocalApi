@@ -25,6 +25,9 @@ type LogInput = {
   cached_tokens?: number;
   total_tokens?: number;
   stream?: boolean;
+  user_id?: string | null;
+  usage_id?: string | null;
+  cost_micros?: number;
 };
 
 const pendingLogs: Array<LogInput & { id: string }> = [];
@@ -41,7 +44,8 @@ export function flushLogs(limit = 500) {
       status_code, latency_ms, cached, request_bytes, response_bytes, error, created_at,
       input_text, output_text, reasoning_text,
       prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, stream
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      , user_id, usage_id, cost_micros
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     db.transaction(() => {
       for (const input of rows) {
@@ -70,6 +74,9 @@ export function flushLogs(limit = 500) {
           input.cached_tokens ?? 0,
           input.total_tokens ?? 0,
           input.stream ? 1 : 0,
+          input.user_id ?? null,
+          input.usage_id ?? null,
+          input.cost_micros ?? 0,
         );
       }
       db.prepare(
@@ -119,10 +126,11 @@ function mapLog(l: RequestLog) {
     reasoning_tokens: l.reasoning_tokens ?? 0,
     cached_tokens: l.cached_tokens ?? 0,
     total_tokens: l.total_tokens ?? 0,
+    cost_micros: l.cost_micros ?? 0,
   };
 }
 
-export function listLogs(limit = 100, offset = 0) {
+export function listLogs(limit = 100, offset = 0, userId?: string) {
   flushLogs(Number.MAX_SAFE_INTEGER);
   const items = db
     .prepare(
@@ -130,12 +138,15 @@ export function listLogs(limit = 100, offset = 0) {
          id, method, path, model, provider_id, provider_name, api_key_id, api_key_name,
          status_code, latency_ms, cached, request_bytes, response_bytes, error, created_at,
          NULL AS input_text, NULL AS output_text, NULL AS reasoning_text,
-         prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, stream
-       FROM request_logs ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+         prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, stream,
+         user_id, usage_id, cost_micros
+       FROM request_logs ${userId ? "WHERE user_id = ?" : ""}
+       ORDER BY created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(limit, offset) as RequestLog[];
+    .all(...(userId ? [userId, limit, offset] : [limit, offset])) as RequestLog[];
   const total = (
-    db.prepare("SELECT COUNT(*) as c FROM request_logs").get() as { c: number }
+    db.prepare(`SELECT COUNT(*) as c FROM request_logs ${userId ? "WHERE user_id = ?" : ""}`)
+      .get(...(userId ? [userId] : [])) as { c: number }
   ).c;
   return {
     items: items.map(mapLog),
@@ -143,9 +154,10 @@ export function listLogs(limit = 100, offset = 0) {
   };
 }
 
-export function getLog(id: string) {
+export function getLog(id: string, userId?: string) {
   flushLogs(Number.MAX_SAFE_INTEGER);
-  const row = db.prepare("SELECT * FROM request_logs WHERE id = ?").get(id) as
+  const row = db.prepare(`SELECT * FROM request_logs WHERE id = ? ${userId ? "AND user_id = ?" : ""}`)
+    .get(...(userId ? [id, userId] : [id])) as
     | RequestLog
     | undefined;
   return row ? mapLog(row) : null;
