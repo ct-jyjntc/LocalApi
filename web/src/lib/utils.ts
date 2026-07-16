@@ -39,6 +39,20 @@ export function formatCredits(micros: number | null | undefined): string {
   return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
+/** Compact credit display for dense UI; hover can still show formatCredits(). */
+export function formatCreditsDisplay(micros: number | null | undefined): string {
+  const value = Number(micros || 0) / 1_000_000;
+  const abs = Math.abs(value);
+  if (abs === 0) return "0.00";
+  if (abs < 0.01) {
+    return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  }
+  if (abs < 1) {
+    return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
 export function creditsToMicros(value: string | number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.round(parsed * 1_000_000) : 0;

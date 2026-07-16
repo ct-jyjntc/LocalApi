@@ -1,5 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpCircle, CalendarDays, Layers3, Package, RefreshCw, ShoppingBag, WalletCards } from "lucide-react";
+import {
+  ArrowUpCircle,
+  CalendarDays,
+  Check,
+  Copy,
+  Layers3,
+  Package,
+  RefreshCw,
+  ShoppingBag,
+  WalletCards,
+} from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { userApi, type PlanRow, type SubscriptionRow } from "@/lib/api";
 import { EmptyState, PageHeader } from "@/components/shared";
@@ -7,10 +18,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import { formatCredits } from "@/lib/utils";
+import { formatCredits, formatCreditsDisplay } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useAppDialog } from "@/components/app-dialog-context";
+
+const CODING_ENDPOINT = "/coding/v1/*";
+const MODEL_PREVIEW_COUNT = 3;
 
 export function UserPlanPage() {
   const { locale } = useI18n();
@@ -60,7 +74,7 @@ export function UserPlanPage() {
       <PageHeader
         title={zh ? "套餐详情" : "Plan details"}
         description={zh ? "购买、升级或续费 Coding Plan；提前续费只延长有效期，不重置当前额度。" : "Purchase, upgrade or renew a Coding Plan."}
-        actions={<div className="rounded-md bg-secondary/45 px-3 py-2 text-xs"><span className="text-muted-foreground">{zh ? "余额" : "Balance"}</span><span className="ml-2 font-mono font-medium tabular-nums">{formatCredits(me.data?.wallet?.balance_micros || 0)}</span></div>}
+        actions={<div className="rounded-md bg-secondary/45 px-3 py-2 text-xs"><span className="text-muted-foreground">{zh ? "余额" : "Balance"}</span><span className="ml-2 font-mono font-medium tabular-nums" title={formatCredits(me.data?.wallet?.balance_micros || 0)}>{formatCreditsDisplay(me.data?.wallet?.balance_micros || 0)}</span></div>}
       />
 
       {subscription ? (
@@ -111,63 +125,280 @@ export function UserPlanPage() {
 }
 
 function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updatingOverage, renewing, onRenew }: { subscription: SubscriptionRow; zh: boolean; onAutoRenew: (enabled: boolean) => void; onOverage: (enabled: boolean) => void; updating: boolean; updatingOverage: boolean; renewing: boolean; onRenew: () => void }) {
+  const dialogs = useAppDialog();
+  const [modelsExpanded, setModelsExpanded] = useState(false);
+  const [endpointCopied, setEndpointCopied] = useState(false);
   const plan = subscription.plan;
   const available = Math.max(0, subscription.remaining_credits_micros - subscription.reserved_micros);
   const included = Math.max(0, plan.included_credits_micros);
   const used = Math.max(0, included - subscription.remaining_credits_micros);
-  const percent = included > 0 ? Math.min(100, Math.max(0, (used / included) * 100)) : 0;
+  const usedPercent = included > 0 ? Math.min(100, Math.max(0, (used / included) * 100)) : 0;
   const dateLocale = zh ? "zh-CN" : "en-US";
+  const periodStart = new Date(subscription.period_start);
+  const periodEnd = new Date(subscription.period_end);
+  const entitlementEnd = new Date(subscription.entitlement_end);
+  const daysToReset = daysUntil(periodEnd);
+  const daysToEntitlement = daysUntil(entitlementEnd);
+  const prepaidBeyondCycle = entitlementEnd.getTime() - periodEnd.getTime() > 12 * 60 * 60 * 1000;
+  const sameResetAndEntitlement = Math.abs(periodEnd.getTime() - entitlementEnd.getTime()) < 12 * 60 * 60 * 1000;
+  const cyclePriceDisplay = formatCreditsDisplay(subscription.price_micros_snapshot || plan.price_micros);
+  const cyclePriceFull = formatCredits(subscription.price_micros_snapshot || plan.price_micros);
+  const overageOn = Boolean(subscription.overage_enabled && plan.overage_enabled);
+  const autoRenewOn = Boolean(subscription.auto_renew);
+  const models = plan.allowed_models;
+  const hiddenModelCount = Math.max(0, models.length - MODEL_PREVIEW_COUNT);
+  const visibleModels = modelsExpanded || hiddenModelCount === 0 ? models : models.slice(0, MODEL_PREVIEW_COUNT);
+  const progressTone = usedPercent >= 90 ? "bg-destructive/80" : usedPercent >= 80 ? "bg-destructive/55" : "bg-foreground/75";
+  const barWidth = usedPercent > 0 && usedPercent < 0.4 ? 0.4 : usedPercent;
+
+  const copyEndpoint = async () => {
+    try {
+      await navigator.clipboard.writeText(CODING_ENDPOINT);
+      setEndpointCopied(true);
+      toast.success(zh ? "已复制调用入口" : "Endpoint copied");
+      window.setTimeout(() => setEndpointCopied(false), 1500);
+    } catch {
+      toast.error(zh ? "复制失败" : "Copy failed");
+    }
+  };
+
+  const handleOverage = async (enabled: boolean) => {
+    if (!enabled && overageOn) {
+      const ok = await dialogs.confirm({
+        title: zh ? "关闭超额扣余额" : "Disable wallet overage",
+        description: zh ? "关闭后，套餐额度不足时 /coding 请求会直接停止，不会再从余额扣费。" : "When quota is exhausted, /coding requests will stop instead of charging the wallet.",
+        confirmText: zh ? "确认关闭" : "Disable",
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    onOverage(enabled);
+  };
+
+  const handleAutoRenew = async (enabled: boolean) => {
+    if (!enabled && autoRenewOn) {
+      const ok = await dialogs.confirm({
+        title: zh ? "关闭自动续费" : "Disable auto renewal",
+        description: zh
+          ? `关闭后不会在已付有效期结束时自动扣款。当前有效期至 ${entitlementEnd.toLocaleDateString(dateLocale)}。`
+          : `Won't charge when paid entitlement ends. Current entitlement ends ${entitlementEnd.toLocaleDateString(dateLocale)}.`,
+        confirmText: zh ? "确认关闭" : "Disable",
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    onAutoRenew(enabled);
+  };
 
   return (
-    <>
+    <div className="flex flex-col gap-3">
+      {/* 1. Identity + quota */}
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2"><div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary/60 text-muted-foreground"><Package className="size-4" strokeWidth={1.8} /></div><div className="min-w-0"><h2 className="truncate text-base font-medium">{plan.name}</h2><p className="mt-0.5 text-[11px] text-muted-foreground">Coding Plan · {formatCredits(subscription.price_micros_snapshot || plan.price_micros)} / {plan.cycle_days} {zh ? "天" : "days"}</p></div></div>
-            {plan.description ? <p className="mt-3 max-w-2xl text-xs leading-5 text-muted-foreground">{plan.description}</p> : null}
-          </div>
-          <div className="flex items-center gap-2"><Badge variant="success">{zh ? "生效中" : "Active"}</Badge><Button size="sm" disabled={renewing} onClick={onRenew}>{renewing ? <RefreshCw className="animate-spin" /> : <WalletCards />}{zh ? "立即续费" : "Renew"}</Button></div>
-        </div>
-        <div className="grid gap-2 lg:grid-cols-[minmax(0,1.25fr)_minmax(18rem,0.75fr)]">
-          <div className="flex min-w-0 flex-col gap-2 rounded-md bg-secondary/35 px-3 py-2.5">
-            <div className="flex items-end justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[11px] text-muted-foreground">{zh ? "可用套餐额度" : "Available plan credits"}</p>
-                <p className="truncate text-xl font-medium tabular-nums tracking-tight">{formatCredits(available)}</p>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary/60 text-muted-foreground">
+                <Package className="size-4" strokeWidth={1.8} />
               </div>
-              <p className="shrink-0 pb-0.5 text-right text-[11px] text-muted-foreground">{zh ? "周期总额" : "Cycle total"} <span className="font-mono text-foreground">{formatCredits(included)}</span></p>
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-secondary"><div className="h-full rounded-full bg-foreground/75 transition-[width]" style={{ width: `${percent}%` }} /></div>
-            <div className="grid grid-cols-3 gap-2 text-[11px]">
-              <QuotaMeta label={zh ? "已使用" : "Used"} value={formatCredits(used)} />
-              <QuotaMeta label={zh ? "冻结中" : "Reserved"} value={formatCredits(subscription.reserved_micros)} />
-              <QuotaMeta label={zh ? "使用率" : "Usage"} value={`${percent.toFixed(percent >= 10 ? 0 : 1)}%`} />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="truncate text-base font-medium">{plan.name}</h2>
+                  <Badge variant="success">{zh ? "生效中" : "Active"}</Badge>
+                </div>
+                {plan.description ? (
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground line-clamp-2" title={plan.description}>
+                    {plan.description}
+                  </p>
+                ) : null}
+              </div>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-xs">
-            <Stat label="RPM" value={String(plan.rpm_limit || "∞")} />
-            <Stat label="TPM" value={String(plan.tpm_limit || "∞")} />
-            <Stat label={zh ? "并发" : "Concurrency"} value={String(plan.concurrency_limit || "∞")} />
-            <div className="col-span-3 flex min-w-0 items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2">
-              <div className="min-w-0"><p className="text-[11px] text-muted-foreground">{zh ? "调用入口" : "Endpoint"}</p><p className="truncate font-mono text-xs">/coding/v1/*</p></div>
-              <Badge variant="secondary">Coding</Badge>
-            </div>
+          <Button size="sm" disabled={renewing} onClick={onRenew}>
+            {renewing ? <RefreshCw className="animate-spin" /> : <WalletCards />}
+            {zh ? "立即续费" : "Renew"}
+          </Button>
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-2 rounded-md bg-secondary/35 px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-[11px] text-muted-foreground">{zh ? "可用套餐额度" : "Available plan credits"}</p>
+            <p className="truncate text-xl font-medium tabular-nums tracking-tight" title={formatCredits(available)}>
+              {formatCreditsDisplay(available)}
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                / <span className="font-mono" title={formatCredits(included)}>{formatCreditsDisplay(included)}</span>
+              </span>
+            </p>
+          </div>
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-secondary"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Number(usedPercent.toFixed(1))}
+            aria-label={zh ? "额度使用进度" : "Quota usage"}
+          >
+            <div
+              className={cn("h-full min-w-0 rounded-full transition-[width,background-color]", progressTone)}
+              style={{ width: `${barWidth}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+            <span>
+              {zh ? "已用" : "Used"}{" "}
+              <span className="font-mono tabular-nums text-foreground/90" title={formatCredits(used)}>{formatCreditsDisplay(used)}</span>
+            </span>
+            <span className="text-border">·</span>
+            <span>
+              {zh ? "冻结" : "Reserved"}{" "}
+              <span className="font-mono tabular-nums text-foreground/90" title={formatCredits(subscription.reserved_micros)}>{formatCreditsDisplay(subscription.reserved_micros)}</span>
+            </span>
+            <span className="text-border">·</span>
+            <span>
+              {zh ? "使用率" : "Usage"}{" "}
+              <span className="font-mono tabular-nums text-foreground/90">{formatUsagePercent(usedPercent)}</span>
+            </span>
           </div>
         </div>
-        <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(19rem,0.6fr)]">
-          <div className="flex min-w-0 items-start gap-2 rounded-md bg-secondary/35 px-3 py-2.5">
-            <Layers3 className="mt-0.5 size-4 shrink-0 text-muted-foreground" strokeWidth={1.8} />
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <p className="text-[11px] text-muted-foreground">{zh ? "允许模型" : "Allowed models"}</p>
-              {plan.allowed_models.length ? <div className="flex flex-wrap gap-1.5">{plan.allowed_models.map((model) => <Badge key={model} variant="secondary" className="max-w-full font-mono"><span className="truncate">{model}</span></Badge>)}</div> : <p className="text-xs">{zh ? "全部已定价模型" : "All administrator-priced models"}</p>}
-            </div>
+
+        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs">{zh ? "额度用尽后扣余额" : "Use wallet after quota"}</p>
+            <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+              {plan.overage_enabled
+                ? overageOn
+                  ? (zh ? "开启：额度不足时从余额继续扣费。" : "On: charge wallet when quota runs out.")
+                  : (zh ? "关闭：额度不足时 /coding 请求会停止。" : "Off: stop /coding when quota runs out.")
+                : (zh ? "管理员已禁止此套餐超额扣余额。" : "Wallet overage is disabled for this plan.")}
+            </p>
           </div>
-          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5"><div className="min-w-0"><p className="text-xs">{zh ? "额度用尽后扣余额" : "Use wallet after quota"}</p><p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">{plan.overage_enabled ? (zh ? "关闭后，额度不足的 /coding 请求会停止。" : "Disable to stop /coding when quota is exhausted.") : (zh ? "管理员已禁止此套餐超额扣余额。" : "Wallet overage is disabled for this plan.")}</p></div><Switch checked={Boolean(subscription.overage_enabled && plan.overage_enabled)} disabled={updatingOverage || !plan.overage_enabled} onCheckedChange={onOverage} /></div>
+          <Switch
+            checked={overageOn}
+            disabled={updatingOverage || !plan.overage_enabled}
+            onCheckedChange={handleOverage}
+            aria-label={zh ? "额度用尽后扣余额" : "Use wallet after quota"}
+          />
         </div>
       </Card>
 
-      <Card className="flex flex-col gap-3 p-4 sm:p-5"><SectionTitle icon={CalendarDays} title={zh ? "套餐周期" : "Plan period"} /><div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4"><Stat label={zh ? "当前周期开始" : "Cycle starts"} value={new Date(subscription.period_start).toLocaleDateString(dateLocale)} /><Stat label={zh ? "当前额度重置日" : "Quota resets"} value={new Date(subscription.period_end).toLocaleDateString(dateLocale)} /><Stat label={zh ? "已付有效期至" : "Paid through"} value={new Date(subscription.entitlement_end).toLocaleDateString(dateLocale)} /><Stat label={zh ? "周期价格" : "Cycle price"} value={formatCredits(plan.price_micros)} /></div><div className="flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5"><div><p className="text-xs">{zh ? "自动续费" : "Auto renewal"}</p><p className="mt-1 text-[10px] text-muted-foreground">{zh ? "仅在已付有效期结束时扣款；提前手动续费不会重复扣款。" : "Charged only after paid entitlement ends."}</p></div><Switch checked={Boolean(subscription.auto_renew)} disabled={updating} onCheckedChange={onAutoRenew} /></div></Card>
-    </>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {/* 2. Access limits + models */}
+        <Card className="flex flex-col gap-3 p-4 sm:p-5">
+          <SectionTitle icon={Layers3} title={zh ? "访问与限速" : "Access & limits"} />
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <Stat label="RPM" value={formatLimit(plan.rpm_limit, zh)} mutedInfinite={!plan.rpm_limit} />
+            <Stat label="TPM" value={formatLimit(plan.tpm_limit, zh)} mutedInfinite={!plan.tpm_limit} />
+            <Stat label={zh ? "并发" : "Concurrency"} value={formatLimit(plan.concurrency_limit, zh)} mutedInfinite={!plan.concurrency_limit} />
+          </div>
+          <div className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-secondary/40 px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-[11px] text-muted-foreground">{zh ? "调用入口" : "Endpoint"}</p>
+              <p className="truncate font-mono text-xs">{CODING_ENDPOINT}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Badge variant="secondary">Coding</Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 text-muted-foreground"
+                onClick={copyEndpoint}
+                aria-label={zh ? "复制调用入口" : "Copy endpoint"}
+              >
+                {endpointCopied ? <Check className="size-3.5" strokeWidth={1.8} /> : <Copy className="size-3.5" strokeWidth={1.8} />}
+              </Button>
+            </div>
+          </div>
+          <div className="rounded-md bg-secondary/35 px-3 py-2.5">
+            <p className="text-[11px] text-muted-foreground">{zh ? "允许模型" : "Allowed models"}</p>
+            {models.length ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                {visibleModels.map((model) => (
+                  <Badge key={model} variant="secondary" className="max-w-full font-mono" title={model}>
+                    <span className="truncate">{model}</span>
+                  </Badge>
+                ))}
+                {hiddenModelCount > 0 ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-5 items-center rounded-full bg-secondary/70 px-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    onClick={() => setModelsExpanded((v) => !v)}
+                  >
+                    {modelsExpanded ? (zh ? "收起" : "Less") : `+${hiddenModelCount}`}
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <p className="mt-1 text-xs">{zh ? "全部已定价模型" : "All administrator-priced models"}</p>
+            )}
+          </div>
+        </Card>
+
+        {/* 3. Period + auto renew */}
+        <Card className="flex flex-col gap-3 p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <SectionTitle icon={CalendarDays} title={zh ? "周期与续费" : "Period & renewal"} />
+            <p className="text-[11px] text-muted-foreground" title={cyclePriceFull}>
+              {zh ? "周期价" : "Price"}{" "}
+              <span className="font-mono tabular-nums text-foreground">{cyclePriceDisplay}</span>
+              <span className="text-muted-foreground"> / {plan.cycle_days}{zh ? " 天" : "d"}</span>
+            </p>
+          </div>
+
+          <div className={cn("grid gap-2 text-xs", sameResetAndEntitlement ? "grid-cols-2" : "grid-cols-1 sm:grid-cols-3")}>
+            <Stat label={zh ? "周期开始" : "Cycle starts"} value={periodStart.toLocaleDateString(dateLocale)} />
+            {sameResetAndEntitlement ? (
+              <Stat
+                label={zh ? "重置 / 有效期" : "Reset / paid through"}
+                value={periodEnd.toLocaleDateString(dateLocale)}
+                hint={formatDaysLeft(daysToReset, zh, "end")}
+              />
+            ) : (
+              <>
+                <Stat
+                  label={zh ? "额度重置" : "Quota resets"}
+                  value={periodEnd.toLocaleDateString(dateLocale)}
+                  hint={formatDaysLeft(daysToReset, zh, "reset")}
+                />
+                <Stat
+                  label={zh ? "已付有效期" : "Paid through"}
+                  value={entitlementEnd.toLocaleDateString(dateLocale)}
+                  hint={prepaidBeyondCycle ? (zh ? "含预付" : "Prepaid") : formatDaysLeft(daysToEntitlement, zh, "end")}
+                />
+              </>
+            )}
+          </div>
+
+          {prepaidBeyondCycle ? (
+            <p className="text-[11px] text-muted-foreground">
+              {zh
+                ? "提前续费只延长有效期，不会重置当前额度。"
+                : "Early renewal extends entitlement only; current quota is unchanged."}
+            </p>
+          ) : null}
+
+          <div className="mt-auto flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-xs">{zh ? "自动续费" : "Auto renewal"}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {autoRenewOn
+                  ? (zh
+                    ? `开启：有效期结束时扣 ${cyclePriceDisplay}，不重复扣款。`
+                    : `On: charge ${cyclePriceDisplay} when entitlement ends.`)
+                  : (zh
+                    ? "关闭：到期后不会自动扣款。"
+                    : "Off: no automatic charge at expiry.")}
+              </p>
+            </div>
+            <Switch
+              checked={autoRenewOn}
+              disabled={updating}
+              onCheckedChange={handleAutoRenew}
+              aria-label={zh ? "自动续费" : "Auto renewal"}
+            />
+          </div>
+        </Card>
+      </div>
+    </div>
   );
 }
 
@@ -179,12 +410,36 @@ function MarketplacePlan({ plan, subscription, zh, busy, onPurchase, onUpgrade }
   const estimated = subscription ? estimateUpgradeCost(subscription, plan) : plan.price_micros;
   return (
     <Card className={cn("flex flex-col gap-4 p-4 sm:p-5", current && "ring-1 ring-foreground/15")}>
-      <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm font-medium">{plan.name}</h3><p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{plan.description || (zh ? "Coding Plan 套餐" : "Coding Plan")}</p></div>{current ? <Badge variant="success">{zh ? "当前套餐" : "Current"}</Badge> : soldOut ? <Badge variant="secondary">{zh ? "售罄" : "Sold out"}</Badge> : null}</div>
-      <div><span className="font-mono text-2xl font-medium tabular-nums">{formatCredits(plan.price_micros)}</span><span className="ml-1 text-[11px] text-muted-foreground">/ {plan.cycle_days} {zh ? "天" : "days"}</span></div>
-      <div className="grid grid-cols-2 gap-2 text-xs"><Stat label={zh ? "周期额度" : "Credits"} value={formatCredits(plan.included_credits_micros)} /><Stat label={zh ? "剩余库存" : "Stock"} value={plan.stock_available === null ? "∞" : String(plan.stock_available)} /><Stat label="RPM / TPM" value={`${plan.rpm_limit || "∞"} / ${plan.tpm_limit || "∞"}`} /><Stat label={zh ? "并发" : "Concurrency"} value={String(plan.concurrency_limit || "∞")} /></div>
-      <p className="line-clamp-2 text-[10px] text-muted-foreground">{plan.allowed_models.length ? plan.allowed_models.join(", ") : (zh ? "支持全部已定价模型" : "All priced models")}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-medium">{plan.name}</h3>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">{plan.description || (zh ? "Coding Plan 套餐" : "Coding Plan")}</p>
+        </div>
+        {current ? <Badge variant="success">{zh ? "当前套餐" : "Current"}</Badge> : soldOut ? <Badge variant="secondary">{zh ? "售罄" : "Sold out"}</Badge> : null}
+      </div>
+      <div>
+        <span className="font-mono text-2xl font-medium tabular-nums" title={formatCredits(plan.price_micros)}>{formatCreditsDisplay(plan.price_micros)}</span>
+        <span className="ml-1 text-[11px] text-muted-foreground">/ {plan.cycle_days} {zh ? "天" : "days"}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <Stat label={zh ? "周期额度" : "Credits"} value={formatCreditsDisplay(plan.included_credits_micros)} title={formatCredits(plan.included_credits_micros)} />
+        <Stat label={zh ? "剩余库存" : "Stock"} value={plan.stock_available === null ? (zh ? "不限" : "∞") : String(plan.stock_available)} />
+        <Stat label="RPM / TPM" value={`${formatLimit(plan.rpm_limit, zh)} / ${formatLimit(plan.tpm_limit, zh)}`} />
+        <Stat label={zh ? "并发" : "Concurrency"} value={formatLimit(plan.concurrency_limit, zh)} />
+      </div>
+      <p className="line-clamp-2 text-[10px] text-muted-foreground">
+        {plan.allowed_models.length ? plan.allowed_models.join(", ") : (zh ? "支持全部已定价模型" : "All priced models")}
+      </p>
       <div className="mt-auto">
-        {!subscription ? <Button className="w-full" size="sm" disabled={busy || soldOut} onClick={onPurchase}><ShoppingBag />{zh ? "购买套餐" : "Purchase"}</Button> : current ? <Button className="w-full" size="sm" variant="secondary" disabled>{zh ? "当前使用中" : "Active"}</Button> : upgrade ? <Button className="w-full" size="sm" disabled={busy || soldOut} onClick={onUpgrade}><ArrowUpCircle />{zh ? `补差 ${formatCredits(estimated)} 升级` : "Upgrade"}</Button> : <Button className="w-full" size="sm" variant="secondary" disabled>{zh ? "暂不支持降级" : "Downgrade unavailable"}</Button>}
+        {!subscription ? (
+          <Button className="w-full" size="sm" disabled={busy || soldOut} onClick={onPurchase}><ShoppingBag />{zh ? "购买套餐" : "Purchase"}</Button>
+        ) : current ? (
+          <Button className="w-full" size="sm" variant="secondary" disabled>{zh ? "当前使用中" : "Active"}</Button>
+        ) : upgrade ? (
+          <Button className="w-full" size="sm" disabled={busy || soldOut} onClick={onUpgrade}><ArrowUpCircle />{zh ? `补差 ${formatCreditsDisplay(estimated)} 升级` : "Upgrade"}</Button>
+        ) : (
+          <Button className="w-full" size="sm" variant="secondary" disabled>{zh ? "暂不支持降级" : "Downgrade unavailable"}</Button>
+        )}
       </div>
     </Card>
   );
@@ -203,14 +458,63 @@ function estimateUpgradeCost(subscription: SubscriptionRow, target: PlanRow) {
   return Math.max(0, target.price_micros - credit);
 }
 
+function daysUntil(date: Date) {
+  const ms = date.getTime() - Date.now();
+  return Math.ceil(ms / 86_400_000);
+}
+
+function formatDaysLeft(days: number, zh: boolean, kind: "reset" | "end") {
+  if (days <= 0) {
+    if (kind === "reset") return zh ? "今日重置" : "Resets today";
+    return zh ? "已到期" : "Ended";
+  }
+  if (days === 1) return zh ? "还剩 1 天" : "1 day left";
+  return zh ? `还剩 ${days} 天` : `${days} days left`;
+}
+
+function formatUsagePercent(percent: number) {
+  if (percent <= 0) return "0%";
+  if (percent < 0.1) return "<0.1%";
+  return `${percent.toFixed(percent >= 10 ? 0 : 1)}%`;
+}
+
+function formatLimit(value: number | null | undefined, zh: boolean) {
+  if (!value) return zh ? "不限" : "∞";
+  return String(value);
+}
+
 function SectionTitle({ icon: Icon, title }: { icon: typeof Package; title: string }) {
-  return <div className="flex items-center gap-2"><Icon className="size-4 text-muted-foreground" strokeWidth={1.8} /><h2 className="text-sm font-medium">{title}</h2></div>;
+  return (
+    <div className="flex items-center gap-2">
+      <Icon className="size-4 text-muted-foreground" strokeWidth={1.8} />
+      <h2 className="text-sm font-medium">{title}</h2>
+    </div>
+  );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0 rounded-md bg-secondary/40 px-3 py-2"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 truncate font-mono tabular-nums">{value}</p></div>;
-}
-
-function QuotaMeta({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0"><p className="truncate text-muted-foreground">{label}</p><p className="truncate font-mono text-xs tabular-nums">{value}</p></div>;
+function Stat({
+  label,
+  value,
+  hint,
+  title,
+  mutedInfinite,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  title?: string;
+  mutedInfinite?: boolean;
+}) {
+  return (
+    <div className="min-w-0 rounded-md bg-secondary/40 px-3 py-2">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p
+        className={cn("mt-1 truncate font-mono tabular-nums", mutedInfinite && "text-muted-foreground")}
+        title={title || value}
+      >
+        {value}
+      </p>
+      {hint ? <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{hint}</p> : null}
+    </div>
+  );
 }
