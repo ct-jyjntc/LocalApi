@@ -243,74 +243,44 @@ export function ProvidersPage() {
       ) : null}
 
       <Card className="overflow-hidden">
-        <div className={TABLE_HEAD_CLASS}>
-          <span className="w-36">{t("common.name")}</span>
-          <span className="min-w-0 flex-1">{t("providers.baseUrl")}</span>
-          <span className="w-16 text-right">{t("providers.keysCol")}</span>
-          <span className="w-36">{t("providers.modelsCol")}</span>
-          <span className="w-16">{t("common.status")}</span>
-          <span className="w-24 text-right">{t("common.actions")}</span>
-        </div>
         {!data?.items?.length ? (
           <EmptyState>
             {isLoading ? t("common.loading") : t("providers.empty")}
           </EmptyState>
         ) : (
-          data.items.map((p) => (
-            <div key={p.id} className={TABLE_ROW_CLASS}>
-              <span className="w-36 truncate font-medium">{p.name}</span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
-                {p.base_url}
-              </span>
-              <span className="w-16 text-right tabular-nums">
-                {p.key_count ?? (p.has_api_key ? 1 : 0)}
-              </span>
-              <span className="w-36 truncate text-muted-foreground">
-                {p.models.slice(0, 2).join(", ")}
-                {p.models.length > 2 ? ` +${p.models.length - 2}` : ""}
-              </span>
-              <span className="w-16">
-                {p.enabled ? (
-                  <Badge variant="success">{t("common.active")}</Badge>
-                ) : (
-                  <Badge variant="secondary">{t("common.off")}</Badge>
-                )}
-              </span>
-              <span className="flex w-24 items-center justify-end gap-1">
-                <Switch
-                  checked={p.enabled}
-                  onCheckedChange={(v) =>
-                    toggle.mutate({ id: p.id, enabled: v })
-                  }
-                  aria-label={`Toggle ${p.name}`}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6 text-muted-foreground"
-                  onClick={() => startEdit(p)}
-                  aria-label="Edit"
-                >
-                  <Pencil className="size-3.5" strokeWidth={1.8} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6 text-muted-foreground hover:text-destructive"
-                  onClick={() => {
-                    if (
-                      confirm(t("providers.deleteConfirm", { name: p.name }))
-                    ) {
-                      remove.mutate(p.id);
-                    }
-                  }}
-                  aria-label="Delete"
-                >
-                  <Trash2 className="size-3.5" strokeWidth={1.8} />
-                </Button>
-              </span>
+          <>
+            <div className="divide-y divide-border/40 md:hidden">
+              {data.items.map((p) => (
+                <div key={p.id} className="space-y-2.5 p-3 text-xs">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <p className="min-w-0 truncate font-medium">{p.name}</p>
+                    {p.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}
+                  </div>
+                  <p className="break-all font-mono text-[11px] text-muted-foreground">{p.base_url}</p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    <span>{t("providers.keysCol")} <span className="tabular-nums text-foreground">{p.key_count ?? (p.has_api_key ? 1 : 0)}</span></span>
+                    <span className="min-w-0 break-all">{t("providers.modelsCol")} {p.models.join(", ") || "—"}</span>
+                  </div>
+                  <div className="flex items-center justify-end gap-1">
+                    <Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} />
+                    <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button>
+                    <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("providers.deleteConfirm", { name: p.name }))) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))
+            <div className="hidden md:block">
+              <div className={TABLE_HEAD_CLASS}>
+                <span className="w-36">{t("common.name")}</span><span className="min-w-0 flex-1">{t("providers.baseUrl")}</span><span className="w-16 text-right">{t("providers.keysCol")}</span><span className="w-36">{t("providers.modelsCol")}</span><span className="w-16">{t("common.status")}</span><span className="w-24 text-right">{t("common.actions")}</span>
+              </div>
+              {data.items.map((p) => (
+                <div key={p.id} className={TABLE_ROW_CLASS}>
+                  <span className="w-36 truncate font-medium">{p.name}</span><span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{p.base_url}</span><span className="w-16 text-right tabular-nums">{p.key_count ?? (p.has_api_key ? 1 : 0)}</span><span className="w-36 truncate text-muted-foreground">{p.models.slice(0, 2).join(", ")}{p.models.length > 2 ? ` +${p.models.length - 2}` : ""}</span><span className="w-16">{p.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}</span>
+                  <span className="flex w-24 items-center justify-end gap-1"><Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("providers.deleteConfirm", { name: p.name }))) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </Card>
     </div>

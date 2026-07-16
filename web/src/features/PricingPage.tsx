@@ -71,19 +71,18 @@ export function PricingPage() {
         </CardContent>
       </Card>
       <Card className="overflow-hidden">
-        <div className={TABLE_HEAD_CLASS}>
-          <span className="min-w-0 flex-1">{zh ? "模型" : "Model"}</span><span className="w-24 shrink-0 text-right">{zh ? "输入" : "Input"}</span><span className="w-24 shrink-0 text-right">{zh ? "输出" : "Output"}</span><span className="hidden w-24 shrink-0 text-right md:block">{zh ? "缓存读" : "Cache read"}</span><span className="hidden w-24 shrink-0 text-right md:block">{zh ? "缓存写" : "Cache write"}</span><span className="w-24 shrink-0 text-right">{zh ? "操作" : "Actions"}</span>
-        </div>
         {!prices.data?.items.length ? <EmptyState>{prices.isLoading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无价格" : "No prices"}</EmptyState> : prices.data.items.map((price) => (
-          <div className={TABLE_ROW_CLASS} key={price.model}>
-            <button className="min-w-0 flex-1 truncate text-left font-mono" onClick={() => edit(price)}>{price.model}</button>
-            <span className="w-24 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.input_price_micros)}</span>
-            <span className="w-24 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.output_price_micros)}</span>
-            <span className="hidden w-24 shrink-0 text-right font-mono tabular-nums md:block">{formatCredits(price.cache_read_price_micros)}</span>
-            <span className="hidden w-24 shrink-0 text-right font-mono tabular-nums md:block">{formatCredits(price.cache_write_price_micros)}</span>
-            <span className="flex w-24 shrink-0 items-center justify-end gap-1"><Badge variant={price.enabled ? "success" : "secondary"}>{price.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge><Button variant="ghost" size="icon" className="size-6" onClick={() => remove.mutate(price.model)}><Trash2 /></Button></span>
+          <div key={price.model}>
+            <div className="space-y-2.5 border-b border-border/40 p-3 text-xs md:hidden">
+              <div className="flex min-w-0 items-center justify-between gap-2"><button className="min-w-0 flex-1 break-all text-left font-mono" onClick={() => edit(price)}>{price.model}</button><Badge variant={price.enabled ? "success" : "secondary"}>{price.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge></div>
+              <div className="grid grid-cols-2 gap-2 rounded-md bg-secondary/35 p-2.5 text-[11px]">
+                <PriceStat label={zh ? "输入" : "Input"} value={formatCredits(price.input_price_micros)} /><PriceStat label={zh ? "输出" : "Output"} value={formatCredits(price.output_price_micros)} /><PriceStat label={zh ? "缓存读" : "Cache read"} value={formatCredits(price.cache_read_price_micros)} /><PriceStat label={zh ? "缓存写" : "Cache write"} value={formatCredits(price.cache_write_price_micros)} />
+              </div>
+              <div className="flex justify-end gap-1"><Button variant="secondary" size="sm" onClick={() => edit(price)}>{zh ? "编辑" : "Edit"}</Button><Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => remove.mutate(price.model)}><Trash2 /></Button></div>
+            </div>
           </div>
         ))}
+        {prices.data?.items.length ? <div className="hidden md:block"><div className={TABLE_HEAD_CLASS}><span className="min-w-0 flex-1">{zh ? "模型" : "Model"}</span><span className="w-24 shrink-0 text-right">{zh ? "输入" : "Input"}</span><span className="w-24 shrink-0 text-right">{zh ? "输出" : "Output"}</span><span className="w-24 shrink-0 text-right">{zh ? "缓存读" : "Cache read"}</span><span className="w-24 shrink-0 text-right">{zh ? "缓存写" : "Cache write"}</span><span className="w-24 shrink-0 text-right">{zh ? "操作" : "Actions"}</span></div>{prices.data.items.map((price) => <div className={TABLE_ROW_CLASS} key={price.model}><button className="min-w-0 flex-1 truncate text-left font-mono" onClick={() => edit(price)}>{price.model}</button><span className="w-24 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.input_price_micros)}</span><span className="w-24 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.output_price_micros)}</span><span className="w-24 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.cache_read_price_micros)}</span><span className="w-24 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.cache_write_price_micros)}</span><span className="flex w-24 shrink-0 items-center justify-end gap-1"><Badge variant={price.enabled ? "success" : "secondary"}>{price.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge><Button variant="ghost" size="icon" className="size-6" onClick={() => remove.mutate(price.model)}><Trash2 /></Button></span></div>)}</div> : null}
       </Card>
     </div>
   );
@@ -91,4 +90,8 @@ export function PricingPage() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="flex min-w-0 flex-col gap-1.5"><Label>{label}</Label>{children}</label>;
+}
+
+function PriceStat({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><p className="text-muted-foreground">{label}</p><p className="mt-1 break-all font-mono tabular-nums text-foreground">{value}</p></div>;
 }

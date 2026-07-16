@@ -128,7 +128,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
             aria-label="Close menu"
             onClick={() => setMobileOpen(false)}
           />
-          <aside className="absolute inset-y-0 left-0 flex w-[240px] flex-col bg-sidebar py-6 shadow-lg">
+          <aside className="absolute inset-y-0 left-0 flex w-[min(240px,calc(100vw-2rem))] flex-col bg-sidebar py-6 shadow-lg">
             <div className="flex h-8 shrink-0 items-center gap-1 px-3">
               <span className="min-w-0 flex-1 truncate px-0.5 text-sm font-semibold">
                 {brandName}
@@ -182,11 +182,11 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           <span className="text-sm font-semibold">{brandName}</span>
         </header>
 
-        <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 pb-10 sm:px-8">
+        <main className="mx-auto w-full max-w-[1280px] flex-1 min-w-0 px-3 py-5 pb-10 sm:px-8 sm:py-8">
           <Outlet />
         </main>
         {companyName ? (
-          <div className="pointer-events-none fixed bottom-3 right-5 z-10 text-[11px] text-muted-foreground/75">
+          <div className="pointer-events-none fixed bottom-3 left-3 right-3 z-10 text-center text-[11px] text-muted-foreground/75 sm:left-auto sm:right-5 sm:text-right">
             @{new Date().getFullYear()} {companyName}
           </div>
         ) : null}

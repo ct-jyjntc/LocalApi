@@ -1,22 +1,27 @@
+import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/shared";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/lib/i18n";
+import { api } from "@/lib/api";
 
 export function DocsPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
+  const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
+  const exampleBaseUrl = branding.data?.public_base_url?.trim() || "https://your-domain";
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       <PageHeader
         title={zh ? "文档中心" : "Documentation"}
         description={zh ? "API 接入、余额计费与 Coding Plan 调用说明。" : "API access, wallet billing and Coding Plan usage."}
       />
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-2">
         <DocCard title={zh ? "余额调用" : "Wallet billing"} badge="/v1">
           <p>{zh ? "默认接口使用账户余额结算，不受 Coding Plan 模型白名单限制；模型仍需由管理员配置价格。" : "Default endpoints charge the wallet and ignore the Coding Plan model allowlist. Models still need an active admin price."}</p>
-          <Code>{`curl https://your-domain/v1/chat/completions \\
+          <Code>{`curl ${exampleBaseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer <api-key>" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"gpt-4.1","messages":[{"role":"user","content":"hi"}]}'`}</Code>
@@ -24,7 +29,7 @@ export function DocsPage() {
 
         <DocCard title="Coding Plan" badge="/coding/v1">
           <p>{zh ? "Coding Plan 请求必须使用 /coding 前缀，只能调用当前套餐允许的模型，并从套餐周期额度扣除。" : "Coding Plan requests must use the /coding prefix, are limited to plan models, and charge the plan quota."}</p>
-          <Code>{`curl https://your-domain/coding/v1/chat/completions \\
+          <Code>{`curl ${exampleBaseUrl}/coding/v1/chat/completions \\
   -H "Authorization: Bearer <api-key>" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"coding-model","messages":[{"role":"user","content":"hi"}]}'`}</Code>
@@ -54,14 +59,13 @@ export function DocsPage() {
 }
 
 function DocCard({ title, badge, children }: { title: string; badge: string; children: ReactNode }) {
-  return <Card className="space-y-3 p-4 text-xs text-muted-foreground sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium text-foreground">{title}</h2><Badge variant="secondary">{badge}</Badge></div>{children}</Card>;
+  return <Card className="min-w-0 space-y-3 p-4 text-xs text-muted-foreground sm:p-5"><div className="flex min-w-0 items-center justify-between gap-3"><h2 className="min-w-0 text-sm font-medium text-foreground">{title}</h2><Badge className="shrink-0" variant="secondary">{badge}</Badge></div>{children}</Card>;
 }
 
 function Code({ children }: { children: string }) {
-  return <pre className="overflow-x-auto rounded-md bg-secondary/55 p-3 font-mono text-[11px] leading-5 text-foreground">{children}</pre>;
+  return <pre className="max-w-full overflow-x-auto rounded-md bg-secondary/55 p-3 font-mono text-[11px] leading-5 text-foreground">{children}</pre>;
 }
 
 function Status({ code, text }: { code: string; text: string }) {
   return <div className="flex items-center gap-3 rounded-md bg-secondary/45 px-3 py-2"><span className="w-9 shrink-0 font-mono font-medium tabular-nums">{code}</span><span className="text-muted-foreground">{text}</span></div>;
 }
-import type { ReactNode } from "react";

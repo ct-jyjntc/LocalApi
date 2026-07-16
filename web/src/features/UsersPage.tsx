@@ -81,35 +81,32 @@ export function UsersPage() {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className={TABLE_HEAD_CLASS}>
-          <span className="w-40 shrink-0">{zh ? "用户" : "User"}</span>
-          <span className="w-28 shrink-0">{zh ? "余额" : "Balance"}</span>
-          <span className="min-w-0 flex-1">{zh ? "套餐" : "Plan"}</span>
-          <span className="hidden w-36 shrink-0 lg:block">{zh ? "最近登录" : "Last login"}</span>
-          <span className="w-24 shrink-0 text-right">{zh ? "操作" : "Actions"}</span>
-        </div>
         {!users.data?.items.length ? (
           <EmptyState>{users.isLoading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无用户" : "No users"}</EmptyState>
         ) : (
-          users.data.items.map((user) => (
-            <div className={TABLE_ROW_CLASS} key={user.id}>
-              <span className="w-40 shrink-0 truncate" title={user.username}>
-                <span className="font-medium">{user.display_name}</span>
-                <span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span>
-              </span>
-              <span className="w-28 shrink-0 font-mono tabular-nums">{formatCredits(user.balance_micros)}</span>
-              <span className="min-w-0 flex-1 truncate">
-                {user.plan_name ? (
-                  <><Badge variant="secondary">{user.plan_name}</Badge><span className="ml-2 text-[11px] text-muted-foreground">{formatCredits(user.remaining_credits_micros)}</span></>
-                ) : <span className="text-muted-foreground">—</span>}
-              </span>
-              <span className="hidden w-36 shrink-0 text-[11px] text-muted-foreground lg:block">{user.last_login_at ? shortTime(user.last_login_at) : "—"}</span>
-              <span className="flex w-24 shrink-0 justify-end gap-1">
-                <Badge variant={user.status === "active" ? "success" : "destructive"}>{user.status}</Badge>
-                <Button variant="ghost" size="icon" className="size-6" onClick={() => setSelectedId(user.id)} aria-label="Manage"><Settings2 /></Button>
-              </span>
+          <>
+            <div className="divide-y divide-border/40 sm:hidden">
+              {users.data.items.map((user) => (
+                <div className="space-y-2.5 p-3 text-xs" key={user.id}>
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <p className="min-w-0 truncate"><span className="font-medium">{user.display_name}</span><span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span></p>
+                    <Badge variant={user.status === "active" ? "success" : "destructive"}>{user.status}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 rounded-md bg-secondary/35 p-2.5 text-[11px]">
+                    <div><p className="text-muted-foreground">{zh ? "余额" : "Balance"}</p><p className="mt-1 font-mono tabular-nums">{formatCredits(user.balance_micros)}</p></div>
+                    <div><p className="text-muted-foreground">{zh ? "套餐" : "Plan"}</p><p className="mt-1 truncate">{user.plan_name || "—"}{user.plan_name ? <span className="ml-1 font-mono text-muted-foreground">{formatCredits(user.remaining_credits_micros)}</span> : null}</p></div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground"><span>{zh ? "最近登录" : "Last login"} {user.last_login_at ? shortTime(user.last_login_at) : "—"}</span><Button variant="secondary" size="sm" onClick={() => setSelectedId(user.id)}><Settings2 data-icon="inline-start" />{zh ? "管理" : "Manage"}</Button></div>
+                </div>
+              ))}
             </div>
-          ))
+            <div className="hidden sm:block">
+              <div className={TABLE_HEAD_CLASS}><span className="w-40 shrink-0">{zh ? "用户" : "User"}</span><span className="w-28 shrink-0">{zh ? "余额" : "Balance"}</span><span className="min-w-0 flex-1">{zh ? "套餐" : "Plan"}</span><span className="hidden w-36 shrink-0 lg:block">{zh ? "最近登录" : "Last login"}</span><span className="w-24 shrink-0 text-right">{zh ? "操作" : "Actions"}</span></div>
+              {users.data.items.map((user) => (
+                <div className={TABLE_ROW_CLASS} key={user.id}><span className="w-40 shrink-0 truncate" title={user.username}><span className="font-medium">{user.display_name}</span><span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span></span><span className="w-28 shrink-0 font-mono tabular-nums">{formatCredits(user.balance_micros)}</span><span className="min-w-0 flex-1 truncate">{user.plan_name ? <><Badge variant="secondary">{user.plan_name}</Badge><span className="ml-2 text-[11px] text-muted-foreground">{formatCredits(user.remaining_credits_micros)}</span></> : <span className="text-muted-foreground">—</span>}</span><span className="hidden w-36 shrink-0 text-[11px] text-muted-foreground lg:block">{user.last_login_at ? shortTime(user.last_login_at) : "—"}</span><span className="flex w-24 shrink-0 justify-end gap-1"><Badge variant={user.status === "active" ? "success" : "destructive"}>{user.status}</Badge><Button variant="ghost" size="icon" className="size-6" onClick={() => setSelectedId(user.id)} aria-label="Manage"><Settings2 /></Button></span></div>
+              ))}
+            </div>
+          </>
         )}
       </Card>
 

@@ -328,6 +328,7 @@ export function initDb() {
     retry_delay_ms: "400",
     brand_name: "LocalAPI",
     company_name: "",
+    public_base_url: "",
     registration_enabled: "false",
   };
 

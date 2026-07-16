@@ -132,7 +132,7 @@ function LogItem({
         <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
           {log.path}
           {log.model ? (
-            <span className="text-muted-foreground"> · {log.model}</span>
+            <span className="hidden text-muted-foreground sm:inline"> · {log.model}</span>
           ) : null}
         </span>
 
@@ -165,35 +165,27 @@ function LogItem({
         <span className="hidden w-14 shrink-0 text-right tabular-nums text-muted-foreground md:inline">
           {formatMs(log.latency_ms)}
         </span>
-        {log.stream ? <Badge variant="outline">{t("logs.stream")}</Badge> : null}
+        {log.stream ? <Badge className="hidden sm:inline-flex" variant="outline">{t("logs.stream")}</Badge> : null}
         <span className="hidden w-36 shrink-0 text-right text-[11px] text-muted-foreground lg:inline">
           {shortTime(log.created_at)}
         </span>
       </button>
 
       {/* Mobile: one compact token line */}
-      <div className="flex items-center gap-2 px-3 pb-2 text-[11px] tabular-nums text-muted-foreground sm:hidden">
-        <span className="max-w-28 truncate">{t("logs.channel")} {log.provider_name || "—"}</span>
-        <span className="text-border">·</span>
-        <span>
-          {t("logs.input")} {inputTok}
-        </span>
-        <span className="text-border">·</span>
-        <span>
-          {t("logs.output")} {outputTok}
-        </span>
-        <span className="text-border">·</span>
-        <span>
-          {t("logs.cache")} {cacheTok}
-        </span>
-        <span className="text-border">·</span>
-        <span>
-          {t("logs.reasoning")} {reasonTok}
-        </span>
+      <div className="space-y-1 px-3 pb-2 text-[11px] tabular-nums text-muted-foreground sm:hidden">
+        <p className="break-all font-mono text-foreground/80">{log.model || "—"}</p>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>{t("logs.channel")} {log.provider_name || "—"}</span>
+          {log.stream ? <Badge variant="outline">{t("logs.stream")}</Badge> : null}
+          <span>{t("logs.input")} {inputTok}</span>
+          <span>{t("logs.output")} {outputTok}</span>
+          <span>{t("logs.cache")} {cacheTok}</span>
+          <span>{t("logs.reasoning")} {reasonTok}</span>
+        </div>
       </div>
 
       {open ? (
-        <div className="space-y-3 border-t border-border/30 bg-secondary/20 px-3 py-3 sm:px-4">
+        <div className="min-w-0 space-y-3 border-t border-border/30 bg-secondary/20 px-3 py-3 sm:px-4">
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
             <span>{fullLog.provider_name || "—"}</span>
             <span>·</span>

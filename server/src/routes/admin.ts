@@ -78,6 +78,9 @@ const settingsSchema = z.object({
   cache_paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
   brand_name: z.string().trim().min(1).max(80).optional(),
   company_name: z.string().trim().max(160).optional(),
+  public_base_url: z.string().trim().max(255).refine(isValidPublicBaseUrl, {
+    message: "public_base_url must be an http(s) URL or domain without a path",
+  }).optional(),
   registration_enabled: z.boolean().optional(),
 });
 
@@ -245,6 +248,7 @@ adminRouter.get("/settings", (_req, res) => {
     cache_paths: JSON.parse(all.cache_paths || "[]"),
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
+    public_base_url: all.public_base_url || "",
     registration_enabled: all.registration_enabled === "true",
   });
 });
@@ -284,6 +288,9 @@ adminRouter.patch("/settings", (req, res) => {
   }
   if (body.brand_name !== undefined) setSetting("brand_name", body.brand_name);
   if (body.company_name !== undefined) setSetting("company_name", body.company_name);
+  if (body.public_base_url !== undefined) {
+    setSetting("public_base_url", normalizePublicBaseUrl(body.public_base_url));
+  }
   if (body.registration_enabled !== undefined) {
     setSetting("registration_enabled", body.registration_enabled ? "true" : "false");
   }
@@ -302,6 +309,7 @@ adminRouter.patch("/settings", (req, res) => {
     cache_paths: JSON.parse(all.cache_paths || "[]"),
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
+    public_base_url: all.public_base_url || "",
     registration_enabled: all.registration_enabled === "true",
   });
 });
@@ -317,4 +325,23 @@ function maskSecret(value: string): string {
   if (!value) return "";
   if (value.length <= 4) return "••••";
   return `${"•".repeat(Math.min(8, value.length - 2))}${value.slice(-2)}`;
+}
+
+function normalizePublicBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+  return `${url.protocol}//${url.host}`;
+}
+
+function isValidPublicBaseUrl(value: string): boolean {
+  if (!value.trim()) return true;
+  try {
+    const normalized = normalizePublicBaseUrl(value);
+    const url = new URL(normalized);
+    const original = new URL(/^https?:\/\//i.test(value.trim()) ? value.trim() : `https://${value.trim()}`);
+    return Boolean(url.hostname) && (original.pathname === "/" || original.pathname === "") && !original.search && !original.hash;
+  } catch {
+    return false;
+  }
 }

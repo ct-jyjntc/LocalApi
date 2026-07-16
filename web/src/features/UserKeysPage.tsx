@@ -50,11 +50,11 @@ export function UserKeysPage() {
         <CardContent className="grid gap-3 lg:grid-cols-3">
           <section className="flex flex-col gap-3"><Field label={zh ? "名称" : "Name"}><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field><Field label={zh ? "到期时间" : "Expires"}><Input type="datetime-local" value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })} /></Field></section>
           <section><Field label={zh ? "允许模型（每行一个，空为全部）" : "Allowed models (one per line)"}><Textarea rows={5} value={form.models} onChange={(e) => setForm({ ...form, models: e.target.value })} placeholder={(me.data?.prices ?? []).map((p) => p.model).join("\n")} /></Field></section>
-          <section className="flex flex-col gap-3"><div className="grid grid-cols-3 gap-2"><Field label="RPM"><Input type="number" value={form.rpm} onChange={(e) => setForm({ ...form, rpm: e.target.value })} /></Field><Field label="TPM"><Input type="number" value={form.tpm} onChange={(e) => setForm({ ...form, tpm: e.target.value })} /></Field><Field label={zh ? "并发" : "Concurrency"}><Input type="number" value={form.concurrency} onChange={(e) => setForm({ ...form, concurrency: e.target.value })} /></Field></div><Button size="sm" disabled={create.isPending} onClick={() => create.mutate()}><Plus data-icon="inline-start" />{zh ? "创建并复制" : "Create and copy"}</Button></section>
+          <section className="flex flex-col gap-3"><div className="grid gap-2 min-[420px]:grid-cols-3"><Field label="RPM"><Input type="number" value={form.rpm} onChange={(e) => setForm({ ...form, rpm: e.target.value })} /></Field><Field label="TPM"><Input type="number" value={form.tpm} onChange={(e) => setForm({ ...form, tpm: e.target.value })} /></Field><Field label={zh ? "并发" : "Concurrency"}><Input type="number" value={form.concurrency} onChange={(e) => setForm({ ...form, concurrency: e.target.value })} /></Field></div><Button size="sm" disabled={create.isPending} onClick={() => create.mutate()}><Plus data-icon="inline-start" />{zh ? "创建并复制" : "Create and copy"}</Button></section>
         </CardContent>
       </Card>
       <Card className="overflow-hidden">
-        <div className={TABLE_HEAD_CLASS}><span className="w-32 shrink-0">{zh ? "名称" : "Name"}</span><span className="min-w-0 flex-1">Key</span><span className="hidden w-44 shrink-0 lg:block">{zh ? "限制" : "Limits"}</span><span className="w-24 shrink-0 text-right">{zh ? "操作" : "Actions"}</span></div>
+        <div className={`${TABLE_HEAD_CLASS} hidden sm:flex`}><span className="w-32 shrink-0">{zh ? "名称" : "Name"}</span><span className="min-w-0 flex-1">Key</span><span className="hidden w-44 shrink-0 lg:block">{zh ? "限制" : "Limits"}</span><span className="w-24 shrink-0 text-right">{zh ? "操作" : "Actions"}</span></div>
         {!query.data?.items.length ? <EmptyState>{query.isLoading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无 Key" : "No keys"}</EmptyState> : query.data.items.map((row) => <KeyRow key={row.id} row={row} zh={zh} onToggle={(enabled) => toggle.mutate({ id: row.id, enabled })} onRemove={() => remove.mutate(row.id)} />)}
       </Card>
     </div>
@@ -63,12 +63,17 @@ export function UserKeysPage() {
 
 function KeyRow({ row, zh, onToggle, onRemove }: { row: ApiKeyRow; zh: boolean; onToggle: (enabled: boolean) => void; onRemove: () => void }) {
   const copy = async () => { if (row.key) { await navigator.clipboard.writeText(row.key); toast.success(zh ? "已复制" : "Copied"); } };
-  return <div className={TABLE_ROW_CLASS}>
-    <span className="w-32 shrink-0 truncate">{row.name}</span>
-    <span className="flex min-w-0 flex-1 items-center gap-1"><code className="min-w-0 flex-1 truncate font-mono text-[11px]">{row.key || `${row.key_prefix}…`}</code>{row.key ? <Button variant="ghost" size="icon" className="size-6" onClick={copy}><Copy /></Button> : null}</span>
-    <span className="hidden w-44 shrink-0 truncate text-[11px] text-muted-foreground lg:block">RPM {row.rate_limit || "∞"} · TPM {row.tpm_limit || "∞"} · {zh ? "并发" : "C"} {row.concurrency_limit || "∞"}{row.expires_at ? ` · ${shortTime(row.expires_at)}` : ""}</span>
-    <span className="flex w-24 shrink-0 items-center justify-end gap-1"><Badge variant={row.enabled ? "success" : "secondary"}>{row.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge><Switch checked={row.enabled} onCheckedChange={onToggle} /><Button variant="ghost" size="icon" className="size-6" onClick={onRemove}><Trash2 /></Button></span>
-  </div>;
+  const key = row.key || `${row.key_prefix}…`;
+  const limits = `RPM ${row.rate_limit || "∞"} · TPM ${row.tpm_limit || "∞"} · ${zh ? "并发" : "C"} ${row.concurrency_limit || "∞"}${row.expires_at ? ` · ${shortTime(row.expires_at)}` : ""}`;
+  return <>
+    <div className="space-y-2 border-b border-border/40 p-3 text-xs sm:hidden">
+      <div className="flex min-w-0 items-center justify-between gap-2"><p className="min-w-0 truncate font-medium">{row.name}</p><Badge variant={row.enabled ? "success" : "secondary"}>{row.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge></div>
+      <div className="flex min-w-0 items-center gap-1 rounded-md bg-secondary/45 px-2.5 py-2"><code className="min-w-0 flex-1 break-all font-mono text-[11px]">{key}</code>{row.key ? <Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={copy}><Copy /></Button> : null}</div>
+      <p className="break-words text-[11px] text-muted-foreground">{limits}</p>
+      <div className="flex items-center justify-end gap-1"><Switch checked={row.enabled} onCheckedChange={onToggle} /><Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={onRemove}><Trash2 /></Button></div>
+    </div>
+    <div className={`${TABLE_ROW_CLASS} hidden sm:flex`}><span className="w-32 shrink-0 truncate">{row.name}</span><span className="flex min-w-0 flex-1 items-center gap-1"><code className="min-w-0 flex-1 truncate font-mono text-[11px]">{key}</code>{row.key ? <Button variant="ghost" size="icon" className="size-6" onClick={copy}><Copy /></Button> : null}</span><span className="hidden w-44 shrink-0 truncate text-[11px] text-muted-foreground lg:block">{limits}</span><span className="flex w-24 shrink-0 items-center justify-end gap-1"><Badge variant={row.enabled ? "success" : "secondary"}>{row.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge><Switch checked={row.enabled} onCheckedChange={onToggle} /><Button variant="ghost" size="icon" className="size-6" onClick={onRemove}><Trash2 /></Button></span></div>
+  </>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="flex flex-col gap-1.5"><Label>{label}</Label>{children}</label>; }

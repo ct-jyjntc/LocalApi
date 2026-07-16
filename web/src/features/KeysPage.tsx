@@ -102,7 +102,7 @@ export function KeysPage() {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className={TABLE_HEAD_CLASS}>
+        <div className={`${TABLE_HEAD_CLASS} hidden sm:flex`}>
           <span className="w-28 shrink-0">{t("common.name")}</span>
           <span className="min-w-0 flex-1">{t("keys.secret")}</span>
           <span className="w-16 shrink-0">{t("common.status")}</span>
@@ -137,60 +137,28 @@ function KeyRow({
   const display = full || `${row.key_prefix}…`;
 
   return (
-    <div className={TABLE_ROW_CLASS}>
-      <span className="w-28 shrink-0 truncate">{row.name}</span>
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">
-          {display}
-        </code>
-        {full ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-6 shrink-0 text-muted-foreground"
-            onClick={() => onCopy(full)}
-            aria-label={t("common.copy")}
-            title={t("common.copy")}
-          >
-            <Copy className="size-3.5" strokeWidth={1.8} />
-          </Button>
-        ) : (
-          <span className="shrink-0 text-[11px] text-muted-foreground">
-            {t("keys.legacyNoPlain")}
-          </span>
-        )}
-      </span>
-      <span className="w-16 shrink-0">
-        {row.enabled ? (
-          <Badge variant="success">{t("common.active")}</Badge>
-        ) : (
-          <Badge variant="secondary">{t("common.off")}</Badge>
-        )}
-      </span>
-      <span className="hidden w-36 shrink-0 text-[11px] text-muted-foreground md:block">
-        {row.last_used_at ? shortTime(row.last_used_at) : "—"}
-      </span>
-      <span className="flex w-20 shrink-0 items-center justify-end gap-1">
-        <Switch
-          checked={row.enabled}
-          onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })}
-          aria-label={`Toggle ${row.name}`}
-        />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6 text-muted-foreground hover:text-destructive"
-          onClick={() => {
-            if (confirm(t("keys.deleteConfirm", { name: row.name }))) {
-              onRemove(row.id);
-            }
-          }}
-          aria-label="Delete"
-        >
-          <Trash2 className="size-3.5" strokeWidth={1.8} />
-        </Button>
-      </span>
-    </div>
+    <>
+      <div className="space-y-2 border-b border-border/40 p-3 text-xs sm:hidden">
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <p className="min-w-0 truncate font-medium">{row.name}</p>
+          {row.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}
+        </div>
+        <div className="flex min-w-0 items-center gap-1.5 rounded-md bg-secondary/45 px-2.5 py-2">
+          <code className="min-w-0 flex-1 break-all font-mono text-[11px] text-foreground/90">{display}</code>
+          {full ? <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground" onClick={() => onCopy(full)} aria-label={t("common.copy")} title={t("common.copy")}><Copy className="size-3.5" strokeWidth={1.8} /></Button> : <span className="shrink-0 text-[11px] text-muted-foreground">{t("keys.legacyNoPlain")}</span>}
+        </div>
+        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span>{t("common.lastUsed")} {row.last_used_at ? shortTime(row.last_used_at) : "—"}</span>
+          <span className="flex items-center gap-1"><Switch checked={row.enabled} onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })} aria-label={`Toggle ${row.name}`} /><Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("keys.deleteConfirm", { name: row.name }))) onRemove(row.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+        </div>
+      </div>
+      <div className={`${TABLE_ROW_CLASS} hidden sm:flex`}>
+        <span className="w-28 shrink-0 truncate">{row.name}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5"><code className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">{display}</code>{full ? <Button type="button" variant="ghost" size="icon" className="size-6 shrink-0 text-muted-foreground" onClick={() => onCopy(full)} aria-label={t("common.copy")} title={t("common.copy")}><Copy className="size-3.5" strokeWidth={1.8} /></Button> : <span className="shrink-0 text-[11px] text-muted-foreground">{t("keys.legacyNoPlain")}</span>}</span>
+        <span className="w-16 shrink-0">{row.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}</span>
+        <span className="hidden w-36 shrink-0 text-[11px] text-muted-foreground md:block">{row.last_used_at ? shortTime(row.last_used_at) : "—"}</span>
+        <span className="flex w-20 shrink-0 items-center justify-end gap-1"><Switch checked={row.enabled} onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })} aria-label={`Toggle ${row.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("keys.deleteConfirm", { name: row.name }))) onRemove(row.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+      </div>
+    </>
   );
 }

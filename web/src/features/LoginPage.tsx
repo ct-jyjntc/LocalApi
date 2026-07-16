@@ -125,7 +125,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (mode: "admin" | "user") =
         </Card>
       </div>
       {companyName ? (
-        <div className="pointer-events-none fixed bottom-3 right-5 text-[11px] text-muted-foreground/75">
+        <div className="pointer-events-none fixed bottom-3 left-3 right-3 text-center text-[11px] text-muted-foreground/75 sm:left-auto sm:right-5 sm:text-right">
           @{new Date().getFullYear()} {companyName}
         </div>
       ) : null}

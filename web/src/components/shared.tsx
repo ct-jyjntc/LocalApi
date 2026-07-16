@@ -48,9 +48,9 @@ export function MetricCard({
   hint?: string;
 }) {
   return (
-    <div className="min-h-28 rounded-lg bg-card p-4">
+    <div className="min-h-24 min-w-0 rounded-lg bg-card p-3 sm:min-h-28 sm:p-4">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-2 text-xl font-medium tabular-nums tracking-tight">
+      <p className="mt-2 break-words text-lg font-medium tabular-nums tracking-tight sm:text-xl">
         {value}
       </p>
       {hint ? (

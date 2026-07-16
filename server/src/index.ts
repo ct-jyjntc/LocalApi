@@ -64,6 +64,7 @@ app.get("/branding", (_req, res) => {
   res.json({
     brand_name: getSetting("brand_name") || "LocalAPI",
     company_name: getSetting("company_name") || "",
+    public_base_url: getSetting("public_base_url") || "",
   });
 });
 

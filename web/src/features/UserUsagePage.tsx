@@ -84,7 +84,7 @@ function BillingDetails({ row, zh }: { row: UsageRow; zh: boolean }) {
   ] as const;
 
   return (
-    <div className="border-t border-border/40 bg-secondary/20 px-9 py-3 text-[11px]">
+    <div className="border-t border-border/40 bg-secondary/20 px-3 py-3 text-[11px] sm:px-9">
       <div className="grid gap-x-8 gap-y-4 md:grid-cols-3">
         <DetailGroup title={zh ? "Token 明细" : "Token usage"}>
           {tokenItems.map(([label, value]) => <DetailLine key={label} label={label} value={Number(value).toLocaleString()} />)}

@@ -296,12 +296,14 @@ export type Settings = {
   cache_paths: string[];
   brand_name: string;
   company_name: string;
+  public_base_url: string;
   registration_enabled: boolean;
 };
 
 export type Branding = {
   brand_name: string;
   company_name: string;
+  public_base_url: string;
 };
 
 export const api = {
@@ -384,6 +386,7 @@ export const api = {
       retry_delay_ms?: number;
       brand_name?: string;
       company_name?: string;
+      public_base_url?: string;
       registration_enabled?: boolean;
     }) =>
       request<Settings>("/admin/api/settings", {

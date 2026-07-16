@@ -33,6 +33,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [retryDelayMs, setRetryDelayMs] = useState(400);
   const [brandName, setBrandName] = useState("LocalAPI");
   const [companyName, setCompanyName] = useState("");
+  const [publicBaseUrl, setPublicBaseUrl] = useState("");
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
 
   useEffect(() => {
@@ -46,6 +47,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setRetryDelayMs(Number(data.retry_delay_ms ?? 400));
     setBrandName(data.brand_name || "LocalAPI");
     setCompanyName(data.company_name || "");
+    setPublicBaseUrl(data.public_base_url || "");
     setRegistrationEnabled(Boolean(data.registration_enabled));
   }, [data]);
 
@@ -95,6 +97,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     mutationFn: async () => api.settings.update({
       brand_name: brandName.trim() || "LocalAPI",
       company_name: companyName.trim(),
+      public_base_url: publicBaseUrl.trim(),
     }),
     onSuccess: () => {
       toast.success(t("settings.brandingSaved"));
@@ -124,6 +127,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     { id: "zh", label: t("settings.language.zh") },
     { id: "en", label: t("settings.language.en") },
   ];
+  const exampleBaseUrl = data?.public_base_url?.trim() || "https://your-domain";
 
   return (
     <div className="space-y-6">
@@ -200,6 +204,16 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
             <Label>{t("settings.companyName")}</Label>
             <Input value={companyName} maxLength={160} onChange={(event) => setCompanyName(event.target.value)} />
             <p className="text-[11px] text-muted-foreground">{t("settings.companyHint")}</p>
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label>{t("settings.publicBaseUrl")}</Label>
+            <Input
+              value={publicBaseUrl}
+              maxLength={255}
+              placeholder="your-domain"
+              onChange={(event) => setPublicBaseUrl(event.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">{t("settings.publicBaseUrlHint")}</p>
           </div>
         </div>
         <div className="flex justify-end">
@@ -314,13 +328,13 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
         <p className="text-xs text-muted-foreground">{t("settings.usageHint")}</p>
         <pre className="overflow-x-auto rounded-md bg-secondary/55 p-3 font-mono text-[11px] leading-5">
 {`# 非流式
-curl http://127.0.0.1:5555/v1/chat/completions \\
+curl ${exampleBaseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer <api-key>" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":false}'
 
 # 流式 SSE
-curl -N http://127.0.0.1:5555/v1/chat/completions \\
+curl -N ${exampleBaseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer <api-key>" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}'`}

@@ -16,7 +16,7 @@ export function UserDashboardPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title={data?.user.display_name || (zh ? "用户概览" : "Account overview")} description={zh ? "查看余额、套餐与 Token 消耗。" : "Track balance, plan and token usage."} />
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-2 min-[360px]:grid-cols-2 xl:grid-cols-4">
         <MetricCard label={zh ? "可用余额" : "Wallet balance"} value={formatCredits(data?.wallet?.balance_micros)} hint={zh ? `冻结 ${formatCredits(data?.wallet?.reserved_micros)}` : `Reserved ${formatCredits(data?.wallet?.reserved_micros)}`} />
         <MetricCard label={zh ? "套餐余额" : "Plan balance"} value={formatCredits(data?.subscription?.remaining_credits_micros)} hint={data?.subscription ? `${data.subscription.plan.name} · ${new Date(data.subscription.period_end).toLocaleDateString()}` : (zh ? "未分配套餐" : "No active plan")} />
         <MetricCard label={zh ? "累计消费" : "Usage cost"} value={formatCredits(data?.totals.cost_micros)} hint={zh ? `${data?.totals.requests || 0} 次请求` : `${data?.totals.requests || 0} requests`} />
@@ -87,7 +87,7 @@ function UsageTrendChart({ data, zh, loading }: { data: UsageTrendPoint[]; zh: b
         </div>
       </div>
 
-      <div className="mt-4 h-[280px] w-full text-foreground" onMouseLeave={() => setHovered(null)}>
+      <div className="mt-4 h-[220px] w-full text-foreground sm:h-[280px]" onMouseLeave={() => setHovered(null)}>
         {loading ? (
           <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{zh ? "加载中…" : "Loading…"}</div>
         ) : (
