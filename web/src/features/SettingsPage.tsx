@@ -6,6 +6,7 @@ import {
   api,
   clearAdminToken,
   getAdminToken,
+  setAdminEntryPath,
   setAdminToken,
 } from "@/lib/api";
 import { PageHeader } from "@/components/shared";
@@ -34,6 +35,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [brandName, setBrandName] = useState("LocalAPI");
   const [companyName, setCompanyName] = useState("");
   const [publicBaseUrl, setPublicBaseUrl] = useState("");
+  const [adminEntryPath, setAdminEntryPathState] = useState("/admin");
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
 
   useEffect(() => {
@@ -48,6 +50,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setBrandName(data.brand_name || "LocalAPI");
     setCompanyName(data.company_name || "");
     setPublicBaseUrl(data.public_base_url || "");
+    setAdminEntryPathState(data.admin_entry_path || "/admin");
     setRegistrationEnabled(Boolean(data.registration_enabled));
   }, [data]);
 
@@ -99,7 +102,10 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
       company_name: companyName.trim(),
       public_base_url: publicBaseUrl.trim(),
     }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      localStorage.setItem("localapi_brand_name", result.brand_name || "LocalAPI");
+      if (result.company_name?.trim()) localStorage.setItem("localapi_company_name", result.company_name.trim());
+      else localStorage.removeItem("localapi_company_name");
       toast.success(t("settings.brandingSaved"));
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["branding"] });
@@ -117,6 +123,18 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const saveAdminEntry = useMutation({
+    mutationFn: async () => api.settings.update({ admin_entry_path: adminEntryPath.trim() }),
+    onSuccess: (result) => {
+      const nextPath = result.admin_entry_path || "/admin";
+      setAdminEntryPathState(nextPath);
+      setAdminEntryPath(nextPath);
+      toast.success(t("settings.adminEntrySaved"));
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const themes = [
     { id: "light" as const, label: t("settings.theme.light") },
     { id: "dark" as const, label: t("settings.theme.dark") },
@@ -128,6 +146,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     { id: "en", label: t("settings.language.en") },
   ];
   const exampleBaseUrl = data?.public_base_url?.trim() || "https://your-domain";
+  const adminEntryPreview = `${data?.public_base_url?.trim() || window.location.origin}${adminEntryPath.startsWith("/") ? adminEntryPath : `/${adminEntryPath}`}`;
 
   return (
     <div className="space-y-6">
@@ -265,6 +284,30 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
             onClick={() => saveRelay.mutate()}
           >
             {saveRelay.isPending ? t("common.loading") : t("settings.saveRelay")}
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t("settings.adminEntry")}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.adminEntryHint")}</p>
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t("settings.adminEntryPath")}</Label>
+          <Input
+            value={adminEntryPath}
+            maxLength={65}
+            placeholder="/admin"
+            spellCheck={false}
+            className="font-mono"
+            onChange={(event) => setAdminEntryPathState(event.target.value)}
+          />
+          <p className="break-all text-[11px] text-muted-foreground">{t("settings.adminEntryPreview")} <span className="font-mono text-foreground/80">{adminEntryPreview}</span></p>
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" disabled={saveAdminEntry.isPending || !adminEntryPath.trim()} onClick={() => saveAdminEntry.mutate()}>
+            {saveAdminEntry.isPending ? t("common.loading") : t("settings.saveAdminEntry")}
           </Button>
         </div>
       </Card>

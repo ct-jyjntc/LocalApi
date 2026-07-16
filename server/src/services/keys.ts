@@ -110,19 +110,23 @@ export function updateApiKey(
     | undefined;
   if (!existing) return null;
 
+  const safeInput = userId
+    ? { name: input.name, enabled: input.enabled }
+    : input;
+
   db.prepare(
     `UPDATE api_keys SET
       name = ?, enabled = ?, rate_limit = ?, tpm_limit = ?, concurrency_limit = ?,
       allowed_models = ?, expires_at = ?
      WHERE id = ?`,
   ).run(
-    input.name ?? existing.name,
-    input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled,
-    input.rate_limit ?? existing.rate_limit,
-    input.tpm_limit ?? existing.tpm_limit,
-    input.concurrency_limit ?? existing.concurrency_limit,
-    input.allowed_models ? JSON.stringify(input.allowed_models) : existing.allowed_models,
-    input.expires_at !== undefined ? input.expires_at : existing.expires_at,
+    safeInput.name ?? existing.name,
+    safeInput.enabled !== undefined ? (safeInput.enabled ? 1 : 0) : existing.enabled,
+    userId ? 0 : (safeInput.rate_limit ?? existing.rate_limit),
+    userId ? 0 : (safeInput.tpm_limit ?? existing.tpm_limit),
+    userId ? 0 : (safeInput.concurrency_limit ?? existing.concurrency_limit),
+    userId ? "[]" : (safeInput.allowed_models ? JSON.stringify(safeInput.allowed_models) : existing.allowed_models),
+    userId ? null : (safeInput.expires_at !== undefined ? safeInput.expires_at : existing.expires_at),
     id,
   );
 

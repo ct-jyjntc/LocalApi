@@ -20,7 +20,7 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
     upsertModelPrice,
   } = await import("../src/services/billing");
   const { createApiKey } = await import("../src/services/keys");
-  const { createPlan, assignPlan } = await import("../src/services/plans");
+    const { createPlan, assignPlan, getActiveSubscription, listPlanOrders } = await import("../src/services/plans");
   const { beginRequestAccess, AccessError } = await import("../src/services/access");
 
   try {
@@ -129,13 +129,65 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
       concurrency_limit: 1,
     });
     const limitedKey = db.prepare("SELECT * FROM api_keys WHERE id = ?").get(limitedPublicKey.id) as import("../src/db").ApiKey;
+    const userKeyAccess = beginRequestAccess(limitedKey, "glm-test", { model: "glm-test", messages: [{ role: "user", content: "hello" }] });
+    userKeyAccess.release(1);
+    const unrestrictedModelAccess = beginRequestAccess(limitedKey, "other-model", { model: "other-model", max_tokens: 1 });
+    unrestrictedModelAccess.release(1);
+
+    const adminLimitedPublic = createApiKey({
+      name: "admin-limited",
+      allowed_models: ["glm-test"],
+      tpm_limit: 1,
+      concurrency_limit: 1,
+    });
+    const adminLimitedKey = db.prepare("SELECT * FROM api_keys WHERE id = ?").get(adminLimitedPublic.id) as import("../src/db").ApiKey;
     assert.throws(
-      () => beginRequestAccess(limitedKey, "glm-test", { model: "glm-test", messages: [{ role: "user", content: "hello" }] }),
+      () => beginRequestAccess(adminLimitedKey, "glm-test", { model: "glm-test", messages: [{ role: "user", content: "hello" }] }),
       (error) => error instanceof AccessError && error.status === 429 && error.code === "tpm_limit_exceeded",
     );
     assert.throws(
-      () => beginRequestAccess(limitedKey, "other-model", { model: "other-model" }),
+      () => beginRequestAccess(adminLimitedKey, "other-model", { model: "other-model" }),
       (error) => error instanceof AccessError && error.status === 403 && error.code === "model_not_allowed",
+    );
+
+    const renewable = createPlan({
+      name: "Paid renewal plan",
+      price_micros: 2_000_000,
+      included_credits_micros: 5_000_000,
+      cycle_days: 30,
+    });
+    const paidSubscription = assignPlan(user.id, renewable.id, true)!;
+    const balanceBeforeRenewal = getWallet(user.id)!.balance_micros;
+    const paidDue = new Date(Date.now() - 60_000).toISOString();
+    db.prepare("UPDATE subscriptions SET period_end = ?, entitlement_end = ?, reserved_micros = 0 WHERE id = ?")
+      .run(paidDue, paidDue, paidSubscription.id);
+    const renewed = getActiveSubscription(user.id);
+    assert.ok(renewed);
+    assert.ok(Date.parse(renewed!.period_end) > Date.now());
+    assert.equal(getWallet(user.id)!.balance_micros, balanceBeforeRenewal - 2_000_000);
+    const renewalLedger = db.prepare("SELECT amount_micros FROM wallet_ledger WHERE type = 'plan_renewal'").get() as {
+      amount_micros: number;
+    };
+    assert.equal(renewalLedger.amount_micros, -2_000_000);
+    assert.equal(listPlanOrders(user.id).some((order) => (order as { type: string }).type === "auto_renewal"), true);
+
+    const insufficientPlan = createPlan({
+      name: "Insufficient renewal plan",
+      price_micros: 2_000_000,
+      included_credits_micros: 5_000_000,
+    });
+    const unpaidSubscription = assignPlan(secondUser.id, insufficientPlan.id, true)!;
+    const unpaidDue = new Date(Date.now() - 60_000).toISOString();
+    db.prepare("UPDATE subscriptions SET period_end = ?, entitlement_end = ?, reserved_micros = 0 WHERE id = ?")
+      .run(unpaidDue, unpaidDue, unpaidSubscription.id);
+    assert.equal(getActiveSubscription(secondUser.id), null);
+    const expired = db.prepare("SELECT status FROM subscriptions WHERE id = ?").get(unpaidSubscription.id) as {
+      status: string;
+    };
+    assert.equal(expired.status, "expired");
+    assert.equal(
+      listPlanOrders(secondUser.id).some((order) => (order as { type: string; status: string }).type === "auto_renewal" && (order as { status: string }).status === "failed"),
+      true,
     );
   } finally {
     db.close();

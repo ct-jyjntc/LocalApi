@@ -155,7 +155,9 @@ export function reserveUsage(input: {
   if (billingMode === "coding" && !planEligible) {
     throw new BillingError(403, "model_not_allowed", `Model ${input.model} is not included in the active Coding Plan`);
   }
-  const overageEnabled = billingMode === "coding" ? Boolean(subscription?.plan.overage_enabled) : true;
+  const overageEnabled = billingMode === "coding"
+    ? Boolean(subscription?.plan.overage_enabled && subscription.overage_enabled)
+    : true;
   const usageId = uuid();
   let reservedPlan = 0;
   let reservedWallet = 0;
@@ -389,7 +391,7 @@ export function adjustWallet(userId: string, amountMicros: number, description: 
 
 export function getWallet(userId: string) {
   return db.prepare("SELECT * FROM wallet_accounts WHERE user_id = ?").get(userId) as
-    | { user_id: string; balance_micros: number; reserved_micros: number; lifetime_spent_micros: number; updated_at: string }
+    | { user_id: string; balance_micros: number; reserved_micros: number; lifetime_spent_micros: number; lifetime_topup_micros: number; updated_at: string }
     | undefined;
 }
 

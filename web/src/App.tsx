@@ -17,14 +17,21 @@ import { UserDashboardPage } from "@/features/UserDashboardPage";
 import { UserKeysPage } from "@/features/UserKeysPage";
 import { UserUsagePage } from "@/features/UserUsagePage";
 import { CommercialUsagePage } from "@/features/CommercialUsagePage";
-import { DocsPage } from "@/features/DocsPage";
+import { UserPlanPage } from "@/features/UserPlanPage";
+import { PaymentsPage } from "@/features/PaymentsPage";
+import { UserPaymentsPage } from "@/features/UserPaymentsPage";
+import { TiersPage } from "@/features/TiersPage";
+import { UserSettingsPage } from "@/features/UserSettingsPage";
 import { I18nProvider } from "@/lib/i18n";
+import { AppDialogProvider } from "@/components/AppDialogProvider";
 import {
   api,
   clearAdminToken,
   clearUserToken,
   getAdminToken,
+  getAdminEntryPath,
   getUserToken,
+  setAdminEntryPath,
   userApi,
 } from "@/lib/api";
 
@@ -60,17 +67,20 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="users" element={<UsersPage />} />
               <Route path="pricing" element={<PricingPage />} />
               <Route path="plans" element={<PlansPage />} />
+              <Route path="tiers" element={<TiersPage />} />
               <Route path="billing" element={<CommercialUsagePage />} />
+              <Route path="payments" element={<PaymentsPage />} />
               <Route path="logs" element={<LogsPage />} />
-              <Route path="docs" element={<DocsPage />} />
               <Route path="settings" element={<SettingsPage onLogout={onLogout} />} />
             </>
           ) : (
             <>
               <Route index element={<UserDashboardPage />} />
               <Route path="keys" element={<UserKeysPage />} />
+              <Route path="plan" element={<UserPlanPage />} />
               <Route path="usage" element={<UserUsagePage />} />
-              <Route path="docs" element={<DocsPage />} />
+              <Route path="payments" element={<UserPaymentsPage />} />
+              <Route path="settings" element={<UserSettingsPage />} />
             </>
           )}
           <Route path="*" element={<Navigate to="/" replace />} />
@@ -82,6 +92,8 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
 
 function Root() {
   const [mode, setMode] = useState<AuthMode | null | "loading">("loading");
+  const [loginMode, setLoginMode] = useState<AuthMode>("user");
+  const [adminEntryPath, setAdminEntryPathState] = useState(getAdminEntryPath());
 
   const verify = useCallback(async () => {
     const preferred = localStorage.getItem("localapi_auth_mode") as AuthMode | null;
@@ -103,6 +115,20 @@ function Root() {
         else clearUserToken();
       }
     }
+    const currentPath = window.location.pathname.replace(/\/+$/, "") || "/";
+    if (currentPath !== "/") {
+      try {
+        await api.adminEntry(currentPath);
+        setAdminEntryPath(currentPath);
+        setAdminEntryPathState(currentPath);
+        setLoginMode("admin");
+        setMode(null);
+        return;
+      } catch {
+        window.history.replaceState(null, "", "/");
+      }
+    }
+    setLoginMode("user");
     setMode(null);
   }, []);
 
@@ -119,17 +145,24 @@ function Root() {
   }
 
   if (!mode) {
-    return <LoginPage onSuccess={(nextMode) => setMode(nextMode)} />;
+    return <LoginPage mode={loginMode} adminEntryPath={adminEntryPath} onSuccess={(nextMode) => setMode(nextMode)} />;
   }
 
   return (
     <AuthedApp
       mode={mode}
       onLogout={() => {
-        if (mode === "admin") clearAdminToken();
-        else {
+        if (mode === "admin") {
+          const entryPath = getAdminEntryPath();
+          clearAdminToken();
+          window.history.replaceState(null, "", entryPath);
+          setAdminEntryPathState(entryPath);
+          setLoginMode("admin");
+        } else {
           userApi.logout().catch(() => undefined);
           clearUserToken();
+          window.history.replaceState(null, "", "/");
+          setLoginMode("user");
         }
         setMode(null);
       }}
@@ -147,8 +180,10 @@ export default function App() {
     >
       <I18nProvider>
         <QueryClientProvider client={queryClient}>
-          <ClearLegacyUiScale />
-          <Root />
+          <AppDialogProvider>
+            <ClearLegacyUiScale />
+            <Root />
+          </AppDialogProvider>
           <Toaster
             position="top-right"
             richColors

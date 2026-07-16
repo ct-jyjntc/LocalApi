@@ -1,5 +1,6 @@
 const TOKEN_KEY = "localapi_admin_token";
 const USER_TOKEN_KEY = "localapi_user_token";
+const ADMIN_ENTRY_KEY = "localapi_admin_entry_path";
 
 export function getAdminToken(): string {
   return localStorage.getItem(TOKEN_KEY) || "";
@@ -15,6 +16,14 @@ export function setAdminToken(token: string) {
 
 export function clearAdminToken() {
   localStorage.removeItem(TOKEN_KEY);
+}
+
+export function getAdminEntryPath(): string {
+  return sessionStorage.getItem(ADMIN_ENTRY_KEY) || "/admin";
+}
+
+export function setAdminEntryPath(path: string) {
+  sessionStorage.setItem(ADMIN_ENTRY_KEY, path || "/admin");
 }
 
 export function getUserToken(): string {
@@ -118,6 +127,20 @@ export type Provider = {
   updated_at: string;
 };
 
+export type ProviderTestResult = {
+  ok: boolean;
+  provider_id: string;
+  provider_name: string;
+  model: string;
+  path: string;
+  status_code: number | null;
+  attempts: number;
+  max_retries: number;
+  latency_ms: number;
+  error: string | null;
+  response_preview: string;
+};
+
 export type ApiKeyRow = {
   id: string;
   name: string;
@@ -184,6 +207,28 @@ export type UserRow = {
   plan_name?: string | null;
   period_end?: string | null;
   remaining_credits_micros?: number | null;
+  lifetime_topup_micros?: number;
+  tier?: TierSummary;
+};
+
+export type UserTier = {
+  id: string;
+  name: string;
+  description: string;
+  threshold_micros: number;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TierSummary = {
+  current: UserTier | null;
+  next: UserTier | null;
+  lifetime_topup_micros: number;
+  next_required_micros: number;
 };
 
 export type ModelPrice = {
@@ -202,6 +247,7 @@ export type PlanRow = {
   name: string;
   description: string;
   cycle_days: number;
+  price_micros: number;
   included_credits_micros: number;
   allowed_models: string[];
   rpm_limit: number;
@@ -211,9 +257,75 @@ export type PlanRow = {
   stock_limit: number;
   stock_used: number;
   stock_available: number | null;
+  sort_order: number;
   enabled: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type PaymentChannel = {
+  id: string;
+  provider: string;
+  name: string;
+  enabled: boolean;
+  client_id?: string;
+  client_secret?: string;
+  gateway_url?: string;
+  asset?: string;
+  exchange_rate_micros: number;
+  min_amount_minor: number;
+  max_amount_minor: number;
+  fee_bps: number;
+  fee_fixed_minor: number;
+  notify_url?: string;
+  return_url?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type PaymentOrder = {
+  id: string;
+  order_no: string;
+  user_id: string;
+  username?: string;
+  display_name?: string;
+  channel_id: string;
+  channel_name?: string;
+  channel_trade_no: string | null;
+  purpose: string;
+  status: "pending" | "paid" | "credited" | "failed" | "expired" | "cancelled" | "refunding" | "refunded";
+  amount_minor: number;
+  amount: string;
+  fee_minor: number;
+  fee: string;
+  asset: string;
+  credited_micros: number;
+  credited_amount: number;
+  exchange_rate_micros: number;
+  title: string;
+  pay_url: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+  paid_at: string | null;
+  credited_at: string | null;
+  refunded_at: string | null;
+};
+
+export type PaymentRefund = {
+  id: string;
+  refund_no: string;
+  order_id: string;
+  order_no: string;
+  username: string;
+  amount_minor: number;
+  debit_micros: number;
+  status: string;
+  reason: string;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
 };
 
 export type SubscriptionRow = {
@@ -223,10 +335,70 @@ export type SubscriptionRow = {
   status: string;
   period_start: string;
   period_end: string;
+  entitlement_end: string;
   remaining_credits_micros: number;
   reserved_micros: number;
+  price_micros_snapshot: number;
   auto_renew: number;
+  overage_enabled: number;
   plan: PlanRow;
+};
+
+export type PlanOrderRow = {
+  id: string;
+  order_no: string;
+  user_id: string;
+  plan_id: string;
+  plan_name: string;
+  previous_plan_id: string | null;
+  previous_plan_name: string | null;
+  subscription_id: string | null;
+  type: "purchase" | "upgrade" | "renewal" | "auto_renewal";
+  status: "completed" | "failed";
+  list_price_micros: number;
+  credit_micros: number;
+  amount_micros: number;
+  balance_after_micros: number;
+  description: string;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type PlanTransactionResult = {
+  order: PlanOrderRow;
+  subscription: SubscriptionRow | null;
+};
+
+export type CommerceOrder = {
+  id: string;
+  order_no: string;
+  source: "payment" | "plan";
+  kind: string;
+  status: string;
+  title: string;
+  settlement_micros: number;
+  external_amount: string | null;
+  external_asset: string | null;
+  discount_micros: number;
+  channel_name: string | null;
+  pay_url: string | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+  actions: { pay: boolean; sync: boolean; cancel: boolean; delete: boolean };
+};
+
+export type WalletLedgerRow = {
+  id: string;
+  user_id: string;
+  type: string;
+  amount_micros: number;
+  balance_after_micros: number;
+  usage_id: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  description: string;
+  created_at: string;
 };
 
 export type Wallet = {
@@ -234,6 +406,7 @@ export type Wallet = {
   balance_micros: number;
   reserved_micros: number;
   lifetime_spent_micros: number;
+  lifetime_topup_micros: number;
   updated_at: string;
 };
 
@@ -297,6 +470,7 @@ export type Settings = {
   brand_name: string;
   company_name: string;
   public_base_url: string;
+  admin_entry_path: string;
   registration_enabled: boolean;
 };
 
@@ -308,12 +482,18 @@ export type Branding = {
 
 export const api = {
   branding: () => request<Branding>("/branding", {}, { auth: false }),
-  login: (password: string) =>
+  adminEntry: (path: string) =>
+    request<{ ok: boolean }>(
+      "/admin/api/entry",
+      { method: "POST", body: JSON.stringify({ path }) },
+      { auth: false },
+    ),
+  login: (password: string, entryPath: string) =>
     request<{ ok: boolean }>(
       "/admin/api/login",
       {
         method: "POST",
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, entry_path: entryPath }),
       },
       { auth: false },
     ),
@@ -343,6 +523,11 @@ export const api = {
     remove: (id: string) =>
       request<{ ok: boolean }>(`/admin/api/providers/${id}`, {
         method: "DELETE",
+      }),
+    test: (id: string, model?: string) =>
+      request<ProviderTestResult>(`/admin/api/providers/${id}/test`, {
+        method: "POST",
+        body: JSON.stringify(model ? { model } : {}),
       }),
   },
   keys: {
@@ -387,6 +572,7 @@ export const api = {
       brand_name?: string;
       company_name?: string;
       public_base_url?: string;
+      admin_entry_path?: string;
       registration_enabled?: boolean;
     }) =>
       request<Settings>("/admin/api/settings", {
@@ -423,6 +609,14 @@ export const api = {
       cancelPlan: (id: string) =>
         request<{ ok: boolean }>(`/admin/api/commercial/users/${id}/subscription`, { method: "DELETE" }),
     },
+    tiers: {
+      list: () => request<{ items: UserTier[] }>("/admin/api/commercial/tiers"),
+      create: (body: Omit<UserTier, "id" | "created_at" | "updated_at">) =>
+        request<UserTier>("/admin/api/commercial/tiers", { method: "POST", body: JSON.stringify(body) }),
+      update: (id: string, body: Partial<Omit<UserTier, "id" | "created_at" | "updated_at">>) =>
+        request<UserTier>(`/admin/api/commercial/tiers/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+      remove: (id: string) => request<{ ok: boolean }>(`/admin/api/commercial/tiers/${id}`, { method: "DELETE" }),
+    },
     prices: {
       list: () => request<{ items: ModelPrice[] }>("/admin/api/commercial/prices"),
       upsert: (model: string, body: Omit<ModelPrice, "model" | "created_at" | "updated_at">) =>
@@ -439,6 +633,7 @@ export const api = {
         name: string;
         description?: string;
         cycle_days?: number;
+        price_micros?: number;
         included_credits_micros?: number;
         allowed_models?: string[];
         rpm_limit?: number;
@@ -453,6 +648,7 @@ export const api = {
         name: string;
         description: string;
         cycle_days: number;
+        price_micros: number;
         included_credits_micros: number;
         allowed_models: string[];
         rpm_limit: number;
@@ -464,8 +660,38 @@ export const api = {
       }>) =>
         request<PlanRow>(`/admin/api/commercial/plans/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
       remove: (id: string) => request<{ ok: boolean }>(`/admin/api/commercial/plans/${id}`, { method: "DELETE" }),
+      reorder: (ids: string[]) =>
+        request<{ items: PlanRow[] }>("/admin/api/commercial/plans/reorder", {
+          method: "PUT",
+          body: JSON.stringify({ ids }),
+        }),
     },
     usage: (limit = 200) => request<{ items: UsageRow[] }>(`/admin/api/commercial/usage?limit=${limit}`),
+    payments: {
+      channel: () => request<PaymentChannel>("/admin/api/commercial/payments/channel"),
+      updateChannel: (body: Partial<PaymentChannel>) =>
+        request<PaymentChannel>("/admin/api/commercial/payments/channel", {
+          method: "PUT",
+          body: JSON.stringify(body),
+        }),
+      orders: (status?: string, limit = 200) =>
+        request<{ items: PaymentOrder[] }>(
+          `/admin/api/commercial/payments/orders?limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}`,
+        ),
+      sync: (id: string) =>
+        request<PaymentOrder>(`/admin/api/commercial/payments/orders/${id}/sync`, { method: "POST" }),
+      refund: (id: string, reason: string) =>
+        request<PaymentOrder>(`/admin/api/commercial/payments/orders/${id}/refund`, {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        }),
+      cancel: (id: string) =>
+        request<PaymentOrder>(`/admin/api/commercial/payments/orders/${id}/cancel`, { method: "POST" }),
+      remove: (id: string) =>
+        request<{ ok: boolean }>(`/admin/api/commercial/payments/orders/${id}`, { method: "DELETE" }),
+      refunds: (limit = 200) =>
+        request<{ items: PaymentRefund[] }>(`/admin/api/commercial/payments/refunds?limit=${limit}`),
+    },
   },
 };
 
@@ -485,7 +711,7 @@ export const userApi = {
     ),
   logout: () => request<{ ok: boolean }>("/user/api/logout", { method: "POST" }, { auth: "user" }),
   me: () =>
-    request<{ user: UserRow; wallet: Wallet | null; subscription: SubscriptionRow | null; prices: ModelPrice[] }>(
+    request<{ user: UserRow; wallet: Wallet | null; tier: TierSummary; subscription: SubscriptionRow | null; prices: ModelPrice[] }>(
       "/user/api/me",
       {},
       { auth: "user" },
@@ -506,5 +732,71 @@ export const userApi = {
       request<ApiKeyRow>(`/user/api/keys/${id}`, { method: "PATCH", body: JSON.stringify(body) }, { auth: "user" }),
     remove: (id: string) => request<{ ok: boolean }>(`/user/api/keys/${id}`, { method: "DELETE" }, { auth: "user" }),
   },
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ ok: boolean }>(
+      "/user/api/me/password",
+      { method: "PATCH", body: JSON.stringify({ current_password, new_password }) },
+      { auth: "user" },
+    ),
   usage: (limit = 200) => request<{ items: UsageRow[] }>(`/user/api/usage?limit=${limit}`, {}, { auth: "user" }),
+  commerce: {
+    orders: (limit = 200) =>
+      request<{ items: CommerceOrder[] }>(`/user/api/commerce/orders?limit=${limit}`, {}, { auth: "user" }),
+    ledger: (limit = 200) =>
+      request<{ items: WalletLedgerRow[] }>(`/user/api/commerce/ledger?limit=${limit}`, {}, { auth: "user" }),
+  },
+  payments: {
+    config: () => request<{ channel: PaymentChannel | null }>("/user/api/payments/config", {}, { auth: "user" }),
+    orders: (limit = 200) =>
+      request<{ items: PaymentOrder[] }>(`/user/api/payments/orders?limit=${limit}`, {}, { auth: "user" }),
+    createTopup: (amount: string) =>
+      request<PaymentOrder>(
+        "/user/api/payments/topups",
+        { method: "POST", body: JSON.stringify({ amount }) },
+        { auth: "user" },
+      ),
+    sync: (id: string) =>
+      request<PaymentOrder>(`/user/api/payments/orders/${id}/sync`, { method: "POST" }, { auth: "user" }),
+    cancel: (id: string) =>
+      request<PaymentOrder>(`/user/api/payments/orders/${id}/cancel`, { method: "POST" }, { auth: "user" }),
+    remove: (id: string) =>
+      request<{ ok: boolean }>(`/user/api/payments/orders/${id}`, { method: "DELETE" }, { auth: "user" }),
+  },
+  subscription: {
+    setAutoRenew: (enabled: boolean) =>
+      request<SubscriptionRow>(
+        "/user/api/subscription/auto-renew",
+        { method: "PATCH", body: JSON.stringify({ enabled }) },
+        { auth: "user" },
+      ),
+    setOverage: (enabled: boolean) =>
+      request<SubscriptionRow>(
+        "/user/api/subscription/overage",
+        { method: "PATCH", body: JSON.stringify({ enabled }) },
+        { auth: "user" },
+      ),
+    upgrade: (plan_id: string) =>
+      request<PlanTransactionResult>(
+        "/user/api/subscription/upgrade",
+        { method: "POST", body: JSON.stringify({ plan_id, request_id: crypto.randomUUID() }) },
+        { auth: "user" },
+      ),
+    renew: () =>
+      request<PlanTransactionResult>(
+        "/user/api/subscription/renew",
+        { method: "POST", body: JSON.stringify({ request_id: crypto.randomUUID() }) },
+        { auth: "user" },
+      ),
+  },
+  plans: {
+    list: () => request<{ items: PlanRow[] }>("/user/api/plans", {}, { auth: "user" }),
+    purchase: (id: string) =>
+      request<PlanTransactionResult>(
+        `/user/api/plans/${id}/purchase`,
+        { method: "POST", body: JSON.stringify({ request_id: crypto.randomUUID() }) },
+        { auth: "user" },
+      ),
+    orders: (limit = 100) =>
+      request<{ items: PlanOrderRow[] }>(`/user/api/plan-orders?limit=${limit}`, {}, { auth: "user" }),
+  },
 };

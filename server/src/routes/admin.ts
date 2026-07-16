@@ -24,7 +24,9 @@ import {
 import { getAllSettings, getSetting, setSetting } from "../db";
 import { requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { DEFAULT_ADMIN_ENTRY_PATH, isValidAdminEntryPath, normalizeAdminEntryPath } from "../utils/admin-entry";
 import { commercialAdminRouter } from "./commercial-admin";
+import { testProviderConnection } from "../services/proxy";
 
 export const adminRouter = Router();
 
@@ -45,6 +47,9 @@ const providerSchema = z.object({
   timeout_ms: z.coerce.number().int().min(100).max(600_000).optional(),
 });
 const providerPatchSchema = providerSchema.partial();
+const providerTestSchema = z.object({
+  model: z.string().trim().min(1).max(200).optional(),
+});
 const keySchema = z.object({
   name: z.string().trim().min(1).max(120),
   rate_limit: z.coerce.number().int().min(0).max(1_000_000).optional(),
@@ -81,6 +86,9 @@ const settingsSchema = z.object({
   public_base_url: z.string().trim().max(255).refine(isValidPublicBaseUrl, {
     message: "public_base_url must be an http(s) URL or domain without a path",
   }).optional(),
+  admin_entry_path: z.string().trim().max(65).refine(isValidAdminEntryPath, {
+    message: "admin_entry_path must be a single safe path segment",
+  }).optional(),
   registration_enabled: z.boolean().optional(),
 });
 
@@ -94,17 +102,35 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | n
   return null;
 }
 
-// Public login (must be before requireAdmin)
+// Public entry check and login (must be before requireAdmin)
+adminRouter.post("/entry", (req, res) => {
+  const path = typeof req.body?.path === "string" ? req.body.path : "";
+  const limiterKey = `admin-entry:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const rate = consumeRateLimit(limiterKey, 30, 5 * 60_000);
+  if (!rate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).json({ error: "Too many entry attempts", ok: false });
+  }
+  if (!matchesAdminEntryPath(path)) {
+    return res.status(404).json({ error: "Not found", ok: false });
+  }
+  return res.json({ ok: true });
+});
+
 adminRouter.post("/login", (req, res) => {
   const password =
     (typeof req.body?.password === "string" && req.body.password) ||
     (typeof req.body?.admin_password === "string" && req.body.admin_password) ||
     "";
+  const entryPath = typeof req.body?.entry_path === "string" ? req.body.entry_path : "";
   const limiterKey = `admin-login:${req.ip || req.socket.remoteAddress || "unknown"}`;
   const rate = consumeRateLimit(limiterKey, 5, 5 * 60_000);
   if (!rate.allowed) {
     res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
     return res.status(429).json({ error: "Too many login attempts", ok: false });
+  }
+  if (!matchesAdminEntryPath(entryPath)) {
+    return res.status(404).json({ error: "Not found", ok: false });
   }
   if (!password || !verifyAdminToken(password)) {
     return res.status(401).json({ error: "Invalid admin password", ok: false });
@@ -135,6 +161,14 @@ adminRouter.post("/providers", (req, res) => {
   const provider = createProvider(body);
   clearCache();
   return res.status(201).json(sanitizeProvider(provider));
+});
+
+adminRouter.post("/providers/:id/test", async (req, res) => {
+  const body = parseBody(providerTestSchema, req.body ?? {}, res);
+  if (!body) return;
+  const result = await testProviderConnection(req.params.id, body.model);
+  if (!result) return res.status(404).json({ error: "Provider not found" });
+  return res.json(result);
 });
 
 adminRouter.patch("/providers/:id", (req, res) => {
@@ -249,6 +283,7 @@ adminRouter.get("/settings", (_req, res) => {
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
     public_base_url: all.public_base_url || "",
+    admin_entry_path: all.admin_entry_path || DEFAULT_ADMIN_ENTRY_PATH,
     registration_enabled: all.registration_enabled === "true",
   });
 });
@@ -291,6 +326,9 @@ adminRouter.patch("/settings", (req, res) => {
   if (body.public_base_url !== undefined) {
     setSetting("public_base_url", normalizePublicBaseUrl(body.public_base_url));
   }
+  if (body.admin_entry_path !== undefined) {
+    setSetting("admin_entry_path", normalizeAdminEntryPath(body.admin_entry_path));
+  }
   if (body.registration_enabled !== undefined) {
     setSetting("registration_enabled", body.registration_enabled ? "true" : "false");
   }
@@ -310,6 +348,7 @@ adminRouter.patch("/settings", (req, res) => {
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
     public_base_url: all.public_base_url || "",
+    admin_entry_path: all.admin_entry_path || DEFAULT_ADMIN_ENTRY_PATH,
     registration_enabled: all.registration_enabled === "true",
   });
 });
@@ -344,4 +383,9 @@ function isValidPublicBaseUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function matchesAdminEntryPath(value: string): boolean {
+  const configured = getSetting("admin_entry_path") || DEFAULT_ADMIN_ENTRY_PATH;
+  return isValidAdminEntryPath(value) && normalizeAdminEntryPath(value) === configured;
 }

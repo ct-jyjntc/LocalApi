@@ -14,9 +14,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { formatBytes, formatMs, shortTime, cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { useAppDialog } from "@/components/app-dialog-context";
 
 export function LogsPage() {
   const { t } = useI18n();
+  const dialogs = useAppDialog();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const { data, isLoading } = useQuery({
@@ -49,8 +51,8 @@ export function LogsPage() {
             variant="secondary"
             size="sm"
             className="text-muted-foreground"
-            onClick={() => {
-              if (confirm(t("logs.clearConfirm"))) clear.mutate();
+            onClick={async () => {
+              if (await dialogs.confirm({ title: t("logs.clear"), description: t("logs.clearConfirm"), confirmText: t("logs.clear"), destructive: true })) clear.mutate();
             }}
           >
             {t("logs.clear")}

@@ -4,6 +4,7 @@ import { db, User } from "../db";
 import { sha256 } from "../utils/hash";
 import { hashPassword, verifyPassword } from "../utils/password";
 import { nowIso } from "../utils/time";
+import { resolveTierForTopup } from "./tiers";
 
 const SESSION_DAYS = 7;
 
@@ -16,7 +17,10 @@ function parseModels(value: string): string[] {
   }
 }
 
-export function publicUser(row: User) {
+export function publicUser(row: User, lifetimeTopupMicros?: number) {
+  const topup = lifetimeTopupMicros ?? ((db.prepare(
+    "SELECT lifetime_topup_micros FROM wallet_accounts WHERE user_id = ?",
+  ).get(row.id) as { lifetime_topup_micros: number } | undefined)?.lifetime_topup_micros ?? 0);
   return {
     id: row.id,
     username: row.username,
@@ -29,6 +33,7 @@ export function publicUser(row: User) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     last_login_at: row.last_login_at,
+    tier: resolveTierForTopup(topup),
   };
 }
 
@@ -51,6 +56,7 @@ export function listUsers() {
               COALESCE(w.balance_micros, 0) AS balance_micros,
               COALESCE(w.reserved_micros, 0) AS reserved_micros,
               COALESCE(w.lifetime_spent_micros, 0) AS lifetime_spent_micros,
+              COALESCE(w.lifetime_topup_micros, 0) AS lifetime_topup_micros,
               s.id AS subscription_id, s.plan_id, s.period_end,
               s.remaining_credits_micros, s.status AS subscription_status,
               p.name AS plan_name
@@ -66,7 +72,7 @@ export function listUsers() {
     )
     .all()
     .map((row) => {
-      const user = publicUser(row as User);
+      const user = publicUser(row as User, Number((row as Record<string, unknown>).lifetime_topup_micros || 0));
       const extra = row as Record<string, unknown>;
       return { ...user, ...extra, password_hash: undefined, allowed_models: user.allowed_models };
     });
@@ -143,6 +149,14 @@ export function updateUser(
     db.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(id);
   }
   return publicUser(getUser(id)!);
+}
+
+export function changeUserPassword(userId: string, currentPassword: string, newPassword: string) {
+  const user = getUser(userId);
+  if (!user || !verifyPassword(currentPassword, user.password_hash)) return false;
+  db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+    .run(hashPassword(newPassword), nowIso(), userId);
+  return true;
 }
 
 export function deleteUser(id: string) {

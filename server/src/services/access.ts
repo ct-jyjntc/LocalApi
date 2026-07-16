@@ -3,6 +3,7 @@ import { estimateRequestTokens } from "./billing";
 import { consumeRateLimit } from "./rate-limit";
 import { getActiveSubscription } from "./plans";
 import { getUser } from "./users";
+import { resolveUserTier } from "./tiers";
 
 export class AccessError extends Error {
   status: number;
@@ -38,11 +39,6 @@ function parseModels(value: string | string[] | undefined): string[] {
 
 function allows(models: string[], model: string) {
   return models.length === 0 || models.includes("*") || models.includes(model);
-}
-
-function minPositive(...values: Array<number | undefined>) {
-  const positive = values.filter((value): value is number => Number.isFinite(value) && (value ?? 0) > 0);
-  return positive.length ? Math.min(...positive) : 0;
 }
 
 function reserveTokenWindow(scope: string, limit: number, estimated: number) {
@@ -81,13 +77,10 @@ export type RequestAccess = {
 export function isModelAllowedForKey(key: ApiKey, model: string, options: { includeSubscription?: boolean } = {}) {
   const user = key.user_id ? getUser(key.user_id) : null;
   if (key.user_id && (!user || user.status !== "active")) return false;
-  const subscription = options.includeSubscription === false || !user ? null : getActiveSubscription(user.id);
-  const scopes = [
-    parseModels(key.allowed_models),
-    parseModels(user?.allowed_models),
-  ];
-  if (options.includeSubscription !== false) scopes.push(parseModels(subscription?.plan.allowed_models));
-  return scopes.every((models) => allows(models, model));
+  if (!user) return allows(parseModels(key.allowed_models), model);
+  if (options.includeSubscription === false) return true;
+  const subscription = getActiveSubscription(user.id);
+  return Boolean(subscription && allows(parseModels(subscription.plan.allowed_models), model));
 }
 
 export function beginRequestAccess(
@@ -106,6 +99,7 @@ export function beginRequestAccess(
   }
 
   const subscription = billingMode === "coding" && user ? getActiveSubscription(user.id) : null;
+  const tier = billingMode === "wallet" && user ? resolveUserTier(user.id).current : null;
   if (billingMode === "coding" && key.user_id && !subscription) {
     throw new AccessError(402, "coding_plan_required", "An active Coding Plan is required for /coding requests");
   }
@@ -115,8 +109,11 @@ export function beginRequestAccess(
     }
   }
 
-  const rpm = minPositive(key.rate_limit, user?.rpm_limit, billingMode === "coding" ? subscription?.plan.rpm_limit : undefined);
-  const rpmState = consumeRateLimit(`commercial:rpm:${user?.id || key.id}`, rpm);
+  const rpm = user
+    ? (billingMode === "coding" ? subscription?.plan.rpm_limit || 0 : tier?.rpm_limit || 0)
+    : key.rate_limit;
+  const accessScope = `${billingMode}:${user?.id || key.id}`;
+  const rpmState = consumeRateLimit(`commercial:rpm:${accessScope}`, rpm);
   if (!rpmState.allowed) {
     throw new AccessError(
       429,
@@ -126,12 +123,10 @@ export function beginRequestAccess(
     );
   }
 
-  const limit = minPositive(
-    key.concurrency_limit,
-    user?.concurrency_limit,
-    billingMode === "coding" ? subscription?.plan.concurrency_limit : undefined,
-  );
-  const concurrencyScope = `commercial:concurrency:${user?.id || key.id}`;
+  const limit = user
+    ? (billingMode === "coding" ? subscription?.plan.concurrency_limit || 0 : tier?.concurrency_limit || 0)
+    : key.concurrency_limit;
+  const concurrencyScope = `commercial:concurrency:${accessScope}`;
   const active = concurrency.get(concurrencyScope) ?? 0;
   if (limit > 0 && active >= limit) {
     throw new AccessError(429, "concurrency_limit_exceeded", "Concurrent request limit exceeded", 1);
@@ -139,11 +134,13 @@ export function beginRequestAccess(
   concurrency.set(concurrencyScope, active + 1);
 
   const estimated = estimateRequestTokens(body);
-  const tpm = minPositive(key.tpm_limit, user?.tpm_limit, billingMode === "coding" ? subscription?.plan.tpm_limit : undefined);
+  const tpm = user
+    ? (billingMode === "coding" ? subscription?.plan.tpm_limit || 0 : tier?.tpm_limit || 0)
+    : key.tpm_limit;
   let tokenReservation: ReturnType<typeof reserveTokenWindow>;
   try {
     tokenReservation = reserveTokenWindow(
-      `commercial:tpm:${user?.id || key.id}`,
+      `commercial:tpm:${accessScope}`,
       tpm,
       estimated.prompt + estimated.completion,
     );

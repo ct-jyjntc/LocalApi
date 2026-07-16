@@ -5,10 +5,16 @@ import type { Response as ExpressResponse } from "express";
 import { v4 as uuid } from "uuid";
 import { ApiKey, getSetting, Provider } from "../db";
 import { writeLog } from "./logs";
-import { listProviders, pickProviderKey, resolveProviderForModel } from "./providers";
+import { getProvider, listProviders, listProvidersForModel, pickProviderKey } from "./providers";
 import { createResponseLogCollector, extractIO } from "../utils/content";
 import { createUpstreamTimeout, upstreamTimeoutError } from "./upstream-timeout";
 import { AccessError, beginRequestAccess, RequestAccess } from "./access";
+import {
+  buildProviderAffinityKey,
+  forgetProviderAffinity,
+  orderProvidersForConversation,
+  rememberProviderAffinity,
+} from "./provider-affinity";
 import {
   BillingError,
   BillingReservation,
@@ -106,12 +112,12 @@ function headersToObject(
   return out;
 }
 
-function getMaxRetries(): number {
+export function getMaxRetries(): number {
   const n = Number(getSetting("max_retries") ?? 2);
   return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 2;
 }
 
-function getRetryDelayMs(): number {
+export function getRetryDelayMs(): number {
   const n = Number(getSetting("retry_delay_ms") ?? 400);
   return Number.isFinite(n) ? Math.max(0, Math.min(10_000, Math.floor(n))) : 400;
 }
@@ -121,7 +127,7 @@ function sleep(ms: number) {
 }
 
 function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  return [401, 403, 404, 408, 409, 429, 500, 502, 503, 504].includes(status);
 }
 
 function isRetryableError(err: unknown): boolean {
@@ -142,10 +148,10 @@ function isRetrySafe(ctx: ProxyContext) {
 
 function canRetryStatus(ctx: ProxyContext, status: number) {
   if (ctx.bodyStream) return false;
-  // 429 and gateway-style failures explicitly rejected the request and are
-  // safe to rotate to another provider key. A generic 500 or network failure
+  // Authentication/model/gateway failures explicitly rejected the request and
+  // are safe to rotate to another configured provider. A generic 500 still
   // requires caller-provided idempotency because upstream work may have run.
-  if ([408, 429, 502, 503, 504].includes(status)) return true;
+  if ([401, 403, 404, 408, 409, 429, 502, 503, 504].includes(status)) return true;
   return isRetrySafe(ctx);
 }
 
@@ -230,6 +236,135 @@ async function openUpstream(
     if (timedOut) throw upstreamTimeoutError(error);
     throw error;
   }
+}
+
+export type ProviderTestResult = {
+  ok: boolean;
+  provider_id: string;
+  provider_name: string;
+  model: string;
+  path: string;
+  status_code: number | null;
+  attempts: number;
+  max_retries: number;
+  latency_ms: number;
+  error: string | null;
+  response_preview: string;
+};
+
+function providerTestModel(provider: Provider, requested?: string | null) {
+  if (requested?.trim()) return requested.trim();
+  try {
+    const models = JSON.parse(provider.models) as unknown;
+    if (Array.isArray(models)) {
+      const concrete = models.map(String).find((model) => model && model !== "*");
+      if (concrete) return concrete;
+    }
+  } catch {
+    // The caller receives a clear missing-model result below.
+  }
+  return "";
+}
+
+function previewBody(buffer: Buffer) {
+  if (!buffer.length) return "";
+  return buffer.toString("utf8", 0, Math.min(buffer.length, 1000)).trim();
+}
+
+export async function testProviderConnection(
+  providerId: string,
+  requestedModel?: string | null,
+): Promise<ProviderTestResult | null> {
+  const provider = getProvider(providerId);
+  if (!provider) return null;
+  const model = providerTestModel(provider, requestedModel);
+  const maxRetries = getMaxRetries();
+  const started = Date.now();
+  if (!model) {
+    return {
+      ok: false,
+      provider_id: provider.id,
+      provider_name: provider.name,
+      model: "",
+      path: "/v1/chat/completions",
+      status_code: null,
+      attempts: 0,
+      max_retries: maxRetries,
+      latency_ms: 0,
+      error: "A concrete model is required to test this provider",
+      response_preview: "",
+    };
+  }
+
+  const path = "/v1/chat/completions";
+  const ctx: ProxyContext = {
+    method: "POST",
+    path,
+    query: {},
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: {
+      model,
+      messages: [{ role: "user", content: "Reply with OK." }],
+      max_tokens: 8,
+      stream: false,
+    },
+  };
+  const retryDelay = getRetryDelayMs();
+  let attempts = 0;
+  let statusCode: number | null = null;
+  let errorMessage: string | null = null;
+  let responsePreview = "";
+
+  while (attempts <= maxRetries) {
+    attempts += 1;
+    let handle: UpstreamHandle | undefined;
+    try {
+      handle = await openUpstream(provider, ctx, path);
+      statusCode = handle.response.status;
+      const body = await handle.response.buffer();
+      handle.clearTimeout();
+      responsePreview = previewBody(body);
+      if (statusCode >= 200 && statusCode < 300) {
+        return {
+          ok: true,
+          provider_id: provider.id,
+          provider_name: provider.name,
+          model,
+          path,
+          status_code: statusCode,
+          attempts,
+          max_retries: maxRetries,
+          latency_ms: Date.now() - started,
+          error: null,
+          response_preview: responsePreview,
+        };
+      }
+      errorMessage = `Upstream HTTP ${statusCode}`;
+      const retryable =
+        [401, 403, 408, 429, 500, 502, 503, 504].includes(statusCode) &&
+        attempts <= maxRetries;
+      if (!retryable) break;
+    } catch (error) {
+      handle?.abort();
+      errorMessage = error instanceof Error ? error.message : String(error);
+      if (attempts > maxRetries || !isRetryableError(error)) break;
+    }
+    await sleep(retryDelay * attempts);
+  }
+
+  return {
+    ok: false,
+    provider_id: provider.id,
+    provider_name: provider.name,
+    model,
+    path,
+    status_code: statusCode,
+    attempts,
+    max_retries: maxRetries,
+    latency_ms: Date.now() - started,
+    error: errorMessage || "Provider test failed",
+    response_preview: responsePreview,
+  };
 }
 
 function applyUpstreamHeaders(
@@ -458,8 +593,8 @@ export async function handleProxyHttp(
   const replayableBody = !ctx.bodyStream;
   const retrySafe = isRetrySafe(ctx);
 
-  const provider = resolveProviderForModel(model);
-  if (!provider) {
+  const providerCandidates = listProvidersForModel(model);
+  if (providerCandidates.length === 0) {
     const hasEnabledProvider = listProviders().some((item) => item.enabled === 1);
     const statusCode = model && hasEnabledProvider ? 404 : 502;
     const message = statusCode === 404
@@ -486,6 +621,15 @@ export async function handleProxyHttp(
     });
     return;
   }
+  const affinityKey = buildProviderAffinityKey({
+    model,
+    body: ctx.body,
+    headers: ctx.headers,
+    apiKeyId: ctx.apiKeyId,
+    userId: ctx.apiKey?.user_id,
+    billingMode: ctx.billingMode,
+  });
+  const providerOrder = orderProvidersForConversation(providerCandidates, affinityKey);
 
   let access: RequestAccess | null = null;
   let accessReleased = false;
@@ -553,28 +697,34 @@ export async function handleProxyHttp(
 
   let lastError: string | null = null;
   let attempts = 0;
+  let lastProvider: Provider | null = null;
 
   while (attempts <= maxRetries) {
     attempts += 1;
+    const provider = providerOrder[(attempts - 1) % providerOrder.length];
+    lastProvider = provider;
     let handle: UpstreamHandle | undefined;
     try {
       handle = await openUpstream(provider, ctx, path);
-      const retryable =
+      const providerFailure =
         isRetryableStatus(handle.response.status) &&
         replayableBody &&
-        canRetryStatus(ctx, handle.response.status) &&
-        attempts <= maxRetries;
+        canRetryStatus(ctx, handle.response.status);
+      const retryable = providerFailure && attempts <= maxRetries;
       if (retryable) {
         try {
           await handle.response.buffer();
         } finally {
           handle.clearTimeout();
         }
+        forgetProviderAffinity(affinityKey, provider.id);
         lastError = `Upstream HTTP ${handle.response.status}`;
         await sleep(retryDelay * attempts);
         continue;
       }
 
+      if (providerFailure) forgetProviderAffinity(affinityKey, provider.id);
+      else rememberProviderAffinity(affinityKey, provider.id);
       const result = await pipeResponseToClient({
         ctx,
         res,
@@ -586,6 +736,14 @@ export async function handleProxyHttp(
         started,
         stream,
       });
+      if (
+        result.statusCode >= 200 &&
+        result.statusCode < 400 &&
+        result.error &&
+        !result.error.startsWith("ok after")
+      ) {
+        forgetProviderAffinity(affinityKey, provider.id);
+      }
       writeCompletedRequest({ ctx, path: logPath, model, provider, started, stream, result, billing, access });
       accessReleased = true;
       return;
@@ -599,9 +757,11 @@ export async function handleProxyHttp(
         attempts <= maxRetries &&
         isRetryableError(error)
       ) {
+        forgetProviderAffinity(affinityKey, provider.id);
         await sleep(retryDelay * attempts);
         continue;
       }
+      forgetProviderAffinity(affinityKey, provider.id);
       break;
     }
   }
@@ -619,8 +779,8 @@ export async function handleProxyHttp(
     method: ctx.method,
     path: logPath,
     model,
-    provider_id: provider.id,
-    provider_name: provider.name,
+    provider_id: lastProvider?.id,
+    provider_name: lastProvider?.name,
     api_key_id: ctx.apiKeyId,
     api_key_name: ctx.apiKeyName,
     user_id: ctx.apiKey?.user_id ?? null,

@@ -177,32 +177,28 @@ export function deleteProvider(id: string): boolean {
   return deleted;
 }
 
-export function resolveProviderForModel(model?: string | null): Provider | null {
+export function listProvidersForModel(model?: string | null): Provider[] {
   const providers = listProviders().filter((p) => p.enabled === 1);
-  if (providers.length === 0) return null;
-  if (!model) return providers[0];
+  if (providers.length === 0) return [];
+  if (!model) return providers;
 
-  for (const p of providers) {
-    try {
-      const models = JSON.parse(p.models) as string[];
-      if (models.includes(model) || models.includes("*")) return p;
-    } catch {
-      // ignore bad JSON
-    }
-  }
+  const exact = providers.filter((provider) => {
+    const models = safeParseModels(provider.models);
+    return models.includes(model) || models.includes("*");
+  });
+  if (exact.length) return exact;
 
   const lower = model.toLowerCase();
-  const fuzzy = providers.find((p) => {
-    try {
-      const models = JSON.parse(p.models) as string[];
-      return models.some(
-        (m) => lower.startsWith(m.toLowerCase()) || m.toLowerCase().startsWith(lower),
-      );
-    } catch {
-      return false;
-    }
+  return providers.filter((provider) => {
+    const models = safeParseModels(provider.models);
+    return models.some(
+      (candidate) => lower.startsWith(candidate.toLowerCase()) || candidate.toLowerCase().startsWith(lower),
+    );
   });
-  return fuzzy ?? null;
+}
+
+export function resolveProviderForModel(model?: string | null): Provider | null {
+  return listProvidersForModel(model)[0] ?? null;
 }
 
 export function sanitizeProvider(p: Provider) {

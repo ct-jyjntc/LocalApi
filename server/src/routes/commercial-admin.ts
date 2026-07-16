@@ -14,10 +14,24 @@ import {
   createPlan,
   deletePlan,
   listPlans,
+  PlanTransactionError,
+  reorderPlans,
   updatePlan,
 } from "../services/plans";
 import { createUser, deleteUser, listUsers, updateUser } from "../services/users";
 import { listAuditLogs, writeAudit } from "../services/audit";
+import {
+  PaymentError,
+  cancelPaymentOrder,
+  deletePaymentOrder,
+  getPaymentChannelAdmin,
+  listPaymentOrders,
+  listPaymentRefunds,
+  refundPaymentOrder,
+  syncPaymentOrder,
+  updatePaymentChannel,
+} from "../services/payments";
+import { createUserTier, deleteUserTier, listUserTiers, TierError, updateUserTier } from "../services/tiers";
 
 export const commercialAdminRouter = Router();
 
@@ -39,8 +53,6 @@ const userSchema = z.object({
   display_name: z.string().trim().min(1).max(120).optional(),
   password: z.string().min(8).max(256),
   status: z.enum(["active", "suspended", "disabled"]).optional(),
-  allowed_models: models,
-  ...limits,
 });
 const userPatchSchema = userSchema.omit({ username: true }).partial();
 const priceSchema = z.object({
@@ -55,6 +67,7 @@ const planSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().max(1000).optional(),
   cycle_days: z.coerce.number().int().min(1).max(3650).optional(),
+  price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   included_credits_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   allowed_models: models,
   ...limits,
@@ -62,6 +75,34 @@ const planSchema = z.object({
   stock_limit: z.coerce.number().int().min(0).max(100_000_000).optional(),
   enabled: z.boolean().optional(),
 });
+const paymentChannelSchema = z.object({
+  enabled: z.boolean().optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  client_id: z.string().trim().max(256).optional(),
+  client_secret: z.string().trim().max(512).optional(),
+  gateway_url: z.string().url().max(500).optional(),
+  exchange_rate_micros: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  min_amount_minor: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  max_amount_minor: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  fee_bps: z.coerce.number().int().min(0).max(10_000).optional(),
+  fee_fixed_minor: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+});
+const tierSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  threshold_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  rpm_limit: z.coerce.number().int().min(0).max(1_000_000),
+  tpm_limit: z.coerce.number().int().min(0).max(100_000_000),
+  concurrency_limit: z.coerce.number().int().min(0).max(10_000),
+  enabled: z.boolean().optional(),
+});
+
+function paymentFailure(res: Response, error: unknown) {
+  if (error instanceof PaymentError) {
+    return res.status(error.status).json({ error: error.message, code: error.code });
+  }
+  return res.status(500).json({ error: error instanceof Error ? error.message : "Payment operation failed" });
+}
 
 commercialAdminRouter.get("/users", (_req, res) => res.json({ items: listUsers() }));
 commercialAdminRouter.post("/users", (req, res) => {
@@ -128,6 +169,44 @@ commercialAdminRouter.delete("/users/:id/subscription", (req, res) => {
   return res.json({ ok });
 });
 
+commercialAdminRouter.get("/tiers", (_req, res) => res.json({ items: listUserTiers() }));
+commercialAdminRouter.post("/tiers", (req, res) => {
+  const body = parseBody(tierSchema, req.body, res);
+  if (!body) return;
+  try {
+    const tier = createUserTier(body);
+    writeAudit({ action: "tier.create", target_type: "user_tier", target_id: tier.id, detail: body });
+    return res.status(201).json(tier);
+  } catch (error) {
+    const status = error instanceof TierError ? error.status : 500;
+    return res.status(status).json({ error: error instanceof Error ? error.message : "Unable to create tier" });
+  }
+});
+commercialAdminRouter.patch("/tiers/:id", (req, res) => {
+  const body = parseBody(tierSchema.partial(), req.body, res);
+  if (!body) return;
+  try {
+    const tier = updateUserTier(req.params.id, body);
+    if (!tier) return res.status(404).json({ error: "Tier not found" });
+    writeAudit({ action: "tier.update", target_type: "user_tier", target_id: tier.id, detail: body });
+    return res.json(tier);
+  } catch (error) {
+    const status = error instanceof TierError ? error.status : 500;
+    return res.status(status).json({ error: error instanceof Error ? error.message : "Unable to update tier" });
+  }
+});
+commercialAdminRouter.delete("/tiers/:id", (req, res) => {
+  try {
+    const ok = deleteUserTier(req.params.id);
+    if (!ok) return res.status(404).json({ error: "Tier not found" });
+    writeAudit({ action: "tier.delete", target_type: "user_tier", target_id: req.params.id });
+    return res.json({ ok: true });
+  } catch (error) {
+    const status = error instanceof TierError ? error.status : 500;
+    return res.status(status).json({ error: error instanceof Error ? error.message : "Unable to delete tier" });
+  }
+});
+
 commercialAdminRouter.get("/prices", (_req, res) => res.json({ items: listModelPrices() }));
 commercialAdminRouter.put("/prices/:model", (req, res) => {
   const decodedModel = decodeURIComponent(req.params.model);
@@ -156,6 +235,20 @@ commercialAdminRouter.post("/plans", (req, res) => {
     return res.status(409).json({ error: error instanceof Error ? error.message : "Plan already exists" });
   }
 });
+commercialAdminRouter.put("/plans/reorder", (req, res) => {
+  const body = parseBody(z.object({ ids: z.array(z.string().uuid()).min(1).max(10_000) }), req.body, res);
+  if (!body) return;
+  try {
+    const items = reorderPlans(body.ids);
+    writeAudit({ action: "plan.reorder", target_type: "plan", detail: { ids: body.ids } });
+    return res.json({ items });
+  } catch (error) {
+    if (error instanceof PlanTransactionError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Failed to reorder plans" });
+  }
+});
 commercialAdminRouter.patch("/plans/:id", (req, res) => {
   const body = parseBody(planSchema.partial(), req.body, res);
   if (!body) return;
@@ -178,4 +271,76 @@ commercialAdminRouter.get("/usage", (req, res) => {
 commercialAdminRouter.get("/audit", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 1000);
   return res.json({ items: listAuditLogs(limit) });
+});
+
+commercialAdminRouter.get("/payments/channel", (_req, res) => {
+  return res.json(getPaymentChannelAdmin());
+});
+commercialAdminRouter.put("/payments/channel", (req, res) => {
+  const body = parseBody(paymentChannelSchema, req.body, res);
+  if (!body) return;
+  try {
+    const channel = updatePaymentChannel(body);
+    writeAudit({
+      action: "payment.channel.update",
+      target_type: "payment_channel",
+      target_id: "linuxdo-credit",
+      detail: { ...body, client_secret: body.client_secret === undefined ? undefined : "[updated]" },
+    });
+    return res.json(channel);
+  } catch (error) {
+    return paymentFailure(res, error);
+  }
+});
+commercialAdminRouter.get("/payments/orders", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const status = typeof req.query.status === "string" && req.query.status ? req.query.status : undefined;
+  return res.json({ items: listPaymentOrders({ status, limit }) });
+});
+commercialAdminRouter.post("/payments/orders/:id/sync", async (req, res) => {
+  try {
+    const order = await syncPaymentOrder(req.params.id);
+    writeAudit({ action: "payment.order.sync", target_type: "payment_order", target_id: req.params.id });
+    return res.json(order);
+  } catch (error) {
+    return paymentFailure(res, error);
+  }
+});
+commercialAdminRouter.post("/payments/orders/:id/refund", async (req, res) => {
+  const body = parseBody(z.object({ reason: z.string().trim().min(1).max(500) }), req.body, res);
+  if (!body) return;
+  try {
+    const order = await refundPaymentOrder(req.params.id, body.reason);
+    writeAudit({
+      action: "payment.order.refund",
+      target_type: "payment_order",
+      target_id: req.params.id,
+      detail: { reason: body.reason },
+    });
+    return res.json(order);
+  } catch (error) {
+    return paymentFailure(res, error);
+  }
+});
+commercialAdminRouter.get("/payments/refunds", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  return res.json({ items: listPaymentRefunds(limit) });
+});
+commercialAdminRouter.post("/payments/orders/:id/cancel", (req, res) => {
+  try {
+    const order = cancelPaymentOrder(req.params.id);
+    writeAudit({ action: "payment.order.cancel", target_type: "payment_order", target_id: req.params.id });
+    return res.json(order);
+  } catch (error) {
+    return paymentFailure(res, error);
+  }
+});
+commercialAdminRouter.delete("/payments/orders/:id", (req, res) => {
+  try {
+    const ok = deletePaymentOrder(req.params.id);
+    writeAudit({ action: "payment.order.delete", target_type: "payment_order", target_id: req.params.id });
+    return res.json({ ok });
+  } catch (error) {
+    return paymentFailure(res, error);
+  }
 });

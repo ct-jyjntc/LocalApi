@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { shortTime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { useAppDialog } from "@/components/app-dialog-context";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export function KeysPage() {
   const { t } = useI18n();
@@ -26,12 +28,14 @@ export function KeysPage() {
     queryFn: () => api.keys.list(),
   });
   const [name, setName] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
 
   const create = useMutation({
     mutationFn: () =>
       api.keys.create({ name: name.trim() || t("keys.untitled") }),
     onSuccess: async (row) => {
       setName("");
+      setCreateOpen(false);
       if (row.key) {
         try {
           await navigator.clipboard.writeText(row.key);
@@ -78,28 +82,9 @@ export function KeysPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title={t("keys.title")} description={t("keys.desc")} />
+      <PageHeader title={t("keys.title")} description={t("keys.desc")} actions={<Button size="sm" onClick={() => setCreateOpen(true)}><Plus data-icon="inline-start" />{t("keys.create")}</Button>} />
 
-      <Card className="space-y-3 p-4 sm:p-5">
-        <h2 className="text-sm font-medium">{t("keys.create")}</h2>
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="min-w-[200px] flex-1 space-y-1.5">
-            <Label>{t("common.name")}</Label>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="my-app"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") create.mutate();
-              }}
-            />
-          </div>
-          <Button size="sm" onClick={() => create.mutate()} disabled={create.isPending}>
-            <Plus strokeWidth={1.8} />
-            {t("common.create")}
-          </Button>
-        </div>
-      </Card>
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent><DialogHeader><DialogTitle>{t("keys.create")}</DialogTitle><DialogDescription>{t("keys.desc")}</DialogDescription></DialogHeader><form className="mt-4 flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}><label className="flex flex-col gap-1.5"><Label>{t("common.name")}</Label><Input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="my-app" /></label><DialogFooter className="mt-0"><Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>{t("common.cancel")}</Button><Button type="submit" disabled={create.isPending}>{create.isPending ? t("common.loading") : t("common.create")}</Button></DialogFooter></form></DialogContent></Dialog>
 
       <Card className="overflow-hidden">
         <div className={`${TABLE_HEAD_CLASS} hidden sm:flex`}>
@@ -133,6 +118,7 @@ function KeyRow({
   onRemove: (id: string) => void;
 }) {
   const { t } = useI18n();
+  const dialogs = useAppDialog();
   const full = row.key || null;
   const display = full || `${row.key_prefix}…`;
 
@@ -149,7 +135,7 @@ function KeyRow({
         </div>
         <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
           <span>{t("common.lastUsed")} {row.last_used_at ? shortTime(row.last_used_at) : "—"}</span>
-          <span className="flex items-center gap-1"><Switch checked={row.enabled} onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })} aria-label={`Toggle ${row.name}`} /><Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("keys.deleteConfirm", { name: row.name }))) onRemove(row.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+          <span className="flex items-center gap-1"><Switch checked={row.enabled} onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })} aria-label={`Toggle ${row.name}`} /><Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: row.name, description: t("keys.deleteConfirm", { name: row.name }), confirmText: "Delete", destructive: true })) onRemove(row.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
         </div>
       </div>
       <div className={`${TABLE_ROW_CLASS} hidden sm:flex`}>
@@ -157,7 +143,7 @@ function KeyRow({
         <span className="flex min-w-0 flex-1 items-center gap-1.5"><code className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">{display}</code>{full ? <Button type="button" variant="ghost" size="icon" className="size-6 shrink-0 text-muted-foreground" onClick={() => onCopy(full)} aria-label={t("common.copy")} title={t("common.copy")}><Copy className="size-3.5" strokeWidth={1.8} /></Button> : <span className="shrink-0 text-[11px] text-muted-foreground">{t("keys.legacyNoPlain")}</span>}</span>
         <span className="w-16 shrink-0">{row.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}</span>
         <span className="hidden w-36 shrink-0 text-[11px] text-muted-foreground md:block">{row.last_used_at ? shortTime(row.last_used_at) : "—"}</span>
-        <span className="flex w-20 shrink-0 items-center justify-end gap-1"><Switch checked={row.enabled} onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })} aria-label={`Toggle ${row.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("keys.deleteConfirm", { name: row.name }))) onRemove(row.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+        <span className="flex w-20 shrink-0 items-center justify-end gap-1"><Switch checked={row.enabled} onCheckedChange={(v) => onToggle({ id: row.id, enabled: v })} aria-label={`Toggle ${row.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: row.name, description: t("keys.deleteConfirm", { name: row.name }), confirmText: "Delete", destructive: true })) onRemove(row.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
       </div>
     </>
   );

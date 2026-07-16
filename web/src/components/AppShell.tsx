@@ -2,7 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   ChartNoAxesCombined,
-  BookOpenText,
+  CreditCard,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -14,6 +14,7 @@ import {
   Settings,
   ScrollText,
   Tags,
+  ShieldCheck,
   Users,
   X,
 } from "lucide-react";
@@ -38,26 +39,31 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/users", label: { zh: "用户", en: "Users" }, icon: Users },
   { to: "/pricing", label: { zh: "模型价格", en: "Pricing" }, icon: Tags },
   { to: "/plans", label: { zh: "套餐", en: "Plans" }, icon: Package },
+  { to: "/tiers", label: { zh: "用户层级", en: "User tiers" }, icon: ShieldCheck },
   { to: "/billing", label: { zh: "计费用量", en: "Billing" }, icon: ChartNoAxesCombined },
+  { to: "/payments", label: { zh: "支付订单", en: "Payments" }, icon: CreditCard },
   { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
-  { to: "/docs", labelKey: "nav.docs", icon: BookOpenText },
   { to: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
 
 const USER_NAV: NavItem[] = [
   { to: "/", label: { zh: "概览", en: "Overview" }, icon: LayoutDashboard, end: true },
   { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
-  { to: "/usage", label: { zh: "用量与账单", en: "Usage" }, icon: ChartNoAxesCombined },
-  { to: "/docs", labelKey: "nav.docs", icon: BookOpenText },
+  { to: "/plan", label: { zh: "套餐详情", en: "Plan details" }, icon: Package },
+  { to: "/usage", label: { zh: "账单与订单", en: "Billing" }, icon: ChartNoAxesCombined },
+  { to: "/payments", label: { zh: "账户充值", en: "Top up" }, icon: CreditCard },
+  { to: "/settings", label: { zh: "个人设置", en: "Settings" }, icon: Settings },
 ];
 
 const COLLAPSE_KEY = "localapi_sidebar_collapsed";
+const BRAND_CACHE_KEY = "localapi_brand_name";
+const COMPANY_CACHE_KEY = "localapi_company_name";
 
 export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"; onLogout?: () => void }) {
   const { t, locale } = useI18n();
   const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
-  const brandName = branding.data?.brand_name || t("shell.brand");
-  const companyName = branding.data?.company_name?.trim() || "";
+  const brandName = branding.data?.brand_name || localStorage.getItem(BRAND_CACHE_KEY) || t("shell.brand");
+  const companyName = branding.data?.company_name?.trim() || localStorage.getItem(COMPANY_CACHE_KEY) || "";
   const nav = mode === "admin" ? ADMIN_NAV : USER_NAV;
   const [collapsed, setCollapsed] = useState(() => {
     return localStorage.getItem(COLLAPSE_KEY) === "1";
@@ -67,6 +73,13 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
   useEffect(() => {
     document.title = brandName;
   }, [brandName]);
+
+  useEffect(() => {
+    if (!branding.data) return;
+    localStorage.setItem(BRAND_CACHE_KEY, branding.data.brand_name || "LocalAPI");
+    if (branding.data.company_name?.trim()) localStorage.setItem(COMPANY_CACHE_KEY, branding.data.company_name.trim());
+    else localStorage.removeItem(COMPANY_CACHE_KEY);
+  }, [branding.data]);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
@@ -215,11 +228,6 @@ function SidebarChrome({
         collapsed && "justify-center px-2",
       )}
     >
-      {!collapsed ? (
-        <span className="min-w-0 flex-1 truncate px-0.5 text-sm font-semibold">
-          {brand}
-        </span>
-      ) : null}
       <Button
         type="button"
         variant="ghost"
@@ -235,6 +243,11 @@ function SidebarChrome({
           <PanelLeftClose strokeWidth={1.8} />
         )}
       </Button>
+      {!collapsed ? (
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">
+          {brand}
+        </span>
+      ) : null}
     </div>
   );
 }

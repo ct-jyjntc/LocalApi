@@ -80,8 +80,24 @@ export function initDb() {
       balance_micros INTEGER NOT NULL DEFAULT 0,
       reserved_micros INTEGER NOT NULL DEFAULT 0,
       lifetime_spent_micros INTEGER NOT NULL DEFAULT 0,
+      lifetime_topup_micros INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_tiers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      threshold_micros INTEGER NOT NULL DEFAULT 0,
+      rpm_limit INTEGER NOT NULL DEFAULT 0,
+      tpm_limit INTEGER NOT NULL DEFAULT 0,
+      concurrency_limit INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_tiers_threshold ON user_tiers(enabled, threshold_micros DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_tiers_threshold_unique ON user_tiers(threshold_micros);
 
     CREATE TABLE IF NOT EXISTS model_prices (
       model TEXT PRIMARY KEY,
@@ -99,6 +115,7 @@ export function initDb() {
       name TEXT NOT NULL UNIQUE,
       description TEXT NOT NULL DEFAULT '',
       cycle_days INTEGER NOT NULL DEFAULT 30,
+      price_micros INTEGER NOT NULL DEFAULT 0,
       included_credits_micros INTEGER NOT NULL DEFAULT 0,
       allowed_models TEXT NOT NULL DEFAULT '[]',
       rpm_limit INTEGER NOT NULL DEFAULT 0,
@@ -107,6 +124,7 @@ export function initDb() {
       overage_enabled INTEGER NOT NULL DEFAULT 1,
       stock_limit INTEGER NOT NULL DEFAULT 0,
       stock_used INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -120,13 +138,38 @@ export function initDb() {
       starts_at TEXT NOT NULL,
       period_start TEXT NOT NULL,
       period_end TEXT NOT NULL,
+      entitlement_end TEXT NOT NULL,
       remaining_credits_micros INTEGER NOT NULL DEFAULT 0,
       reserved_micros INTEGER NOT NULL DEFAULT 0,
+      price_micros_snapshot INTEGER NOT NULL DEFAULT 0,
       auto_renew INTEGER NOT NULL DEFAULT 1,
+      overage_enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, period_end);
+
+    CREATE TABLE IF NOT EXISTS plan_orders (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL UNIQUE,
+      idempotency_key TEXT UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE RESTRICT,
+      previous_plan_id TEXT REFERENCES plans(id) ON DELETE SET NULL,
+      subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'completed',
+      list_price_micros INTEGER NOT NULL DEFAULT 0,
+      credit_micros INTEGER NOT NULL DEFAULT 0,
+      amount_micros INTEGER NOT NULL DEFAULT 0,
+      balance_after_micros INTEGER NOT NULL DEFAULT 0,
+      description TEXT NOT NULL DEFAULT '',
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_plan_orders_user_created ON plan_orders(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_plan_orders_subscription ON plan_orders(subscription_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY,
@@ -169,10 +212,160 @@ export function initDb() {
       amount_micros INTEGER NOT NULL,
       balance_after_micros INTEGER NOT NULL,
       usage_id TEXT,
+      reference_type TEXT,
+      reference_id TEXT,
       description TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user ON wallet_ledger(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS payment_channels (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      client_id TEXT NOT NULL DEFAULT '',
+      client_secret TEXT NOT NULL DEFAULT '',
+      gateway_url TEXT NOT NULL,
+      exchange_rate_micros INTEGER NOT NULL DEFAULT 1000000,
+      min_amount_minor INTEGER NOT NULL DEFAULT 100,
+      max_amount_minor INTEGER NOT NULL DEFAULT 100000,
+      fee_bps INTEGER NOT NULL DEFAULT 0,
+      fee_fixed_minor INTEGER NOT NULL DEFAULT 0,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_orders (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      channel_id TEXT NOT NULL REFERENCES payment_channels(id),
+      channel_trade_no TEXT,
+      purpose TEXT NOT NULL DEFAULT 'wallet_topup',
+      status TEXT NOT NULL DEFAULT 'pending',
+      amount_minor INTEGER NOT NULL,
+      fee_minor INTEGER NOT NULL DEFAULT 0,
+      asset TEXT NOT NULL DEFAULT 'LDC',
+      credited_micros INTEGER NOT NULL,
+      exchange_rate_micros INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      pay_url TEXT,
+      error TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      paid_at TEXT,
+      credited_at TEXT,
+      refunded_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_payment_orders_user_created
+      ON payment_orders(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_payment_orders_status_created
+      ON payment_orders(status, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_orders_channel_trade
+      ON payment_orders(channel_id, channel_trade_no)
+      WHERE channel_trade_no IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS payment_events (
+      id TEXT PRIMARY KEY,
+      order_id TEXT REFERENCES payment_orders(id) ON DELETE SET NULL,
+      channel_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      verified INTEGER NOT NULL DEFAULT 0,
+      processed INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      processed_at TEXT,
+      UNIQUE(channel_id, event_type, external_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_refunds (
+      id TEXT PRIMARY KEY,
+      refund_no TEXT NOT NULL UNIQUE,
+      order_id TEXT NOT NULL REFERENCES payment_orders(id) ON DELETE RESTRICT,
+      channel_id TEXT NOT NULL,
+      amount_minor INTEGER NOT NULL,
+      debit_micros INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      reason TEXT NOT NULL DEFAULT '',
+      response TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_payment_refunds_order ON payment_refunds(order_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS coupon_codes (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      name TEXT NOT NULL,
+      discount_type TEXT NOT NULL,
+      discount_value INTEGER NOT NULL,
+      max_redemptions INTEGER NOT NULL DEFAULT 0,
+      redeemed_count INTEGER NOT NULL DEFAULT 0,
+      per_user_limit INTEGER NOT NULL DEFAULT 1,
+      min_order_micros INTEGER NOT NULL DEFAULT 0,
+      applicable_purposes TEXT NOT NULL DEFAULT '[]',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      starts_at TEXT,
+      ends_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS coupon_redemptions (
+      id TEXT PRIMARY KEY,
+      coupon_id TEXT NOT NULL REFERENCES coupon_codes(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      order_id TEXT REFERENCES payment_orders(id) ON DELETE SET NULL,
+      discount_micros INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'reserved',
+      created_at TEXT NOT NULL,
+      redeemed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_user ON coupon_redemptions(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS invoices (
+      id TEXT PRIMARY KEY,
+      invoice_no TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      order_id TEXT REFERENCES payment_orders(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'requested',
+      title TEXT NOT NULL,
+      tax_number TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      amount_micros INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'CNY',
+      file_url TEXT,
+      rejection_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      issued_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS renewal_jobs (
+      id TEXT PRIMARY KEY,
+      subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      due_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      payment_source TEXT NOT NULL DEFAULT 'wallet',
+      order_id TEXT REFERENCES payment_orders(id) ON DELETE SET NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_renewal_jobs_subscription_due
+      ON renewal_jobs(subscription_id, due_at);
 
     CREATE TABLE IF NOT EXISTS admin_audit_logs (
       id TEXT PRIMARY KEY,
@@ -306,6 +499,89 @@ export function initDb() {
       "UPDATE plans SET stock_used = (SELECT COUNT(*) FROM subscriptions WHERE subscriptions.plan_id = plans.id AND subscriptions.status = 'active')",
     );
   }
+  if (!planCols.includes("price_micros")) {
+    db.exec("ALTER TABLE plans ADD COLUMN price_micros INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!planCols.includes("sort_order")) {
+    db.exec("ALTER TABLE plans ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+    const existingPlans = db.prepare("SELECT id FROM plans ORDER BY created_at DESC, id ASC").all() as Array<{ id: string }>;
+    const setOrder = db.prepare("UPDATE plans SET sort_order = ? WHERE id = ?");
+    db.transaction(() => existingPlans.forEach((plan, index) => setOrder.run(index, plan.id)))();
+  }
+
+  const subscriptionCols = (
+    db.prepare("PRAGMA table_info(subscriptions)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!subscriptionCols.includes("price_micros_snapshot")) {
+    db.exec("ALTER TABLE subscriptions ADD COLUMN price_micros_snapshot INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!subscriptionCols.includes("entitlement_end")) {
+    db.exec("ALTER TABLE subscriptions ADD COLUMN entitlement_end TEXT");
+    db.exec("UPDATE subscriptions SET entitlement_end = period_end WHERE entitlement_end IS NULL");
+  }
+  if (!subscriptionCols.includes("overage_enabled")) {
+    db.exec("ALTER TABLE subscriptions ADD COLUMN overage_enabled INTEGER NOT NULL DEFAULT 1");
+    db.exec(
+      `UPDATE subscriptions SET overage_enabled = COALESCE(
+        (SELECT plans.overage_enabled FROM plans WHERE plans.id = subscriptions.plan_id), 1
+      )`,
+    );
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_subscriptions_entitlement ON subscriptions(status, entitlement_end)");
+
+  const walletCols = (
+    db.prepare("PRAGMA table_info(wallet_accounts)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!walletCols.includes("lifetime_topup_micros")) {
+    db.exec("ALTER TABLE wallet_accounts ADD COLUMN lifetime_topup_micros INTEGER NOT NULL DEFAULT 0");
+    db.exec(
+      `UPDATE wallet_accounts SET lifetime_topup_micros = MAX(0, COALESCE((
+        SELECT SUM(CASE
+          WHEN wallet_ledger.type = 'payment_topup' THEN wallet_ledger.amount_micros
+          WHEN wallet_ledger.type = 'payment_refund' THEN wallet_ledger.amount_micros
+          ELSE 0 END)
+        FROM wallet_ledger WHERE wallet_ledger.user_id = wallet_accounts.user_id
+      ), 0))`,
+    );
+  }
+
+  const tierNow = new Date().toISOString();
+  db.prepare(
+    `INSERT OR IGNORE INTO user_tiers (
+      id, name, description, threshold_micros, rpm_limit, tpm_limit,
+      concurrency_limit, enabled, created_at, updated_at
+    ) VALUES ('tier-basic', '基础用户', '默认余额调用层级', 0, 0, 0, 0, 1, ?, ?)`,
+  ).run(tierNow, tierNow);
+
+  const ledgerCols = (
+    db.prepare("PRAGMA table_info(wallet_ledger)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!ledgerCols.includes("reference_type")) {
+    db.exec("ALTER TABLE wallet_ledger ADD COLUMN reference_type TEXT");
+  }
+  if (!ledgerCols.includes("reference_id")) {
+    db.exec("ALTER TABLE wallet_ledger ADD COLUMN reference_id TEXT");
+  }
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_reference
+    ON wallet_ledger(reference_type, reference_id)
+    WHERE reference_type IS NOT NULL AND reference_id IS NOT NULL`);
+
+  const paymentNow = new Date().toISOString();
+  db.prepare(
+    `INSERT OR IGNORE INTO payment_channels (
+      id, provider, name, enabled, client_id, client_secret, gateway_url,
+      exchange_rate_micros, min_amount_minor, max_amount_minor,
+      fee_bps, fee_fixed_minor, config_json, created_at, updated_at
+    ) VALUES ('linuxdo-credit', 'linuxdo_credit', 'LINUX DO Credit', 0, '', '',
+      'https://credit.linux.do/epay', 1000000, 100, 100000, 0, 0, '{}', ?, ?)`,
+  ).run(paymentNow, paymentNow);
+
+  const paymentOrderCols = (
+    db.prepare("PRAGMA table_info(payment_orders)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!paymentOrderCols.includes("deleted_at")) {
+    db.exec("ALTER TABLE payment_orders ADD COLUMN deleted_at TEXT");
+  }
 
   db.exec(`
 
@@ -322,6 +598,7 @@ export function initDb() {
     cache_methods: '["GET"]',
     cache_paths: '["/v1/models"]',
     admin_token: process.env.ADMIN_TOKEN?.trim() || "a2366021253",
+    admin_entry_path: "/admin",
     port: "5555",
     // Upstream request retries (network / 429 / 5xx). 0 = no retry.
     max_retries: "2",
@@ -401,6 +678,19 @@ export type User = {
   last_login_at: string | null;
 };
 
+export type UserTier = {
+  id: string;
+  name: string;
+  description: string;
+  threshold_micros: number;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ModelPrice = {
   model: string;
   input_price_micros: number;
@@ -417,6 +707,7 @@ export type Plan = {
   name: string;
   description: string;
   cycle_days: number;
+  price_micros: number;
   included_credits_micros: number;
   allowed_models: string;
   rpm_limit: number;
@@ -425,9 +716,54 @@ export type Plan = {
   overage_enabled: number;
   stock_limit: number;
   stock_used: number;
+  sort_order: number;
   enabled: number;
   created_at: string;
   updated_at: string;
+};
+
+export type PaymentChannel = {
+  id: string;
+  provider: string;
+  name: string;
+  enabled: number;
+  client_id: string;
+  client_secret: string;
+  gateway_url: string;
+  exchange_rate_micros: number;
+  min_amount_minor: number;
+  max_amount_minor: number;
+  fee_bps: number;
+  fee_fixed_minor: number;
+  config_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaymentOrder = {
+  id: string;
+  order_no: string;
+  user_id: string;
+  channel_id: string;
+  channel_trade_no: string | null;
+  purpose: string;
+  status: string;
+  amount_minor: number;
+  fee_minor: number;
+  asset: string;
+  credited_micros: number;
+  exchange_rate_micros: number;
+  title: string;
+  pay_url: string | null;
+  error: string | null;
+  metadata: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+  paid_at: string | null;
+  credited_at: string | null;
+  refunded_at: string | null;
+  deleted_at: string | null;
 };
 
 export type Subscription = {
@@ -438,11 +774,34 @@ export type Subscription = {
   starts_at: string;
   period_start: string;
   period_end: string;
+  entitlement_end: string;
   remaining_credits_micros: number;
   reserved_micros: number;
+  price_micros_snapshot: number;
   auto_renew: number;
+  overage_enabled: number;
   created_at: string;
   updated_at: string;
+};
+
+export type PlanOrder = {
+  id: string;
+  order_no: string;
+  idempotency_key: string | null;
+  user_id: string;
+  plan_id: string;
+  previous_plan_id: string | null;
+  subscription_id: string | null;
+  type: string;
+  status: string;
+  list_price_micros: number;
+  credit_micros: number;
+  amount_micros: number;
+  balance_after_micros: number;
+  description: string;
+  metadata: string;
+  created_at: string;
+  completed_at: string | null;
 };
 
 export type CacheEntry = {

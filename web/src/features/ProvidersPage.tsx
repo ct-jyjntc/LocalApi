@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Pencil, Plus, Trash2 } from "lucide-react";
-import { api, type Provider } from "@/lib/api";
+import { FlaskConical, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
+import { api, type Provider, type ProviderTestResult } from "@/lib/api";
 import {
   EmptyState,
   PageHeader,
@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/lib/i18n";
+import { useAppDialog } from "@/components/app-dialog-context";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const emptyForm = {
   name: "",
@@ -36,6 +38,7 @@ function parseKeys(raw: string): string[] {
 
 export function ProvidersPage() {
   const { t } = useI18n();
+  const dialogs = useAppDialog();
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ["providers"],
@@ -44,6 +47,7 @@ export function ProvidersPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Provider | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [testResult, setTestResult] = useState<{ provider: Provider; result: ProviderTestResult } | null>(null);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -105,6 +109,16 @@ export function ProvidersPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const testProvider = useMutation({
+    mutationFn: ({ provider, model }: { provider: Provider; model: string }) =>
+      api.providers.test(provider.id, model),
+    onSuccess: (result, variables) => {
+      setTestResult({ provider: variables.provider, result });
+      if (result.ok) toast.success(t("providers.testSuccess"));
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   function startCreate() {
     setEditing(null);
     setForm(emptyForm);
@@ -130,6 +144,23 @@ export function ProvidersPage() {
     setOpen(true);
   }
 
+  async function startTest(provider: Provider) {
+    let model = provider.models.find((item) => item && item !== "*") || "";
+    if (!model) {
+      const selected = await dialogs.prompt({
+        title: t("providers.testTitle"),
+        description: t("providers.testModelHint"),
+        label: t("providers.testModel"),
+        placeholder: "gpt-4o-mini",
+        confirmText: t("providers.test"),
+        required: true,
+      });
+      if (!selected) return;
+      model = selected;
+    }
+    testProvider.mutate({ provider, model });
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6">
       <PageHeader
@@ -143,22 +174,10 @@ export function ProvidersPage() {
         }
       />
 
-      {open ? (
-        <Card className="space-y-4 p-4 sm:p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">
-              {editing ? t("providers.edit") : t("providers.new")}
-            </h2>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="text-muted-foreground"
-              onClick={() => setOpen(false)}
-            >
-              {t("common.cancel")}
-            </Button>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-[640px]">
+          <DialogHeader><DialogTitle>{editing ? t("providers.edit") : t("providers.new")}</DialogTitle><DialogDescription>{t("providers.desc")}</DialogDescription></DialogHeader>
+          <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
             <Field label={t("common.name")}>
               <Input
                 value={form.name}
@@ -229,18 +248,34 @@ export function ProvidersPage() {
                 aria-label={t("common.enabled")}
               />
             </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button
-              size="sm"
-              disabled={!form.name || !form.base_url || save.isPending}
-              onClick={() => save.mutate()}
-            >
-              {save.isPending ? t("common.loading") : t("common.save")}
-            </Button>
-          </div>
-        </Card>
-      ) : null}
+            <DialogFooter className="sm:col-span-2"><Button type="button" variant="secondary" onClick={() => setOpen(false)}>{t("common.cancel")}</Button><Button type="submit" disabled={!form.name || !form.base_url || save.isPending}>{save.isPending ? t("common.loading") : t("common.save")}</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(testResult)} onOpenChange={(next) => { if (!next) setTestResult(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("providers.testTitle")} · {testResult?.provider.name}</DialogTitle>
+            <DialogDescription>{testResult?.result.ok ? t("providers.testSuccessDesc") : t("providers.testFailedDesc")}</DialogDescription>
+          </DialogHeader>
+          {testResult ? <div className="mt-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5">
+              <div className="min-w-0"><p className="text-[11px] text-muted-foreground">{t("providers.testStatus")}</p><p className="truncate text-sm font-medium">{testResult.result.ok ? t("providers.testPassed") : t("providers.testFailed")}</p></div>
+              <Badge variant={testResult.result.ok ? "success" : "destructive"}>{testResult.result.status_code ?? "—"}</Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+              <TestStat label={t("providers.testModel")} value={testResult.result.model || "—"} />
+              <TestStat label={t("providers.testAttempts")} value={`${testResult.result.attempts} / ${testResult.result.max_retries + 1}`} />
+              <TestStat label={t("providers.testLatency")} value={`${testResult.result.latency_ms} ms`} />
+              <TestStat label={t("providers.testPath")} value={testResult.result.path} />
+            </div>
+            {testResult.result.error ? <div className="rounded-md bg-destructive/8 px-3 py-2.5"><p className="text-[11px] text-destructive">{t("providers.testError")}</p><p className="mt-1 break-words font-mono text-[11px] leading-5">{testResult.result.error}</p></div> : null}
+            {testResult.result.response_preview ? <div className="rounded-md bg-secondary/40 px-3 py-2.5"><p className="text-[11px] text-muted-foreground">{t("providers.testResponse")}</p><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{testResult.result.response_preview}</pre></div> : null}
+          </div> : null}
+          <DialogFooter><Button variant="secondary" onClick={() => setTestResult(null)}>{t("common.close")}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Card className="overflow-hidden">
         {!data?.items?.length ? (
@@ -251,7 +286,7 @@ export function ProvidersPage() {
           <>
             <div className="divide-y divide-border/40 md:hidden">
               {data.items.map((p) => (
-                <div key={p.id} className="space-y-2.5 p-3 text-xs">
+                <div key={p.id} className="flex flex-col gap-2.5 p-3 text-xs">
                   <div className="flex min-w-0 items-center justify-between gap-2">
                     <p className="min-w-0 truncate font-medium">{p.name}</p>
                     {p.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}
@@ -262,21 +297,22 @@ export function ProvidersPage() {
                     <span className="min-w-0 break-all">{t("providers.modelsCol")} {p.models.join(", ") || "—"}</span>
                   </div>
                   <div className="flex items-center justify-end gap-1">
+                    <Button variant="secondary" size="sm" disabled={testProvider.isPending && testProvider.variables?.provider.id === p.id} onClick={() => startTest(p)}>{testProvider.isPending && testProvider.variables?.provider.id === p.id ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <FlaskConical data-icon="inline-start" />}{t("providers.test")}</Button>
                     <Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} />
                     <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button>
-                    <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("providers.deleteConfirm", { name: p.name }))) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button>
+                    <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: p.name, description: t("providers.deleteConfirm", { name: p.name }), confirmText: "Delete", destructive: true })) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button>
                   </div>
                 </div>
               ))}
             </div>
             <div className="hidden md:block">
               <div className={TABLE_HEAD_CLASS}>
-                <span className="w-36">{t("common.name")}</span><span className="min-w-0 flex-1">{t("providers.baseUrl")}</span><span className="w-16 text-right">{t("providers.keysCol")}</span><span className="w-36">{t("providers.modelsCol")}</span><span className="w-16">{t("common.status")}</span><span className="w-24 text-right">{t("common.actions")}</span>
+                <span className="w-36">{t("common.name")}</span><span className="min-w-0 flex-1">{t("providers.baseUrl")}</span><span className="w-16 text-right">{t("providers.keysCol")}</span><span className="w-36">{t("providers.modelsCol")}</span><span className="w-16">{t("common.status")}</span><span className="w-32 text-right">{t("common.actions")}</span>
               </div>
               {data.items.map((p) => (
                 <div key={p.id} className={TABLE_ROW_CLASS}>
                   <span className="w-36 truncate font-medium">{p.name}</span><span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{p.base_url}</span><span className="w-16 text-right tabular-nums">{p.key_count ?? (p.has_api_key ? 1 : 0)}</span><span className="w-36 truncate text-muted-foreground">{p.models.slice(0, 2).join(", ")}{p.models.length > 2 ? ` +${p.models.length - 2}` : ""}</span><span className="w-16">{p.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}</span>
-                  <span className="flex w-24 items-center justify-end gap-1"><Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={() => { if (confirm(t("providers.deleteConfirm", { name: p.name }))) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+                  <span className="flex w-32 items-center justify-end gap-1"><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" disabled={testProvider.isPending && testProvider.variables?.provider.id === p.id} onClick={() => startTest(p)} aria-label={t("providers.test")} title={t("providers.test")}>{testProvider.isPending && testProvider.variables?.provider.id === p.id ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}</Button><Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: p.name, description: t("providers.deleteConfirm", { name: p.name }), confirmText: "Delete", destructive: true })) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
                 </div>
               ))}
             </div>
@@ -300,4 +336,8 @@ function Field({
       {children}
     </div>
   );
+}
+
+function TestStat({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 rounded-md bg-secondary/40 px-3 py-2"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 truncate font-mono tabular-nums" title={value}>{value}</p></div>;
 }

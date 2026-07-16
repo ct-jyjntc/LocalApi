@@ -7,6 +7,7 @@ import { initDb, getSetting, setSetting } from "./db";
 import { adminRouter } from "./routes/admin";
 import { proxyRouter } from "./routes/proxy";
 import { userRouter } from "./routes/user";
+import { paymentsRouter } from "./routes/payments";
 import { createProvider, listProviders } from "./services/providers";
 import { createApiKey, listApiKeys } from "./services/keys";
 import { cleanupStaleReservations } from "./services/billing";
@@ -83,6 +84,7 @@ app.use(
   express.urlencoded({ extended: true, limit: "20mb" }),
   userRouter,
 );
+app.use(paymentsRouter);
 app.use(proxyRouter);
 
 // Frontend static + SPA fallback on the same port
@@ -104,6 +106,7 @@ if (webDist) {
       req.path.startsWith("/user/api") ||
       req.path.startsWith("/v1") ||
       req.path.startsWith("/coding") ||
+      req.path.startsWith("/payment/") ||
       req.path === "/health"
     ) {
       return next();
