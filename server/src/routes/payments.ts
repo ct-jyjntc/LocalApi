@@ -47,6 +47,11 @@ function checkoutPage(
   submission: { action: string; params: Record<string, string> },
   providerName: string,
 ) {
+  const directUrl = new URL(submission.action);
+  for (const [name, value] of Object.entries(submission.params)) {
+    directUrl.searchParams.set(name, value);
+  }
+  const directPaymentUrl = directUrl.toString();
   const fields = Object.entries(submission.params)
     .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
     .join("");
@@ -59,7 +64,7 @@ function checkoutPage(
       "referrer-policy": "no-referrer",
     })
     .type("html")
-    .send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在前往 ${escapeHtml(providerName)}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fafafa;color:#18181b;font:14px system-ui,sans-serif}.box{width:min(360px,calc(100vw - 40px));padding:28px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.dot{width:24px;height:24px;margin:0 auto 16px;border:2px solid #d4d4d8;border-top-color:#18181b;border-radius:50%;animation:spin .8s linear infinite}p{color:#71717a;line-height:1.6}button{margin-top:12px;padding:9px 16px;border:0;border-radius:999px;background:#18181b;color:#fff;cursor:pointer}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="dot"></div><strong>正在前往 ${escapeHtml(providerName)}</strong><p>如果没有自动跳转，请点击下方按钮。</p><form id="payment-form" method="post" action="${escapeHtml(submission.action)}">${fields}<button type="submit">继续支付</button></form></div><script>document.getElementById('payment-form').submit()</script></body></html>`);
+    .send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在前往 ${escapeHtml(providerName)}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fafafa;color:#18181b;font:14px system-ui,sans-serif}.box{width:min(360px,calc(100vw - 40px));padding:28px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.dot{width:24px;height:24px;margin:0 auto 16px;border:2px solid #d4d4d8;border-top-color:#18181b;border-radius:50%;animation:spin .8s linear infinite}p{color:#71717a;line-height:1.6}button,.direct{display:inline-block;margin-top:12px;padding:9px 16px;border:0;border-radius:999px;background:#18181b;color:#fff;cursor:pointer;font:inherit;text-decoration:none}.direct{margin-left:8px;background:#fff;color:#18181b;border:1px solid #d4d4d8}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="dot"></div><strong>正在前往 ${escapeHtml(providerName)}</strong><p>如果没有自动跳转，请点击下方按钮。</p><form id="payment-form" method="post" target="_top" accept-charset="UTF-8" action="${escapeHtml(submission.action)}">${fields}<button id="submit-payment" type="submit">继续支付</button><a class="direct" href="${escapeHtml(directPaymentUrl)}" target="_top" rel="noopener">直接打开</a></form></div><script>(()=>{const form=document.getElementById('payment-form');const button=document.getElementById('submit-payment');let submitted=false;form.addEventListener('submit',()=>{submitted=true;button.disabled=true;button.textContent='正在跳转…'});try{if(form.requestSubmit)form.requestSubmit();else form.submit()}catch(_){window.location.href=${JSON.stringify(directPaymentUrl)}}setTimeout(()=>{if(!submitted||document.visibilityState==='visible')window.location.href=${JSON.stringify(directPaymentUrl)}},1200)})()</script></body></html>`);
 }
 
 paymentsRouter.get("/payment/linuxdo/checkout/:orderNo", (req, res) => {

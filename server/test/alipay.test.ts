@@ -63,8 +63,10 @@ test("Alipay page/WAP orders, notifications and refunds use RSA2 and remain idem
     assert.equal(order?.pay_url, `https://api.example.com/payment/alipay/checkout/${order?.order_no}`);
 
     const checkout = getAlipayCheckout(order!.order_no);
-    assert.equal(checkout.action, "https://openapi.alipay.com/gateway.do");
+    assert.equal(checkout.action, "https://openapi.alipay.com/gateway.do?charset=UTF-8");
     assert.equal(checkout.params.method, "alipay.trade.wap.pay");
+    assert.equal(checkout.params.charset, "UTF-8");
+    assert.equal(alipaySignSource({ sign_type: "RSA2", app_id: "demo" }), "app_id=demo&sign_type=RSA2");
     const biz = JSON.parse(checkout.params.biz_content) as Record<string, string>;
     assert.equal(biz.product_code, "QUICK_WAP_WAY");
     assert.equal(biz.total_amount, "10.00");

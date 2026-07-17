@@ -23,7 +23,16 @@ type AlipayApiResponse = Record<string, unknown> & {
 const DEFAULT_GATEWAY = "https://openapi.alipay.com/gateway.do";
 
 function normalizeGateway(value?: string) {
-  return value?.trim() || DEFAULT_GATEWAY;
+  const raw = value?.trim() || DEFAULT_GATEWAY;
+  try {
+    const url = new URL(raw);
+    // Alipay requires charset to be present in the gateway query string for
+    // page/WAP form submissions. Keep an explicitly configured value intact.
+    if (!url.searchParams.has("charset")) url.searchParams.set("charset", "UTF-8");
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 function wrapPem(value: string, type: "PRIVATE KEY" | "RSA PRIVATE KEY" | "PUBLIC KEY") {
@@ -106,7 +115,7 @@ function signedParams(
     app_id: credentials.appId,
     method,
     format: "JSON",
-    charset: "utf-8",
+    charset: "UTF-8",
     sign_type: "RSA2",
     timestamp: alipayTimestamp(),
     version: "1.0",
