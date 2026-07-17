@@ -19,6 +19,7 @@ import {
 import {
   BillingError,
   BillingReservation,
+  estimateRequestTokens,
   reserveUsage,
   settleUsage,
 } from "./billing";
@@ -42,12 +43,14 @@ const maxSockets = Number.isFinite(configuredMaxSockets)
   : 256;
 const httpAgent = new http.Agent({
   keepAlive: true,
+  keepAliveMsecs: 30_000,
   maxSockets,
   maxFreeSockets: Math.min(64, maxSockets),
   scheduling: "lifo",
 });
 const httpsAgent = new https.Agent({
   keepAlive: true,
+  keepAliveMsecs: 30_000,
   maxSockets,
   maxFreeSockets: Math.min(64, maxSockets),
   scheduling: "lifo",
@@ -406,8 +409,9 @@ async function pipeResponseToClient(params: {
   attempts: number;
   started: number;
   stream: boolean;
+  baseIo: ReturnType<typeof extractIO>;
 }): Promise<ProxyResult> {
-  const { ctx, res, handle, provider, model, path, attempts, started, stream } = params;
+  const { res, handle, provider, attempts, stream, baseIo } = params;
   const upstream = handle.response;
   const streamingResponse =
     stream || /\btext\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
@@ -436,8 +440,8 @@ async function pipeResponseToClient(params: {
     return {
       statusCode: upstream.status,
       responseBytes: 0,
-      io: extractIO({ path, body: ctx.body, stream }),
-      error: attempts > 1 ? `ok after ${attempts} attempt(s)` : null,
+      io: baseIo,
+      error: null,
     };
   }
 
@@ -494,7 +498,6 @@ async function pipeResponseToClient(params: {
     res.off("close", onClientClose);
   }
 
-  const baseIo = extractIO({ path, body: ctx.body, stream });
   const io = { ...baseIo, ...responseCollector.finish() };
   return {
     statusCode: upstream.status,
@@ -504,7 +507,7 @@ async function pipeResponseToClient(params: {
       streamError ||
       (attempts > 1
         ? upstream.status >= 200 && upstream.status < 400
-          ? `ok after ${attempts} attempt(s)`
+          ? null
           : `Upstream HTTP ${upstream.status} after ${attempts} attempt(s)`
         : null),
   };
@@ -522,6 +525,18 @@ function writeCompletedRequest(params: {
   access: RequestAccess | null;
 }) {
   const { ctx, path, model, provider, started, stream, result, billing, access } = params;
+  let logIo = result.io;
+  let usageEstimated = false;
+  if (
+    result.statusCode >= 200 && result.statusCode < 400 &&
+    logIo.total_tokens === 0 &&
+    (logIo.output_text || logIo.reasoning_text)
+  ) {
+    const estimate = estimateRequestTokens(ctx.body, requestBytes(ctx));
+    const completion = Math.max(1, Math.ceil(((logIo.output_text?.length || 0) + (logIo.reasoning_text?.length || 0)) / 4));
+    logIo = { ...logIo, prompt_tokens: estimate.prompt, completion_tokens: completion, total_tokens: estimate.prompt + completion };
+    usageEstimated = true;
+  }
   let usageId: string | null = null;
   let costMicros = 0;
   let settlementError: string | null = null;
@@ -529,13 +544,13 @@ function writeCompletedRequest(params: {
     try {
       const settled = settleUsage(billing, {
         statusCode: result.statusCode,
-        promptTokens: result.io.prompt_tokens,
-        completionTokens: result.io.completion_tokens,
-        cachedTokens: result.io.cached_tokens,
-        reasoningTokens: result.io.reasoning_tokens,
-        totalTokens: result.io.total_tokens,
-        outputText: result.io.output_text,
-        reasoningText: result.io.reasoning_text,
+        promptTokens: logIo.prompt_tokens,
+        completionTokens: logIo.completion_tokens,
+        cachedTokens: logIo.cached_tokens,
+        reasoningTokens: logIo.reasoning_tokens,
+        totalTokens: logIo.total_tokens,
+        outputText: logIo.output_text,
+        reasoningText: logIo.reasoning_text,
         error: result.error,
       });
       usageId = settled.usageId;
@@ -544,7 +559,7 @@ function writeCompletedRequest(params: {
       settlementError = `Billing settlement failed: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
-  access?.release(result.io.total_tokens || result.io.prompt_tokens + result.io.completion_tokens);
+  access?.release(logIo.total_tokens || logIo.prompt_tokens + logIo.completion_tokens);
   writeLog({
     method: ctx.method,
     path,
@@ -561,14 +576,15 @@ function writeCompletedRequest(params: {
     cached: (result.io.cached_tokens ?? 0) > 0,
     request_bytes: requestBytes(ctx),
     response_bytes: result.responseBytes,
-    input_text: result.io.input_text,
-    output_text: result.io.output_text,
-    reasoning_text: result.io.reasoning_text,
-    prompt_tokens: result.io.prompt_tokens,
-    completion_tokens: result.io.completion_tokens,
-    reasoning_tokens: result.io.reasoning_tokens,
-    cached_tokens: result.io.cached_tokens,
-    total_tokens: result.io.total_tokens,
+    input_text: logIo.input_text,
+    output_text: logIo.output_text,
+    reasoning_text: logIo.reasoning_text,
+    prompt_tokens: logIo.prompt_tokens,
+    completion_tokens: logIo.completion_tokens,
+    reasoning_tokens: logIo.reasoning_tokens,
+    cached_tokens: logIo.cached_tokens,
+    total_tokens: logIo.total_tokens,
+    usage_estimated: usageEstimated,
     stream,
     error: [result.error, settlementError].filter(Boolean).join("; ") || null,
   });
@@ -584,6 +600,7 @@ export async function handleProxyHttp(
   const logPath = ctx.clientPath || path;
   const stream = isStreamBody(ctx.body);
   const baseIo = extractIO({ path, body: ctx.body, stream });
+  const estimatedTokens = estimateRequestTokens(ctx.body, requestBytes(ctx));
   const maxRetries = getMaxRetries();
   const retryDelay = getRetryDelayMs();
   const replayableBody = !ctx.bodyStream;
@@ -634,7 +651,7 @@ export async function handleProxyHttp(
     access?.release(tokens);
   };
   try {
-    if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body, { billingMode: ctx.billingMode });
+    if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body, { billingMode: ctx.billingMode, estimatedTokens });
   } catch (error) {
     const accessError = error instanceof AccessError ? error : new AccessError(403, "access_denied", String(error));
     if (accessError.retryAfterSeconds) res.setHeader("retry-after", String(accessError.retryAfterSeconds));
@@ -665,6 +682,7 @@ export async function handleProxyHttp(
         apiKeyId: ctx.apiKey.id,
         model,
         body: ctx.body,
+        estimate: estimatedTokens,
         billingMode: ctx.billingMode,
       });
     }
@@ -730,6 +748,7 @@ export async function handleProxyHttp(
         attempts,
         started,
         stream,
+        baseIo,
       });
       if (
         result.statusCode >= 200 &&

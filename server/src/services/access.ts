@@ -87,7 +87,7 @@ export function beginRequestAccess(
   key: ApiKey,
   model: string | null,
   body: unknown,
-  options: { billingMode?: "wallet" | "coding" } = {},
+  options: { billingMode?: "wallet" | "coding"; estimatedTokens?: { prompt: number; completion: number } } = {},
 ): RequestAccess {
   const billingMode = options.billingMode ?? "wallet";
   const user = key.user_id ? getUser(key.user_id) : null;
@@ -133,7 +133,7 @@ export function beginRequestAccess(
   }
   concurrency.set(concurrencyScope, active + 1);
 
-  const estimated = estimateRequestTokens(body);
+  const estimated = options.estimatedTokens ?? estimateRequestTokens(body);
   const tpm = user
     ? (billingMode === "coding" ? subscription?.plan.tpm_limit || 0 : tier?.tpm_limit || 0)
     : key.tpm_limit;

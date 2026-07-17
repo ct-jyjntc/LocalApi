@@ -181,6 +181,7 @@ export type LogRow = {
   reasoning_tokens: number;
   cached_tokens: number;
   total_tokens: number;
+  usage_estimated?: boolean;
   stream: boolean;
   user_id?: string | null;
   usage_id?: string | null;
@@ -557,9 +558,9 @@ export const api = {
       request<{ ok: boolean }>(`/admin/api/keys/${id}`, { method: "DELETE" }),
   },
   logs: {
-    list: (limit = 100) =>
+    list: (limit = 100, offset = 0) =>
       request<{ items: LogRow[]; total: number }>(
-        `/admin/api/logs?limit=${limit}`,
+        `/admin/api/logs?limit=${limit}&offset=${offset}`,
       ),
     get: (id: string) => request<LogRow>(`/admin/api/logs/${id}`),
     clear: () =>

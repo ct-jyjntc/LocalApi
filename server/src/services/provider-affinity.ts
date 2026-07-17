@@ -97,7 +97,24 @@ function stableConversationSeed(body: Record<string, unknown>) {
       if (prefix.length === 0) prefix.push(message);
     }
     if (!foundUser && prefix.length === 0) prefix.push(...messages.slice(0, 2));
-    return JSON.stringify({ prefix, tools: body.tools ?? null });
+    const compactPrefix = prefix.map((message) => {
+      const record = message as Record<string, unknown>;
+      const rawContent = record.content;
+      const content = typeof rawContent === "string"
+        ? rawContent.slice(0, 16_384)
+        : Array.isArray(rawContent)
+          ? rawContent.map((part) => part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string" ? (part as Record<string, unknown>).text : "").join("\n").slice(0, 16_384)
+          : "";
+      return { role: record.role, content };
+    });
+    const tools = Array.isArray(body.tools)
+      ? body.tools.map((tool) => {
+          const record = tool && typeof tool === "object" ? tool as Record<string, unknown> : {};
+          const fn = record.function && typeof record.function === "object" ? record.function as Record<string, unknown> : {};
+          return { type: record.type, name: fn.name ?? record.name };
+        })
+      : null;
+    return JSON.stringify({ prefix: compactPrefix, tools });
   }
 
   if (typeof body.prompt === "string" && body.prompt) {

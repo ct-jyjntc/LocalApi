@@ -24,6 +24,7 @@ type LogInput = {
   reasoning_tokens?: number;
   cached_tokens?: number;
   total_tokens?: number;
+  usage_estimated?: boolean;
   stream?: boolean;
   user_id?: string | null;
   usage_id?: string | null;
@@ -33,19 +34,21 @@ type LogInput = {
 const pendingLogs: Array<LogInput & { id: string }> = [];
 const MAX_PENDING_LOGS = 10_000;
 const STORE_LOG_CONTENT = process.env.LOG_CONTENT === "true";
+let insertLogStatement: ReturnType<typeof db.prepare> | null = null;
+let logsSincePrune = 0;
 
 export function flushLogs(limit = 500) {
   if (pendingLogs.length === 0) return;
   const rows = pendingLogs.splice(0, Math.min(limit, pendingLogs.length));
   try {
-    const insert = db.prepare(
+    const insert = insertLogStatement ??= db.prepare(
     `INSERT INTO request_logs (
       id, method, path, model, provider_id, provider_name, api_key_id, api_key_name,
       status_code, latency_ms, cached, request_bytes, response_bytes, error, created_at,
       input_text, output_text, reasoning_text,
-      prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, stream
+      prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, usage_estimated, stream
       , user_id, usage_id, cost_micros
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     db.transaction(() => {
       for (const input of rows) {
@@ -73,17 +76,22 @@ export function flushLogs(limit = 500) {
           input.reasoning_tokens ?? 0,
           input.cached_tokens ?? 0,
           input.total_tokens ?? 0,
+          input.usage_estimated ? 1 : 0,
           input.stream ? 1 : 0,
           input.user_id ?? null,
           input.usage_id ?? null,
           input.cost_micros ?? 0,
         );
       }
-      db.prepare(
-        `DELETE FROM request_logs WHERE id IN (
-          SELECT id FROM request_logs ORDER BY created_at DESC LIMIT -1 OFFSET 5000
-        )`,
-      ).run();
+      logsSincePrune += rows.length;
+      if (logsSincePrune >= 500) {
+        db.prepare(
+          `DELETE FROM request_logs WHERE id IN (
+            SELECT id FROM request_logs ORDER BY created_at DESC LIMIT -1 OFFSET 5000
+          )`,
+        ).run();
+        logsSincePrune = 0;
+      }
     })();
   } catch {
     pendingLogs.unshift(...rows);
@@ -126,6 +134,7 @@ function mapLog(l: RequestLog) {
     reasoning_tokens: l.reasoning_tokens ?? 0,
     cached_tokens: l.cached_tokens ?? 0,
     total_tokens: l.total_tokens ?? 0,
+    usage_estimated: l.usage_estimated === 1,
     cost_micros: l.cost_micros ?? 0,
   };
 }
@@ -138,7 +147,7 @@ export function listLogs(limit = 100, offset = 0, userId?: string) {
          id, method, path, model, provider_id, provider_name, api_key_id, api_key_name,
          status_code, latency_ms, cached, request_bytes, response_bytes, error, created_at,
          NULL AS input_text, NULL AS output_text, NULL AS reasoning_text,
-         prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, stream,
+         prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, usage_estimated, stream,
          user_id, usage_id, cost_micros
        FROM request_logs ${userId ? "WHERE user_id = ?" : ""}
        ORDER BY created_at DESC LIMIT ? OFFSET ?`,

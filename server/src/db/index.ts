@@ -440,6 +440,7 @@ export function initDb() {
       reasoning_tokens INTEGER NOT NULL DEFAULT 0,
       cached_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
+      usage_estimated INTEGER NOT NULL DEFAULT 0,
       stream INTEGER NOT NULL DEFAULT 0,
       user_id TEXT,
       usage_id TEXT,
@@ -491,6 +492,7 @@ export function initDb() {
   addLogCol("reasoning_tokens", "reasoning_tokens INTEGER NOT NULL DEFAULT 0");
   addLogCol("cached_tokens", "cached_tokens INTEGER NOT NULL DEFAULT 0");
   addLogCol("total_tokens", "total_tokens INTEGER NOT NULL DEFAULT 0");
+  addLogCol("usage_estimated", "usage_estimated INTEGER NOT NULL DEFAULT 0");
   addLogCol("stream", "stream INTEGER NOT NULL DEFAULT 0");
   addLogCol("user_id", "user_id TEXT");
   addLogCol("usage_id", "usage_id TEXT");
@@ -874,6 +876,7 @@ export type RequestLog = {
   reasoning_tokens: number;
   cached_tokens: number;
   total_tokens: number;
+  usage_estimated: number;
   stream: number;
   user_id: string | null;
   usage_id: string | null;

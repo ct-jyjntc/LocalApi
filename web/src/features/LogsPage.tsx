@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -21,11 +21,18 @@ export function LogsPage() {
   const dialogs = useAppDialog();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const { data, isLoading } = useQuery({
+  const logs = useInfiniteQuery({
     queryKey: ["admin", "logs"],
-    queryFn: () => api.logs.list(200),
+    queryFn: ({ pageParam }) => api.logs.list(200, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((total, page) => total + page.items.length, 0);
+      return loaded < lastPage.total ? loaded : undefined;
+    },
     refetchInterval: 4000,
   });
+  const items = logs.data?.pages.flatMap((page) => page.items) || [];
+  const total = logs.data?.pages[0]?.total || 0;
 
   const clear = useMutation({
     mutationFn: () => api.logs.clear(),
@@ -71,13 +78,13 @@ export function LogsPage() {
           <span className="hidden w-14 shrink-0 text-right md:block">{t("common.latency")}</span>
           <span className="hidden w-36 shrink-0 text-right lg:block">{t("common.time")}</span>
         </div>
-        {!data?.items?.length ? (
+        {!items.length ? (
           <EmptyState>
-            {isLoading ? t("common.loading") : t("logs.empty")}
+            {logs.isLoading ? t("common.loading") : t("logs.empty")}
           </EmptyState>
         ) : (
           <div className="divide-y divide-border/40">
-            {data.items.map((log) => {
+            {items.map((log) => {
               const open = Boolean(expanded[log.id]);
               return (
                 <LogItem
@@ -90,6 +97,7 @@ export function LogsPage() {
             })}
           </div>
         )}
+        {items.length ? <div className="flex items-center justify-between border-t border-border/50 px-4 py-3 text-[11px] text-muted-foreground"><span>已显示 {items.length} / {total}</span>{logs.hasNextPage ? <Button variant="secondary" size="sm" disabled={logs.isFetchingNextPage} onClick={() => logs.fetchNextPage()}>{logs.isFetchingNextPage ? t("common.loading") : "加载更多"}</Button> : <span>已加载全部</span>}</div> : null}
       </Card>
     </div>
   );
@@ -117,6 +125,7 @@ function LogItem({
   const cacheTok = fullLog.cached_tokens ?? 0;
   const reasonTok = fullLog.reasoning_tokens ?? 0;
   const totalTok = fullLog.total_tokens ?? inputTok + outputTok;
+  const usagePrefix = fullLog.usage_estimated ? "≈" : "";
 
   return (
     <div className="text-xs">
@@ -147,7 +156,7 @@ function LogItem({
           className="hidden w-44 shrink-0 items-center justify-end gap-2 tabular-nums text-[11px] text-muted-foreground sm:inline-flex"
           title={`${t("logs.tokenInput")} ${inputTok} · ${t("logs.tokenOutput")} ${outputTok} · ${t("logs.tokenCache")} ${cacheTok} · ${t("logs.tokenReasoning")} ${reasonTok}`}
         >
-          <Tok n={inputTok} />
+          <span>{usagePrefix}<Tok n={inputTok} /></span>
           <span className="text-border">/</span>
           <Tok n={outputTok} />
           <span className="text-border">/</span>
@@ -196,6 +205,7 @@ function LogItem({
             </span>
             <span>·</span>
             <span className="tabular-nums">
+              {fullLog.usage_estimated ? "估算 · " : ""}
               {t("logs.input")} {inputTok}
               {" / "}
               {t("logs.output")} {outputTok}

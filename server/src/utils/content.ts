@@ -246,6 +246,22 @@ function extractFromJson(
     if (reasons.length) reasoning = reasons.join("\n");
   }
 
+  // Anthropic Messages API
+  if (Array.isArray(data.content)) {
+    const texts: string[] = [];
+    const reasons: string[] = [];
+    const tools: string[] = [];
+    for (const item of data.content as unknown[]) {
+      if (!item || typeof item !== "object") continue;
+      const part = item as Record<string, unknown>;
+      if (part.type === "text" && typeof part.text === "string") texts.push(part.text);
+      if (part.type === "thinking" && typeof part.thinking === "string") reasons.push(part.thinking);
+      if (part.type === "tool_use") tools.push(`[tool] ${String(part.name || "unknown")}\n${JSON.stringify(part.input ?? {})}`);
+    }
+    if (!output && (texts.length || tools.length)) output = [...texts, ...tools].join("\n");
+    if (!reasoning && reasons.length) reasoning = reasons.join("\n");
+  }
+
   if (!output && typeof data.error === "object" && data.error) {
     const err = data.error as Record<string, unknown>;
     output = typeof err.message === "string" ? err.message : JSON.stringify(err);
@@ -319,10 +335,24 @@ function parseUsage(raw: unknown): {
   };
 }
 
+function mergeUsage(current: unknown, next: unknown): unknown {
+  if (!next || typeof next !== "object") return current;
+  const left = current && typeof current === "object" ? current as Record<string, unknown> : {};
+  const right = next as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...left };
+  for (const [key, value] of Object.entries(right)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) merged[key] = mergeUsage(left[key], value);
+    else if (typeof value === "number" && typeof left[key] === "number") merged[key] = Math.max(left[key] as number, value);
+    else if (value !== undefined && value !== null) merged[key] = value;
+  }
+  return merged;
+}
+
 function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
   const contents: string[] = [];
   const reasons: string[] = [];
   let usageRaw: unknown = null;
+  const toolCalls = new Map<number, { name: string; arguments: string }>();
 
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -332,7 +362,11 @@ function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
     try {
       const data = JSON.parse(payload) as Record<string, unknown>;
       if (data.usage && typeof data.usage === "object") {
-        usageRaw = data.usage;
+        usageRaw = mergeUsage(usageRaw, data.usage);
+      }
+      if (data.message && typeof data.message === "object") {
+        const message = data.message as Record<string, unknown>;
+        if (message.usage && typeof message.usage === "object") usageRaw = mergeUsage(usageRaw, message.usage);
       }
       if (Array.isArray(data.choices) && data.choices[0]) {
         const choice = data.choices[0] as Record<string, unknown>;
@@ -345,6 +379,11 @@ function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
         const r = collectReasoningFromMessage(delta);
         if (r) reasons.push(r);
         if (typeof choice.text === "string") contents.push(choice.text);
+      }
+      if (data.delta && typeof data.delta === "object") {
+        const delta = data.delta as Record<string, unknown>;
+        if (typeof delta.text === "string") contents.push(delta.text);
+        if (typeof delta.thinking === "string") reasons.push(delta.thinking);
       }
     } catch {
       // ignore bad chunks
@@ -397,6 +436,7 @@ export function createResponseLogCollector(params: {
   const contents: string[] = [];
   const reasons: string[] = [];
   let usageRaw: unknown = null;
+  const toolCalls = new Map<number, { name: string; arguments: string }>();
   let pending = "";
 
   const consumeLine = (line: string) => {
@@ -407,12 +447,20 @@ export function createResponseLogCollector(params: {
 
     try {
       const data = JSON.parse(payload) as Record<string, unknown>;
-      if (data.usage && typeof data.usage === "object") usageRaw = data.usage;
+      if (data.usage && typeof data.usage === "object") {
+        usageRaw = mergeUsage(usageRaw, data.usage);
+        const billing = (data.usage as Record<string, unknown>).billing_usage as Record<string, unknown> | undefined;
+        if (billing?.openai_usage) usageRaw = mergeUsage(usageRaw, billing.openai_usage);
+      }
       if (data.response && typeof data.response === "object") {
         const response = data.response as Record<string, unknown>;
         if (response.usage && typeof response.usage === "object") {
-          usageRaw = response.usage;
+          usageRaw = mergeUsage(usageRaw, response.usage);
         }
+      }
+      if (data.message && typeof data.message === "object") {
+        const message = data.message as Record<string, unknown>;
+        if (message.usage && typeof message.usage === "object") usageRaw = mergeUsage(usageRaw, message.usage);
       }
 
       if (Array.isArray(data.choices) && data.choices[0]) {
@@ -426,12 +474,38 @@ export function createResponseLogCollector(params: {
         const reasoning = collectReasoningFromMessage(delta);
         if (reasoning) reasons.push(reasoning);
         if (typeof choice.text === "string") contents.push(choice.text);
+        const calls = Array.isArray(delta.tool_calls) ? delta.tool_calls : Array.isArray((choice.message as Record<string, unknown> | undefined)?.tool_calls) ? (choice.message as Record<string, unknown>).tool_calls as unknown[] : [];
+        for (const rawCall of calls) {
+          if (!rawCall || typeof rawCall !== "object") continue;
+          const call = rawCall as Record<string, unknown>;
+          const index = Number(call.index ?? 0) || 0;
+          const fn = call.function && typeof call.function === "object" ? call.function as Record<string, unknown> : {};
+          const current = toolCalls.get(index) || { name: "", arguments: "" };
+          if (typeof fn.name === "string" && fn.name) current.name = fn.name;
+          if (typeof fn.arguments === "string") current.arguments += fn.arguments;
+          toolCalls.set(index, current);
+        }
       }
 
       const eventType = typeof data.type === "string" ? data.type : "";
       if (typeof data.delta === "string") {
         if (/reasoning|thinking/.test(eventType)) reasons.push(data.delta);
         else if (/output_text|content/.test(eventType)) contents.push(data.delta);
+      }
+      if (data.delta && typeof data.delta === "object") {
+        const delta = data.delta as Record<string, unknown>;
+        if (typeof delta.text === "string") contents.push(delta.text);
+        if (typeof delta.thinking === "string") reasons.push(delta.thinking);
+        if (typeof delta.partial_json === "string") {
+          const index = Number(data.index ?? 0) || 0;
+          const current = toolCalls.get(index) || { name: "tool", arguments: "" };
+          current.arguments += delta.partial_json;
+          toolCalls.set(index, current);
+        }
+      }
+      if (data.content_block && typeof data.content_block === "object") {
+        const block = data.content_block as Record<string, unknown>;
+        if (block.type === "tool_use") toolCalls.set(Number(data.index ?? 0) || 0, { name: String(block.name || "tool"), arguments: block.input ? JSON.stringify(block.input) : "" });
       }
     } catch {
       // Ignore malformed upstream events while preserving the live response.
@@ -450,8 +524,9 @@ export function createResponseLogCollector(params: {
     push: (chunk) => consumeText(decoder.write(chunk)),
     finish: () => {
       consumeText(decoder.end(), true);
+      const tools = [...toolCalls.values()].map((call) => `[tool] ${call.name || "unknown"}\n${call.arguments}`).join("\n");
       return {
-        output_text: clamp(contents.join("") || null),
+        output_text: clamp([contents.join(""), tools].filter(Boolean).join("\n") || null),
         reasoning_text: clamp(reasons.join("") || null),
         ...parseUsage(usageRaw),
       };

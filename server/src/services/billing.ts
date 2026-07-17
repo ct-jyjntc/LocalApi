@@ -95,12 +95,16 @@ function modelAllowed(models: string[], model: string) {
   return models.length === 0 || models.includes("*") || models.includes(model);
 }
 
-export function estimateRequestTokens(body: unknown) {
+export function estimateRequestTokens(body: unknown, requestBytes = 0) {
   let chars = 0;
-  try {
-    chars = JSON.stringify(body ?? "").length;
-  } catch {
-    chars = String(body ?? "").length;
+  if (requestBytes > 0) {
+    chars = requestBytes;
+  } else {
+    try {
+      chars = JSON.stringify(body ?? "").length;
+    } catch {
+      chars = String(body ?? "").length;
+    }
   }
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const requested = Number(
@@ -134,6 +138,7 @@ export function reserveUsage(input: {
   apiKeyId: string;
   model: string;
   body: unknown;
+  estimate?: { prompt: number; completion: number };
   billingMode?: "wallet" | "coding";
 }): BillingReservation {
   const billingMode = input.billingMode ?? "wallet";
@@ -141,7 +146,7 @@ export function reserveUsage(input: {
   if (!price || price.enabled !== 1) {
     throw new BillingError(402, "model_not_priced", `Model ${input.model} has no active price`);
   }
-  const estimate = estimateRequestTokens(input.body);
+  const estimate = input.estimate ?? estimateRequestTokens(input.body);
   const reserveCost = calculateCostMicros(price, {
     prompt_tokens: estimate.prompt,
     completion_tokens: estimate.completion,

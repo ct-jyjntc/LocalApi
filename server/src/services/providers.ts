@@ -39,6 +39,17 @@ export function serializeProviderKeys(keys: string[]): string {
 /** Round-robin pick for multi-key providers. */
 const keyCursor = new Map<string, number>();
 let providerCache: Provider[] | null = null;
+const providerRuntime = new Map<string, { keys: string[]; models: string[] }>();
+
+function rebuildProviderRuntime(rows: Provider[]) {
+  providerRuntime.clear();
+  for (const row of rows) {
+    providerRuntime.set(row.id, {
+      keys: parseProviderKeys(row.api_key),
+      models: safeParseModels(row.models),
+    });
+  }
+}
 
 function loadProviders() {
   const rows = db
@@ -53,6 +64,7 @@ function loadProviders() {
       row.api_key = encrypted;
     }
   }
+  rebuildProviderRuntime(rows);
   return rows;
 }
 
@@ -66,7 +78,7 @@ export function refreshProviderCache() {
 }
 
 export function pickProviderKey(provider: Provider): string {
-  const keys = parseProviderKeys(provider.api_key);
+  const keys = providerRuntime.get(provider.id)?.keys ?? parseProviderKeys(provider.api_key);
   if (keys.length === 0) return "";
   if (keys.length === 1) return keys[0];
   const idx = keyCursor.get(provider.id) ?? 0;
@@ -183,14 +195,14 @@ export function listProvidersForModel(model?: string | null): Provider[] {
   if (!model) return providers;
 
   const exact = providers.filter((provider) => {
-    const models = safeParseModels(provider.models);
+    const models = providerRuntime.get(provider.id)?.models ?? safeParseModels(provider.models);
     return models.includes(model) || models.includes("*");
   });
   if (exact.length) return exact;
 
   const lower = model.toLowerCase();
   return providers.filter((provider) => {
-    const models = safeParseModels(provider.models);
+    const models = providerRuntime.get(provider.id)?.models ?? safeParseModels(provider.models);
     return models.some(
       (candidate) => lower.startsWith(candidate.toLowerCase()) || candidate.toLowerCase().startsWith(lower),
     );
@@ -202,7 +214,8 @@ export function resolveProviderForModel(model?: string | null): Provider | null 
 }
 
 export function sanitizeProvider(p: Provider) {
-  const keys = parseProviderKeys(p.api_key);
+  const runtime = providerRuntime.get(p.id);
+  const keys = runtime?.keys ?? parseProviderKeys(p.api_key);
   return {
     id: p.id,
     name: p.name,
@@ -211,7 +224,7 @@ export function sanitizeProvider(p: Provider) {
     api_keys: keys,
     key_count: keys.length,
     has_api_key: keys.length > 0,
-    models: safeParseModels(p.models),
+    models: runtime?.models ?? safeParseModels(p.models),
     enabled: p.enabled === 1,
     timeout_ms: p.timeout_ms,
     created_at: p.created_at,
