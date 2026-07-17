@@ -1,5 +1,6 @@
 import http from "http";
 import https from "https";
+import { once } from "events";
 import fetch, { Response as FetchResponse } from "node-fetch";
 import type { Response as ExpressResponse } from "express";
 import { v4 as uuid } from "uuid";
@@ -408,24 +409,29 @@ async function pipeResponseToClient(params: {
 }): Promise<ProxyResult> {
   const { ctx, res, handle, provider, model, path, attempts, started, stream } = params;
   const upstream = handle.response;
-  applyUpstreamHeaders(res, upstream, `${provider.id}:${provider.name}`);
-  if (attempts > 1) res.setHeader("x-retry-attempts", String(attempts));
-  if (stream) {
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
-  }
-  if (!res.getHeader("content-type")) {
-    res.setHeader("content-type", stream ? "text/event-stream; charset=utf-8" : "application/json; charset=utf-8");
-  }
   const streamingResponse =
     stream || /\btext\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
-  res.status(upstream.status);
-  let clientStatus = upstream.status;
+  let headersCommitted = false;
+  const commitHeaders = () => {
+    if (headersCommitted) return;
+    headersCommitted = true;
+    applyUpstreamHeaders(res, upstream, `${provider.id}:${provider.name}`);
+    if (attempts > 1) res.setHeader("x-retry-attempts", String(attempts));
+    if (stream) {
+      res.setHeader("cache-control", "no-cache");
+      res.setHeader("connection", "keep-alive");
+      res.setHeader("x-accel-buffering", "no");
+    }
+    if (!res.getHeader("content-type")) {
+      res.setHeader("content-type", stream ? "text/event-stream; charset=utf-8" : "application/json; charset=utf-8");
+    }
+    res.status(upstream.status);
+  };
 
   const body = upstream.body;
   if (!body) {
     handle.clearTimeout();
+    commitHeaders();
     res.end();
     return {
       statusCode: upstream.status,
@@ -440,68 +446,58 @@ async function pipeResponseToClient(params: {
     contentType: upstream.headers.get("content-type"),
   });
   let responseBytes = 0;
-  let bodyEnded = false;
-  let clientFinished = false;
   let streamError: string | null = null;
-
-  await new Promise<void>((resolve) => {
-    const onClientFinish = () => {
-      clientFinished = true;
-    };
-    const onClientClose = () => {
-      if (bodyEnded || clientFinished) return;
-      streamError = streamError || "Client disconnected";
-      handle.abort();
-      const destroy = body as { destroy?: (error?: Error) => void };
-      destroy.destroy?.();
-      resolve();
-    };
-    const onData = (chunk: Buffer) => {
-      if (responseBytes === 0) handle.onBodyChunk(streamingResponse);
+  let clientClosed = false;
+  const onClientClose = () => {
+    if (res.writableEnded) return;
+    clientClosed = true;
+    streamError = "Client disconnected";
+    handle.abort();
+    (body as { destroy?: () => void }).destroy?.();
+  };
+  res.once("close", onClientClose);
+  try {
+    for await (const value of body) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      if (responseBytes === 0) {
+        handle.onBodyChunk(streamingResponse);
+        commitHeaders();
+      }
       responseBytes += chunk.length;
       responseCollector.push(chunk);
-    };
-    const onEnd = () => {
-      bodyEnded = true;
-      handle.clearTimeout();
-      resolve();
-    };
-    const onError = (error: unknown) => {
-      bodyEnded = true;
-      const timedOut =
-        handle.didTimeout() ||
-        (error instanceof Error && /timeout/i.test(error.message));
-      streamError =
-        streamError ||
-        (handle.didTimeout()
-          ? "Upstream response timed out"
-          : error instanceof Error
-            ? error.message
-            : String(error));
-      handle.abort();
-      if (timedOut && responseBytes === 0 && !res.headersSent) {
-        clientStatus = 504;
-        res.status(504).json({
-          error: { message: "Upstream response timed out", type: "timeout_error" },
-        });
-      } else if (!res.writableEnded) {
-        res.destroy(error instanceof Error ? error : undefined);
+      if (!res.write(chunk)) {
+        await Promise.race([once(res, "drain"), once(res, "close")]);
+        if (clientClosed) throw new Error("Client disconnected");
       }
-      resolve();
-    };
-
-    res.once("finish", onClientFinish);
-    res.once("close", onClientClose);
-    body.on("data", onData);
-    body.once("end", onEnd);
-    body.once("error", onError);
-    body.pipe(res);
-  });
+    }
+    handle.clearTimeout();
+    if (!clientClosed) {
+      commitHeaders();
+      res.end();
+    }
+  } catch (error) {
+    handle.abort();
+    if (clientClosed) {
+      streamError = "Client disconnected";
+    } else if (responseBytes === 0 && !res.headersSent) {
+      if (handle.didTimeout() || (error instanceof Error && /timeout|aborted/i.test(error.message))) {
+        throw upstreamTimeoutError(error);
+      }
+      throw error;
+    } else {
+      streamError = handle.didTimeout()
+        ? "Upstream response timed out"
+        : error instanceof Error ? error.message : String(error);
+      if (!res.writableEnded) res.destroy(error instanceof Error ? error : undefined);
+    }
+  } finally {
+    res.off("close", onClientClose);
+  }
 
   const baseIo = extractIO({ path, body: ctx.body, stream });
   const io = { ...baseIo, ...responseCollector.finish() };
   return {
-    statusCode: clientStatus,
+    statusCode: upstream.status,
     responseBytes,
     io,
     error:
@@ -591,7 +587,6 @@ export async function handleProxyHttp(
   const maxRetries = getMaxRetries();
   const retryDelay = getRetryDelayMs();
   const replayableBody = !ctx.bodyStream;
-  const retrySafe = isRetrySafe(ctx);
 
   const providerCandidates = listProvidersForModel(model);
   if (providerCandidates.length === 0) {
@@ -753,7 +748,6 @@ export async function handleProxyHttp(
       if (
         !res.headersSent &&
         replayableBody &&
-        retrySafe &&
         attempts <= maxRetries &&
         isRetryableError(error)
       ) {

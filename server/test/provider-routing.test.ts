@@ -36,6 +36,7 @@ test("provider retries fail over while the same conversation keeps its healthy c
   let failingRequests = 0;
   let healthyRequests = 0;
   let testRequests = 0;
+  let stallingRequests = 0;
   const failingUpstream = http.createServer((_req, res) => {
     failingRequests += 1;
     jsonResponse(res, 503, { error: { message: "temporarily unavailable" } });
@@ -59,11 +60,18 @@ test("provider retries fail over while the same conversation keeps its healthy c
       choices: [{ message: { role: "assistant", content: "OK" } }],
     });
   });
+  const stallingUpstream = http.createServer((_req, res) => {
+    stallingRequests += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.flushHeaders();
+    setTimeout(() => res.end('{"late":true}'), 300);
+  });
 
-  const [failingPort, healthyPort, retryingPort] = await Promise.all([
+  const [failingPort, healthyPort, retryingPort, stallingPort] = await Promise.all([
     listen(failingUpstream),
     listen(healthyUpstream),
     listen(retryingUpstream),
+    listen(stallingUpstream),
   ]);
 
   const { default: express } = await import("express");
@@ -166,6 +174,30 @@ test("provider retries fail over while the same conversation keeps its healthy c
     assert.equal(failingRequests, 1);
     assert.equal(healthyRequests, 2);
 
+    const stalling = createProvider({
+      name: "stalling",
+      base_url: `http://127.0.0.1:${stallingPort}`,
+      models: ["timeout-model"],
+      timeout_ms: 100,
+    });
+    const timeoutHealthy = createProvider({
+      name: "timeout-healthy",
+      base_url: `http://127.0.0.1:${healthyPort}`,
+      models: ["timeout-model"],
+    });
+    const timeoutBody = { model: "timeout-model", messages: [{ role: "user", content: "hello" }] };
+    const timeoutAffinity = buildProviderAffinityKey({ model: timeoutBody.model, body: timeoutBody, headers: {}, apiKeyId: "test-key", billingMode: "wallet" });
+    rememberProviderAffinity(timeoutAffinity, stalling.id);
+    const timeoutResponse = await fetch(`http://127.0.0.1:${relayPort}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(timeoutBody),
+    });
+    assert.equal(timeoutResponse.status, 200);
+    assert.match(timeoutResponse.headers.get("x-provider") || "", new RegExp(`^${timeoutHealthy.id}:`));
+    assert.equal(timeoutResponse.headers.get("x-retry-attempts"), "2");
+    assert.equal(stallingRequests, 1);
+
     setSetting("max_retries", "2");
     const testProvider = createProvider({
       name: "retrying-test",
@@ -179,7 +211,7 @@ test("provider retries fail over while the same conversation keeps its healthy c
     assert.equal(testRequests, 3);
   } finally {
     if (relay) await close(relay);
-    await Promise.all([close(failingUpstream), close(healthyUpstream), close(retryingUpstream)]);
+    await Promise.all([close(failingUpstream), close(healthyUpstream), close(retryingUpstream), close(stallingUpstream)]);
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
