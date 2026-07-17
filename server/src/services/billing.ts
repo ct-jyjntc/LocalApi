@@ -181,10 +181,10 @@ export function reserveUsage(input: {
         throw new BillingError(402, "plan_quota_exhausted", "Plan quota is insufficient");
       }
       const availableWallet = wallet.balance_micros - wallet.reserved_micros;
-      if (availableWallet < remainder) {
+      if (availableWallet <= 0) {
         throw new BillingError(402, "insufficient_balance", "Insufficient account balance");
       }
-      reservedWallet = remainder;
+      reservedWallet = Math.min(remainder, availableWallet);
     }
 
     if (subscription && reservedPlan > 0) {

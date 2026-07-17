@@ -241,6 +241,9 @@ export type ModelPrice = {
   created_at: string;
   updated_at: string;
 };
+export type FeedbackAttachment = { name: string; type: string; data: string };
+export type FeedbackMessage = { id: string; sender_type: "user" | "admin"; body: string; attachments: FeedbackAttachment[]; created_at: string };
+export type FeedbackThread = { id: string; user_id: string; username?: string; display_name?: string; subject: string; status: "open" | "resolved"; created_at: string; updated_at: string; messages: FeedbackMessage[] };
 
 export type PlanRow = {
   id: string;
@@ -586,6 +589,11 @@ export const api = {
       }),
   },
   commercial: {
+    feedback: {
+      list: () => request<{ items: FeedbackThread[] }>("/admin/api/commercial/feedback"),
+      reply: (id: string, body: string, attachments: FeedbackAttachment[] = []) => request<{ messages: FeedbackMessage[] }>(`/admin/api/commercial/feedback/${id}/replies`, { method: "POST", body: JSON.stringify({ body, attachments }) }),
+      status: (id: string, status: "open" | "resolved") => request<{ ok: boolean }>(`/admin/api/commercial/feedback/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+    },
     users: {
       list: () => request<{ items: UserRow[] }>("/admin/api/commercial/users"),
       create: (body: {
@@ -707,6 +715,11 @@ export const api = {
 };
 
 export const userApi = {
+  feedback: {
+    list: () => request<{ items: FeedbackThread[] }>("/user/api/feedback", {}, { auth: "user" }),
+    create: (subject: string, body: string, attachments: FeedbackAttachment[]) => request<FeedbackThread>("/user/api/feedback", { method: "POST", body: JSON.stringify({ subject, body, attachments }) }, { auth: "user" }),
+    reply: (id: string, body: string, attachments: FeedbackAttachment[]) => request<{ messages: FeedbackMessage[] }>(`/user/api/feedback/${id}/replies`, { method: "POST", body: JSON.stringify({ body, attachments }) }, { auth: "user" }),
+  },
   config: () => request<{ registration_enabled: boolean; linuxdo_enabled: boolean }>("/user/api/config", {}, { auth: false }),
   login: (username: string, password: string) =>
     request<{ token: string; expires_at: string; user: UserRow }>(

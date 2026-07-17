@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageSquareText,
   PanelsTopLeft,
   Package,
   PanelLeftClose,
@@ -44,6 +45,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/billing", label: { zh: "计费用量", en: "Billing" }, icon: ChartNoAxesCombined },
   { to: "/payments", label: { zh: "支付订单", en: "Payments" }, icon: CreditCard },
   { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
+  { to: "/feedback", label: { zh: "用户反馈", en: "Feedback" }, icon: MessageSquareText },
   { to: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
 
@@ -130,6 +132,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
         <SidebarStatus
           collapsed={collapsed}
           onLogout={onLogout}
+          feedback={mode === "user" ? { to: "/feedback", label: locale === "zh" ? "我的反馈" : "My feedback" } : undefined}
           logoutLabel={locale === "zh" ? "退出登录" : "Sign out"}
         />
       </aside>
@@ -169,6 +172,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
             <SidebarStatus
               collapsed={false}
               onLogout={onLogout}
+              feedback={mode === "user" ? { to: "/feedback", label: locale === "zh" ? "我的反馈" : "My feedback" } : undefined}
               logoutLabel={locale === "zh" ? "退出登录" : "Sign out"}
             />
           </aside>
@@ -308,14 +312,17 @@ function SidebarStatus({
   collapsed,
   onLogout,
   logoutLabel,
+  feedback,
 }: {
   collapsed: boolean;
   onLogout?: () => void;
   logoutLabel: string;
+  feedback?: { to: string; label: string };
 }) {
   if (!onLogout) return null;
   return (
     <div className="mt-4 shrink-0 px-2">
+      {feedback ? <NavLink to={feedback.to} title={feedback.label} className={({isActive})=>cn("mb-1 flex h-8 items-center gap-2.5 rounded-md px-2.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/55 hover:text-foreground",isActive&&"bg-secondary/60 text-foreground",collapsed&&"justify-center px-0")}><MessageSquareText className="size-4 shrink-0" strokeWidth={1.75}/>{!collapsed?<span>{feedback.label}</span>:null}</NavLink>:null}
       <Button
         type="button"
         variant="ghost"

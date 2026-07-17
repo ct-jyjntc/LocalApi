@@ -33,6 +33,7 @@ import {
   updatePaymentChannel,
 } from "../services/payments";
 import { createUserTier, deleteUserTier, listUserTiers, TierError, updateUserTier } from "../services/tiers";
+import { listAllFeedback, replyFeedback, setFeedbackStatus } from "../services/feedback";
 
 export const commercialAdminRouter = Router();
 
@@ -44,6 +45,7 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | n
 }
 
 const models = z.array(z.string().trim().min(1).max(200)).max(256).optional();
+const feedbackAttachmentSchema = z.object({ name: z.string().max(160), type: z.string().regex(/^image\//), data: z.string().max(3_000_000) });
 const limits = {
   rpm_limit: z.coerce.number().int().min(0).max(1_000_000).optional(),
   tpm_limit: z.coerce.number().int().min(0).max(100_000_000).optional(),
@@ -110,6 +112,9 @@ function paymentFailure(res: Response, error: unknown) {
 }
 
 commercialAdminRouter.get("/users", (_req, res) => res.json({ items: listUsers() }));
+commercialAdminRouter.get("/feedback", (_req,res)=>res.json({items:listAllFeedback()}));
+commercialAdminRouter.post("/feedback/:id/replies",(req,res)=>{const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(feedbackAttachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"admin",body.body,body.attachments);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
+commercialAdminRouter.patch("/feedback/:id",(req,res)=>{const body=parseBody(z.object({status:z.enum(["open","resolved"])}),req.body,res);if(!body)return;return setFeedbackStatus(req.params.id,body.status)?res.json({ok:true}):res.status(404).json({error:"Feedback not found"});});
 commercialAdminRouter.post("/users", (req, res) => {
   const body = parseBody(userSchema, req.body, res);
   if (!body) return;

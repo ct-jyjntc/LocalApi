@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, Copy, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
+import { Ban, Check, Copy, Pencil, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type PaymentOrder } from "@/lib/api";
 import { PageHeader } from "@/components/shared";
@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useAppDialog } from "@/components/app-dialog-context";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "待支付",
@@ -55,6 +56,8 @@ export function PaymentsPage() {
   const [alipayMaxAmount, setAlipayMaxAmount] = useState("1000");
   const [alipayWebEnabled, setAlipayWebEnabled] = useState(true);
   const [alipayWapEnabled, setAlipayWapEnabled] = useState(true);
+  const [linuxDoOpen, setLinuxDoOpen] = useState(false);
+  const [alipayOpen, setAlipayOpen] = useState(false);
 
   useEffect(() => {
     if (!channel.data) return;
@@ -100,6 +103,7 @@ export function PaymentsPage() {
       toast.success("支付渠道已保存");
       qc.invalidateQueries({ queryKey: ["payment-channel"] });
       qc.invalidateQueries({ queryKey: ["payment-channels"] });
+      setLinuxDoOpen(false);
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -121,6 +125,7 @@ export function PaymentsPage() {
     onSuccess: () => {
       toast.success("支付宝渠道已保存");
       qc.invalidateQueries({ queryKey: ["payment-channels"] });
+      setAlipayOpen(false);
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -173,7 +178,12 @@ export function PaymentsPage() {
     <div className="space-y-6">
       <PageHeader title="支付与订单" description="配置收款渠道、核对充值订单并处理全额退款。" />
 
-      <Card className="space-y-5 p-4 sm:p-5">
+      <div className="grid gap-3 md:grid-cols-2">
+        <ChannelSummary name={name} description="EasyPay · LDC" enabled={enabled} rate={`1 LDC = ${exchangeRate} 额度`} range={`${minAmount}–${maxAmount} LDC`} onEdit={() => setLinuxDoOpen(true)} />
+        <ChannelSummary name={alipayName} description="电脑网站支付 + 手机网站支付" enabled={alipayEnabled} rate={`1 CNY = ${alipayExchangeRate} 额度`} range={`${alipayMinAmount}–${alipayMaxAmount} CNY`} onEdit={() => setAlipayOpen(true)} />
+      </div>
+
+      <Dialog open={linuxDoOpen} onOpenChange={setLinuxDoOpen}><DialogContent className="max-w-[680px]"><DialogHeader><DialogTitle>编辑 LINUX DO Credit</DialogTitle><DialogDescription>配置商户凭据、兑换比例和充值范围。</DialogDescription></DialogHeader><div className="mt-4 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -204,14 +214,15 @@ export function PaymentsPage() {
           <CallbackRow label="异步通知" value={channel.data?.notify_url || "请先在设置中填写公开域名"} onCopy={copy} />
           <CallbackRow label="支付返回" value={channel.data?.return_url || "请先在设置中填写公开域名"} onCopy={copy} />
         </div>
-        <div className="flex justify-end">
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => setLinuxDoOpen(false)}>取消</Button>
           <Button size="sm" disabled={save.isPending || !name.trim() || !gatewayUrl.trim()} onClick={() => save.mutate()}>
             <Save />{save.isPending ? "保存中" : "保存渠道"}
           </Button>
-        </div>
-      </Card>
+        </DialogFooter>
+      </div></DialogContent></Dialog>
 
-      <Card className="flex flex-col gap-5 p-4 sm:p-5">
+      <Dialog open={alipayOpen} onOpenChange={setAlipayOpen}><DialogContent className="max-w-[760px]"><DialogHeader><DialogTitle>编辑支付宝</DialogTitle><DialogDescription>配置 RSA2 凭据、支付模式、兑换比例和充值范围。</DialogDescription></DialogHeader><div className="mt-4 flex flex-col gap-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -253,12 +264,13 @@ export function PaymentsPage() {
           <CallbackRow label="异步通知" value={channels.data?.items.find((item) => item.id === "alipay")?.notify_url || "请先在设置中填写公开域名"} onCopy={copy} />
           <CallbackRow label="支付返回" value={channels.data?.items.find((item) => item.id === "alipay")?.return_url || "请先在设置中填写公开域名"} onCopy={copy} />
         </div>
-        <div className="flex justify-end">
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => setAlipayOpen(false)}>取消</Button>
           <Button size="sm" disabled={saveAlipay.isPending || !alipayName.trim() || !alipayGateway.trim()} onClick={() => saveAlipay.mutate()}>
             <Save data-icon="inline-start" />{saveAlipay.isPending ? "保存中" : "保存支付宝"}
           </Button>
-        </div>
-      </Card>
+        </DialogFooter>
+      </div></DialogContent></Dialog>
 
       <Card className="overflow-hidden">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
@@ -314,6 +326,10 @@ export function PaymentsPage() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="flex min-w-0 flex-col gap-1.5"><Label>{label}</Label>{children}</label>;
+}
+
+function ChannelSummary({ name, description, enabled, rate, range, onEdit }: { name: string; description: string; enabled: boolean; rate: string; range: string; onEdit: () => void }) {
+  return <Card className="p-4 sm:p-5"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="truncate text-sm font-medium">{name}</h2><Badge variant={enabled ? "success" : "secondary"}>{enabled ? "已启用" : "未启用"}</Badge></div><p className="mt-1 text-[11px] text-muted-foreground">{description}</p></div><Button variant="ghost" size="icon" className="size-7" onClick={onEdit} aria-label={`编辑 ${name}`}><Pencil /></Button></div><div className="mt-4 grid grid-cols-2 gap-2"><SmallStat label="兑换比例" value={rate} mono /><SmallStat label="充值范围" value={range} mono /></div></Card>;
 }
 
 function SwitchRow({ label, description, checked, onCheckedChange }: { label: string; description: string; checked: boolean; onCheckedChange: (checked: boolean) => void }) {

@@ -47,6 +47,7 @@ import {
   syncPaymentOrder,
 } from "../services/payments";
 import { listCommerceLedger, listCommerceOrders } from "../services/commerce";
+import { createFeedback, getFeedbackThread, listUserFeedback, replyFeedback } from "../services/feedback";
 
 export const userRouter = Router();
 
@@ -202,6 +203,10 @@ userRouter.get("/me", (req, res) => {
     prices: listModelPrices().filter((price) => price.enabled),
   });
 });
+const attachmentSchema = z.object({ name: z.string().max(160), type: z.string().regex(/^image\//), data: z.string().max(3_000_000) });
+userRouter.get("/feedback", (req, res) => res.json({ items: listUserFeedback(requestUser(req).id) }));
+userRouter.post("/feedback", (req, res) => { const body=parseBody(z.object({subject:z.string().trim().min(2).max(160),body:z.string().trim().min(1).max(5000),attachments:z.array(attachmentSchema).max(3).default([])}),req.body,res); if(!body)return; return res.status(201).json(createFeedback(requestUser(req).id,body.subject,body.body,body.attachments)); });
+userRouter.post("/feedback/:id/replies", (req,res)=>{const user=requestUser(req);const thread=getFeedbackThread(req.params.id);if(!thread||thread.user_id!==user.id)return res.status(404).json({error:"Feedback not found"});if(thread.status!=="open")return res.status(409).json({error:"Resolved feedback must be reopened by an administrator before replying",code:"feedback_resolved"});const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(attachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"user",body.body,body.attachments,user.id);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
 userRouter.patch("/me/password", (req, res) => {
   const body = parseBody(
     z.object({ current_password: z.string().min(8).max(256), new_password: z.string().min(8).max(256) }),

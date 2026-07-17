@@ -20,6 +20,14 @@ export type LinuxDoNotify = {
 };
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+const relayUrl = process.env.LINUXDO_RELAY_URL?.trim().replace(/\/$/, "") || "";
+const relaySecret = process.env.LINUXDO_RELAY_SECRET?.trim() || "";
+
+async function relayRequest(path: string, body: Record<string, string>) {
+  const response = await fetch(`${relayUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-relay-secret": relaySecret }, body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(`LINUX DO relay failed (${response.status})`);
+  return responseJson(response);
+}
 
 function normalizedGateway(value?: string) {
   return (value?.trim() || "https://credit.linux.do/epay").replace(/\/+$/, "");
@@ -135,6 +143,10 @@ export async function queryLinuxDoOrder(
   orderNo: string,
   fetcher: FetchLike = fetch,
 ) {
+  if (relayUrl && relaySecret) {
+    const body = await relayRequest("/credit/query", { order_no: orderNo });
+    return { found: Number(body.code) === 1, paid: Number(body.code) === 1 && Number(body.status) === 1, tradeNo: typeof body.trade_no === "string" ? body.trade_no : null, money: typeof body.money === "string" || typeof body.money === "number" ? String(body.money) : null, raw: body };
+  }
   const url = new URL(`${normalizedGateway(credentials.gatewayUrl)}/api.php`);
   url.searchParams.set("act", "order");
   url.searchParams.set("pid", credentials.clientId);
@@ -161,6 +173,11 @@ export async function refundLinuxDoOrder(
   input: { tradeNo: string; orderNo: string; money: string },
   fetcher: FetchLike = fetch,
 ) {
+  if (relayUrl && relaySecret) {
+    const body = await relayRequest("/credit/refund", { trade_no: input.tradeNo, order_no: input.orderNo, money: input.money });
+    if (Number(body.code) !== 1) throw new Error(typeof body.msg === "string" ? body.msg : "LINUX DO Credit refund failed");
+    return body;
+  }
   const timeout = withTimeout();
   try {
     const response = await fetcher(`${normalizedGateway(credentials.gatewayUrl)}/api.php`, {

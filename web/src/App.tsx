@@ -15,6 +15,8 @@ import { PricingPage } from "@/features/PricingPage";
 import { PlansPage } from "@/features/PlansPage";
 import { UserDashboardPage } from "@/features/UserDashboardPage";
 import { UserModelsPage } from "@/features/UserModelsPage";
+import { UserFeedbackPage } from "@/features/UserFeedbackPage";
+import { FeedbackPage } from "@/features/FeedbackPage";
 import { UserKeysPage } from "@/features/UserKeysPage";
 import { UserUsagePage } from "@/features/UserUsagePage";
 import { CommercialUsagePage } from "@/features/CommercialUsagePage";
@@ -72,6 +74,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="billing" element={<CommercialUsagePage />} />
               <Route path="payments" element={<PaymentsPage />} />
               <Route path="logs" element={<LogsPage />} />
+              <Route path="feedback" element={<FeedbackPage />} />
               <Route path="settings" element={<SettingsPage onLogout={onLogout} />} />
             </>
           ) : (
@@ -82,6 +85,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="plan" element={<UserPlanPage />} />
               <Route path="usage" element={<UserUsagePage />} />
               <Route path="payments" element={<UserPaymentsPage />} />
+              <Route path="feedback" element={<UserFeedbackPage />} />
               <Route path="settings" element={<UserSettingsPage />} />
             </>
           )}
