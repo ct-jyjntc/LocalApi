@@ -21,11 +21,27 @@ export function UserPaymentsPage() {
   });
   const me = useQuery({ queryKey: ["user-me"], queryFn: userApi.me });
   const [amount, setAmount] = useState("10");
+  const [selectedChannelId, setSelectedChannelId] = useState("");
   const returnedOrderNo = useRef<string | null>(null);
-  const channel = config.data?.channel;
+  const availableChannels = useMemo(
+    () => config.data?.channels || (config.data?.channel ? [config.data.channel] : []),
+    [config.data?.channel, config.data?.channels],
+  );
+  const channel = availableChannels.find((item) => item.id === selectedChannelId) || availableChannels[0];
+
+  useEffect(() => {
+    if (!selectedChannelId && availableChannels[0]) setSelectedChannelId(availableChannels[0].id);
+  }, [availableChannels, selectedChannelId]);
 
   const create = useMutation({
-    mutationFn: () => userApi.payments.createTopup(amount),
+    mutationFn: () => {
+      const mobile = window.matchMedia("(max-width: 767px)").matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+      const modes = channel?.payment_modes || [];
+      const mode = channel?.provider === "alipay"
+        ? (mobile && modes.includes("wap") ? "wap" : modes.includes("page") ? "page" : "wap")
+        : undefined;
+      return userApi.payments.createTopup(amount, channel?.id, mode);
+    },
     onSuccess: (order) => {
       qc.invalidateQueries({ queryKey: ["user-payment-orders"] });
       qc.invalidateQueries({ queryKey: ["user", "commerce-orders"] });
@@ -66,7 +82,7 @@ export function UserPaymentsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="账户充值" description="使用 LINUX DO Credit 为账户余额充值；订单记录统一在“账单与订单”中查看。" />
+      <PageHeader title="账户充值" description="选择支付渠道为账户余额充值；订单记录统一在“账单与订单”中查看。" />
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,.85fr)]">
         <Card className="space-y-5 p-4 sm:p-5">
@@ -78,13 +94,20 @@ export function UserPaymentsPage() {
             <Badge variant={channel?.enabled ? "default" : "secondary"}>{channel?.enabled ? "渠道可用" : "暂不可用"}</Badge>
           </div>
 
-          <div className="space-y-2">
-            <Label>充值金额 / LDC</Label>
+          {availableChannels.length > 1 ? <div className="flex flex-col gap-1.5">
+            <Label htmlFor="payment-channel">支付渠道</Label>
+            <select id="payment-channel" className="h-8 w-full rounded-md border border-input bg-secondary/55 px-3 text-xs outline-none focus:bg-background focus:ring-1 focus:ring-ring" value={channel?.id || ""} onChange={(event) => setSelectedChannelId(event.target.value)}>
+              {availableChannels.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.asset}</option>)}
+            </select>
+          </div> : null}
+
+          <div className="flex flex-col gap-2">
+            <Label>充值金额 / {channel?.asset || "-"}</Label>
             <div className="relative">
               <Input type="number" min={channel ? channel.min_amount_minor / 100 : 0.01} max={channel ? channel.max_amount_minor / 100 : undefined} step="0.01" className="h-12 pr-14 font-mono text-lg tabular-nums" value={amount} onChange={(event) => setAmount(event.target.value)} />
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">LDC</span>
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">{channel?.asset || ""}</span>
             </div>
-            {channel ? <p className="text-[11px] text-muted-foreground">单笔 {formatMinor(channel.min_amount_minor)}–{formatMinor(channel.max_amount_minor)} LDC</p> : null}
+            {channel ? <p className="text-[11px] text-muted-foreground">单笔 {formatMinor(channel.min_amount_minor)}–{formatMinor(channel.max_amount_minor)} {channel.asset}</p> : null}
           </div>
 
           <div className="grid grid-cols-4 gap-2">
@@ -95,11 +118,11 @@ export function UserPaymentsPage() {
 
           <div className="rounded-md bg-secondary/45 p-3">
             <div className="flex items-center justify-between gap-3 text-xs"><span className="text-muted-foreground">预计到账额度</span><span className="font-mono text-base font-medium tabular-nums">{credited.toLocaleString("zh-CN", { maximumFractionDigits: 6 })}</span></div>
-            {channel ? <p className="mt-1 text-[10px] text-muted-foreground">兑换比例：1 LDC = {(channel.exchange_rate_micros / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 账户额度</p> : null}
+            {channel ? <p className="mt-1 text-[10px] text-muted-foreground">兑换比例：1 {channel.asset} = {(channel.exchange_rate_micros / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 账户额度</p> : null}
           </div>
 
           <Button className="w-full" disabled={!validAmount || create.isPending} onClick={() => create.mutate()}>
-            {create.isPending ? <RefreshCw className="animate-spin" /> : <WalletCards />}{create.isPending ? "正在准备支付，请稍候" : "前往 LINUX DO Credit 支付"}<ArrowUpRight />
+            {create.isPending ? <RefreshCw className="animate-spin" /> : <WalletCards />}{create.isPending ? "正在准备支付，请稍候" : `前往${channel?.name || "支付渠道"}支付`}<ArrowUpRight />
           </Button>
           {create.error ? <p className="rounded-md bg-destructive/8 px-3 py-2 text-center text-[11px] text-destructive">{create.error.message}</p> : null}
           {!channel?.enabled ? <p className="text-center text-[11px] text-muted-foreground">管理员尚未完成支付渠道配置。</p> : null}
@@ -112,7 +135,7 @@ export function UserPaymentsPage() {
             <p className="mt-1 text-[11px] text-muted-foreground">可用于所有已定价模型的余额消费</p>
           </div>
           <div className="space-y-2 border-t border-border/60 pt-4 text-[11px] text-muted-foreground">
-            <p>支付由 LINUX DO Credit 完成，本系统不会接触你的支付账户凭据。</p>
+            <p>支付由所选渠道完成，本系统不会接触你的支付账户登录凭据。</p>
             <p>重复回调与重复查单均采用幂等处理，不会重复增加余额。</p>
             <p>目前退款仅支持管理员发起全额退款。</p>
           </div>

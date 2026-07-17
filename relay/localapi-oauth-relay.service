@@ -1,0 +1,12 @@
+[Unit]
+Description=LocalAPI LinuxDo OAuth relay
+After=network-online.target
+[Service]
+Type=simple
+WorkingDirectory=/opt/localapi-relay
+EnvironmentFile=/etc/localapi-oauth-relay.env
+ExecStart=/usr/local/bin/node /opt/localapi-relay/index.js
+Restart=always
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target

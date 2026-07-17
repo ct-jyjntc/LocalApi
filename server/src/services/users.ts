@@ -162,6 +162,12 @@ export function changeUserPassword(userId: string, currentPassword: string, newP
 export function deleteUser(id: string) {
   let deleted = false;
   db.transaction(() => {
+    db.prepare("DELETE FROM payment_refunds WHERE order_id IN (SELECT id FROM payment_orders WHERE user_id = ?)").run(id);
+    // These historical/commercial tables intentionally retain a restrictive
+    // user foreign key, so remove their user-scoped records explicitly.
+    for (const table of ["payment_orders", "coupon_redemptions", "invoices", "renewal_jobs", "plan_orders"]) {
+      db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(id);
+    }
     const active = db
       .prepare("SELECT plan_id FROM subscriptions WHERE user_id = ? AND status = 'active'")
       .get(id) as { plan_id: string } | undefined;

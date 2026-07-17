@@ -272,6 +272,7 @@ export type PaymentChannel = {
   client_secret?: string;
   gateway_url?: string;
   asset?: string;
+  payment_modes?: string[];
   exchange_rate_micros: number;
   min_amount_minor: number;
   max_amount_minor: number;
@@ -279,6 +280,10 @@ export type PaymentChannel = {
   fee_fixed_minor: number;
   notify_url?: string;
   return_url?: string;
+  alipay_public_key?: string;
+  seller_id?: string;
+  web_enabled?: boolean;
+  wap_enabled?: boolean;
   created_at?: string;
   updated_at?: string;
 };
@@ -674,6 +679,12 @@ export const api = {
           method: "PUT",
           body: JSON.stringify(body),
         }),
+      channels: () => request<{ items: PaymentChannel[] }>("/admin/api/commercial/payments/channels"),
+      updateChannelById: (id: string, body: Partial<PaymentChannel>) =>
+        request<PaymentChannel>(`/admin/api/commercial/payments/channels/${encodeURIComponent(id)}`, {
+          method: "PUT",
+          body: JSON.stringify(body),
+        }),
       orders: (status?: string, limit = 200) =>
         request<{ items: PaymentOrder[] }>(
           `/admin/api/commercial/payments/orders?limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}`,
@@ -696,7 +707,7 @@ export const api = {
 };
 
 export const userApi = {
-  config: () => request<{ registration_enabled: boolean }>("/user/api/config", {}, { auth: false }),
+  config: () => request<{ registration_enabled: boolean; linuxdo_enabled: boolean }>("/user/api/config", {}, { auth: false }),
   login: (username: string, password: string) =>
     request<{ token: string; expires_at: string; user: UserRow }>(
       "/user/api/login",
@@ -746,13 +757,13 @@ export const userApi = {
       request<{ items: WalletLedgerRow[] }>(`/user/api/commerce/ledger?limit=${limit}`, {}, { auth: "user" }),
   },
   payments: {
-    config: () => request<{ channel: PaymentChannel | null }>("/user/api/payments/config", {}, { auth: "user" }),
+    config: () => request<{ channel: PaymentChannel | null; channels: PaymentChannel[] }>("/user/api/payments/config", {}, { auth: "user" }),
     orders: (limit = 200) =>
       request<{ items: PaymentOrder[] }>(`/user/api/payments/orders?limit=${limit}`, {}, { auth: "user" }),
-    createTopup: (amount: string) =>
+    createTopup: (amount: string, channel_id?: string, mode?: "page" | "wap") =>
       request<PaymentOrder>(
         "/user/api/payments/topups",
-        { method: "POST", body: JSON.stringify({ amount }) },
+        { method: "POST", body: JSON.stringify({ amount, channel_id, mode }) },
         { auth: "user" },
       ),
     sync: (id: string) =>

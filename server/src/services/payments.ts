@@ -14,9 +14,25 @@ import {
   verifyLinuxDoEasyPaySignature,
   type LinuxDoNotify,
 } from "./linuxdo-credit";
+import {
+  buildAlipayPaymentSubmission,
+  queryAlipayOrder,
+  refundAlipayOrder,
+  verifyAlipaySignature,
+  type AlipayCredentials,
+  type AlipayPayMode,
+} from "./alipay";
 
 const LINUXDO_CHANNEL_ID = "linuxdo-credit";
+const ALIPAY_CHANNEL_ID = "alipay";
 const CENTS_PER_ASSET = 100n;
+
+type AlipayChannelConfig = {
+  alipay_public_key?: string;
+  seller_id?: string;
+  web_enabled?: boolean;
+  wap_enabled?: boolean;
+};
 
 export class PaymentError extends Error {
   status: number;
@@ -43,16 +59,46 @@ function channelCredentials(channel: PaymentChannel) {
   };
 }
 
-function requireConfiguredChannel(options: { allowDisabled?: boolean } = {}) {
-  const channel = getPaymentChannel(LINUXDO_CHANNEL_ID);
+function parseChannelConfig(channel: PaymentChannel) {
+  try {
+    const value = JSON.parse(channel.config_json || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value as AlipayChannelConfig : {};
+  } catch {
+    return {};
+  }
+}
+
+function alipayCredentials(channel: PaymentChannel): AlipayCredentials {
+  const config = parseChannelConfig(channel);
+  return {
+    appId: channel.client_id.trim(),
+    privateKey: decryptSecret(channel.client_secret),
+    alipayPublicKey: config.alipay_public_key?.trim() || "",
+    sellerId: config.seller_id?.trim() || "",
+    gatewayUrl: channel.gateway_url,
+  };
+}
+
+function requireConfiguredChannel(id: string, options: { allowDisabled?: boolean } = {}) {
+  const channel = getPaymentChannel(id);
   if (!channel || (!options.allowDisabled && channel.enabled !== 1)) {
-    throw new PaymentError(503, "payment_channel_unavailable", "LINUX DO Credit is not enabled");
+    throw new PaymentError(503, "payment_channel_unavailable", "Payment channel is not enabled");
   }
-  const credentials = channelCredentials(channel);
-  if (!credentials.clientId || !credentials.clientSecret) {
-    throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
+  if (channel.provider === "linuxdo_credit") {
+    const credentials = channelCredentials(channel);
+    if (!credentials.clientId || !credentials.clientSecret) {
+      throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
+    }
+    return { channel, linuxDoCredentials: credentials };
   }
-  return { channel, credentials };
+  if (channel.provider === "alipay") {
+    const credentials = alipayCredentials(channel);
+    if (!credentials.appId || !credentials.privateKey || !credentials.alipayPublicKey) {
+      throw new PaymentError(503, "payment_channel_incomplete", "Alipay credentials are incomplete");
+    }
+    return { channel, alipayCredentials: credentials };
+  }
+  throw new PaymentError(503, "payment_channel_unsupported", "Payment channel provider is not supported");
 }
 
 export function parseAssetAmount(value: string | number) {
@@ -125,35 +171,63 @@ export function getPaymentChannel(id = LINUXDO_CHANNEL_ID) {
   return (db.prepare("SELECT * FROM payment_channels WHERE id = ?").get(id) as PaymentChannel | undefined) ?? null;
 }
 
-export function getPaymentChannelAdmin() {
-  const channel = getPaymentChannel();
+export function getPaymentChannelAdmin(id = LINUXDO_CHANNEL_ID) {
+  const channel = getPaymentChannel(id);
   if (!channel) return null;
   const publicBaseUrl = normalizedBaseUrl(getSetting("public_base_url") || "");
+  const config = parseChannelConfig(channel);
   return {
     ...channel,
     enabled: channel.enabled === 1,
     client_secret: channel.client_secret ? decryptSecret(channel.client_secret) : "",
-    notify_url: publicBaseUrl ? `${publicBaseUrl}/payment/linuxdo/notify` : "",
+    ...(channel.provider === "alipay" ? {
+      alipay_public_key: config.alipay_public_key || "",
+      seller_id: config.seller_id || "",
+      web_enabled: config.web_enabled !== false,
+      wap_enabled: config.wap_enabled !== false,
+    } : {}),
+    notify_url: publicBaseUrl ? `${publicBaseUrl}/payment/${channel.provider === "alipay" ? "alipay" : "linuxdo"}/notify` : "",
     return_url: publicBaseUrl ? `${publicBaseUrl}/payments` : "",
   };
 }
 
-export function getPaymentChannelPublic() {
-  const channel = getPaymentChannel();
+export function getPaymentChannelsAdmin() {
+  return (db.prepare("SELECT id FROM payment_channels ORDER BY created_at, id").all() as Array<{ id: string }>)
+    .map((row) => getPaymentChannelAdmin(row.id))
+    .filter(Boolean);
+}
+
+export function getPaymentChannelPublic(id = LINUXDO_CHANNEL_ID) {
+  const channel = getPaymentChannel(id);
   if (!channel) return null;
-  const configured = Boolean(channel.client_id.trim() && channel.client_secret && normalizedBaseUrl(getSetting("public_base_url") || ""));
+  const config = parseChannelConfig(channel);
+  const configured = Boolean(
+    channel.client_id.trim()
+    && channel.client_secret
+    && normalizedBaseUrl(getSetting("public_base_url") || "")
+    && (channel.provider !== "alipay" || config.alipay_public_key?.trim()),
+  );
   return {
     id: channel.id,
     provider: channel.provider,
     name: channel.name,
     enabled: channel.enabled === 1 && configured,
-    asset: "LDC",
+    asset: channel.provider === "alipay" ? "CNY" : "LDC",
+    payment_modes: channel.provider === "alipay"
+      ? [config.web_enabled !== false ? "page" : null, config.wap_enabled !== false ? "wap" : null].filter(Boolean)
+      : ["redirect"],
     exchange_rate_micros: channel.exchange_rate_micros,
     min_amount_minor: channel.min_amount_minor,
     max_amount_minor: channel.max_amount_minor,
     fee_bps: channel.fee_bps,
     fee_fixed_minor: channel.fee_fixed_minor,
   };
+}
+
+export function getPaymentChannelsPublic() {
+  return (db.prepare("SELECT id FROM payment_channels ORDER BY created_at, id").all() as Array<{ id: string }>)
+    .map((row) => getPaymentChannelPublic(row.id))
+    .filter((channel) => channel?.enabled);
 }
 
 export function updatePaymentChannel(input: {
@@ -167,9 +241,20 @@ export function updatePaymentChannel(input: {
   max_amount_minor?: number;
   fee_bps?: number;
   fee_fixed_minor?: number;
-}) {
-  const current = getPaymentChannel();
+  alipay_public_key?: string;
+  seller_id?: string;
+  web_enabled?: boolean;
+  wap_enabled?: boolean;
+}, id = LINUXDO_CHANNEL_ID) {
+  const current = getPaymentChannel(id);
   if (!current) throw new PaymentError(404, "payment_channel_not_found", "Payment channel not found");
+  const currentConfig = parseChannelConfig(current);
+  const config: AlipayChannelConfig = current.provider === "alipay" ? {
+    alipay_public_key: input.alipay_public_key === undefined ? currentConfig.alipay_public_key || "" : input.alipay_public_key.trim(),
+    seller_id: input.seller_id === undefined ? currentConfig.seller_id || "" : input.seller_id.trim(),
+    web_enabled: input.web_enabled ?? currentConfig.web_enabled ?? true,
+    wap_enabled: input.wap_enabled ?? currentConfig.wap_enabled ?? true,
+  } : currentConfig;
   const next = {
     enabled: input.enabled === undefined ? current.enabled : input.enabled ? 1 : 0,
     name: input.name?.trim() || current.name,
@@ -186,16 +271,20 @@ export function updatePaymentChannel(input: {
     max_amount_minor: input.max_amount_minor ?? current.max_amount_minor,
     fee_bps: input.fee_bps ?? current.fee_bps,
     fee_fixed_minor: input.fee_fixed_minor ?? current.fee_fixed_minor,
+    config_json: JSON.stringify(config),
   };
   if (next.max_amount_minor < next.min_amount_minor) {
     throw new PaymentError(400, "invalid_amount_range", "Maximum amount must be greater than or equal to minimum amount");
   }
-  if (next.enabled && (!next.client_id || !next.client_secret)) {
-    throw new PaymentError(400, "payment_channel_incomplete", "Client ID and Client Secret are required before enabling the channel");
+  if (next.enabled && (!next.client_id || !next.client_secret || (current.provider === "alipay" && !config.alipay_public_key))) {
+    throw new PaymentError(400, "payment_channel_incomplete", "Complete all required credentials before enabling the channel");
+  }
+  if (current.provider === "alipay" && next.enabled && !config.web_enabled && !config.wap_enabled) {
+    throw new PaymentError(400, "payment_mode_required", "Enable at least one Alipay payment mode");
   }
   db.prepare(
     `UPDATE payment_channels SET enabled = ?, name = ?, client_id = ?, client_secret = ?, gateway_url = ?,
-      exchange_rate_micros = ?, min_amount_minor = ?, max_amount_minor = ?, fee_bps = ?, fee_fixed_minor = ?, updated_at = ?
+      exchange_rate_micros = ?, min_amount_minor = ?, max_amount_minor = ?, fee_bps = ?, fee_fixed_minor = ?, config_json = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     next.enabled,
@@ -208,14 +297,21 @@ export function updatePaymentChannel(input: {
     next.max_amount_minor,
     next.fee_bps,
     next.fee_fixed_minor,
+    next.config_json,
     nowIso(),
-    LINUXDO_CHANNEL_ID,
+    id,
   );
-  return getPaymentChannelAdmin();
+  return getPaymentChannelAdmin(id);
 }
 
-export async function createTopupOrder(userId: string, amount: string | number) {
-  const { channel } = requireConfiguredChannel();
+export async function createTopupOrder(
+  userId: string,
+  amount: string | number,
+  options: { channelId?: string; mode?: AlipayPayMode } = {},
+) {
+  const fallback = getPaymentChannelsPublic()[0];
+  const channelId = options.channelId || fallback?.id || LINUXDO_CHANNEL_ID;
+  const { channel } = requireConfiguredChannel(channelId);
   const publicBaseUrl = normalizedBaseUrl(getSetting("public_base_url") || "");
   if (!publicBaseUrl) {
     throw new PaymentError(503, "public_base_url_required", "Set a public domain before accepting payments");
@@ -225,8 +321,14 @@ export async function createTopupOrder(userId: string, amount: string | number) 
     throw new PaymentError(
       400,
       "amount_out_of_range",
-      `Amount must be between ${formatAssetAmount(channel.min_amount_minor)} and ${formatAssetAmount(channel.max_amount_minor)} LDC`,
+      `Amount must be between ${formatAssetAmount(channel.min_amount_minor)} and ${formatAssetAmount(channel.max_amount_minor)} ${channel.provider === "alipay" ? "CNY" : "LDC"}`,
     );
+  }
+  const config = parseChannelConfig(channel);
+  const mode: AlipayPayMode = options.mode || "page";
+  if (channel.provider === "alipay") {
+    if (mode === "page" && config.web_enabled === false) throw new PaymentError(400, "payment_mode_disabled", "Alipay PC web payment is disabled");
+    if (mode === "wap" && config.wap_enabled === false) throw new PaymentError(400, "payment_mode_disabled", "Alipay mobile web payment is disabled");
   }
   const feeMinor = calculateFeeMinor(channel, amountMinor);
   const creditedMicros = calculateCreditedMicros(amountMinor, feeMinor, channel.exchange_rate_micros);
@@ -244,13 +346,13 @@ export async function createTopupOrder(userId: string, amount: string | number) 
     status: "pending",
     amount_minor: amountMinor,
     fee_minor: feeMinor,
-    asset: "LDC",
+    asset: channel.provider === "alipay" ? "CNY" : "LDC",
     credited_micros: creditedMicros,
     exchange_rate_micros: channel.exchange_rate_micros,
     title: `${getSetting("brand_name") || "LocalAPI"} 账户充值`,
     pay_url: null,
     error: null,
-    metadata: "{}",
+    metadata: JSON.stringify(channel.provider === "alipay" ? { pay_mode: mode } : {}),
     created_at: now,
     updated_at: now,
     expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
@@ -291,14 +393,15 @@ export async function createTopupOrder(userId: string, amount: string | number) 
     order.refunded_at,
   );
 
-  const payUrl = `${publicBaseUrl}/payment/linuxdo/checkout/${encodeURIComponent(order.order_no)}`;
+  const payUrl = `${publicBaseUrl}/payment/${channel.provider === "alipay" ? "alipay" : "linuxdo"}/checkout/${encodeURIComponent(order.order_no)}`;
   db.prepare("UPDATE payment_orders SET pay_url = ?, error = NULL, updated_at = ? WHERE id = ?")
     .run(payUrl, nowIso(), order.id);
   return getPaymentOrder(order.id, userId);
 }
 
 export function getLinuxDoCheckout(orderNo: string) {
-  const { channel, credentials } = requireConfiguredChannel({ allowDisabled: true });
+  const { channel, linuxDoCredentials: credentials } = requireConfiguredChannel(LINUXDO_CHANNEL_ID, { allowDisabled: true });
+  if (!credentials) throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
   const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(orderNo) as PaymentOrder | undefined;
   if (!order || order.channel_id !== channel.id || order.deleted_at) {
     throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
@@ -316,6 +419,31 @@ export function getLinuxDoCheckout(orderNo: string) {
     money: formatAssetAmount(order.amount_minor),
     notifyUrl: `${publicBaseUrl}/payment/linuxdo/notify`,
     returnUrl: `${publicBaseUrl}/payments?order_no=${encodeURIComponent(order.order_no)}`,
+  });
+}
+
+export function getAlipayCheckout(orderNo: string) {
+  const { channel, alipayCredentials: credentials } = requireConfiguredChannel(ALIPAY_CHANNEL_ID, { allowDisabled: true });
+  if (!credentials) throw new PaymentError(503, "payment_channel_incomplete", "Alipay credentials are incomplete");
+  const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(orderNo) as PaymentOrder | undefined;
+  if (!order || order.channel_id !== channel.id || order.deleted_at) {
+    throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
+  }
+  if (order.status !== "pending") {
+    throw new PaymentError(409, "payment_order_not_pending", "Payment order is no longer pending");
+  }
+  const publicBaseUrl = normalizedBaseUrl(getSetting("public_base_url") || "");
+  if (!publicBaseUrl) throw new PaymentError(503, "public_base_url_required", "Set a public domain before accepting payments");
+  let metadata: { pay_mode?: AlipayPayMode } = {};
+  try { metadata = JSON.parse(order.metadata || "{}"); } catch { metadata = {}; }
+  return buildAlipayPaymentSubmission(credentials, {
+    mode: metadata.pay_mode === "wap" ? "wap" : "page",
+    orderNo: order.order_no,
+    subject: order.title,
+    totalAmount: formatAssetAmount(order.amount_minor),
+    notifyUrl: `${publicBaseUrl}/payment/alipay/notify`,
+    returnUrl: `${publicBaseUrl}/payments?order_no=${encodeURIComponent(order.order_no)}`,
+    quitUrl: `${publicBaseUrl}/payments?order_no=${encodeURIComponent(order.order_no)}`,
   });
 }
 
@@ -390,6 +518,7 @@ function creditOrderInTransaction(orderId: string, tradeNo: string | null, paidA
     const wallet = db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?").get(order.user_id) as {
       balance_micros: number;
     };
+    const channel = getPaymentChannel(order.channel_id);
     db.prepare(
       `INSERT INTO wallet_ledger (
         id, user_id, type, amount_micros, balance_after_micros, reference_type, reference_id, description, created_at
@@ -400,7 +529,7 @@ function creditOrderInTransaction(orderId: string, tradeNo: string | null, paidA
       order.credited_micros,
       wallet.balance_micros,
       order.id,
-      `LINUX DO Credit 充值 ${formatAssetAmount(order.amount_minor)} LDC`,
+      `${channel?.name || order.channel_id} 充值 ${formatAssetAmount(order.amount_minor)} ${order.asset}`,
       now,
     );
   }
@@ -416,17 +545,23 @@ export async function syncPaymentOrder(idOrNo: string, userId?: string) {
   if (!visible) throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
   const order = db.prepare("SELECT * FROM payment_orders WHERE id = ?").get(visible.id) as PaymentOrder;
   if (["credited", "refunding", "refunded"].includes(order.status)) return visible;
-  const { credentials } = requireConfiguredChannel({ allowDisabled: true });
-  const result = await queryLinuxDoOrder(credentials, order.order_no);
+  const configured = requireConfiguredChannel(order.channel_id, { allowDisabled: true });
+  const result = order.channel_id === ALIPAY_CHANNEL_ID
+    ? await queryAlipayOrder(configured.alipayCredentials!, order.order_no)
+    : await queryLinuxDoOrder(configured.linuxDoCredentials!, order.order_no);
   if (result.paid) {
-    ensureAmountMatches(order, result.money);
+    ensureAmountMatches(order, "totalAmount" in result ? result.totalAmount : result.money);
     db.transaction(() => creditOrderInTransaction(order.id, result.tradeNo))();
+  } else if ("closed" in result && result.closed && order.status === "pending") {
+    db.prepare("UPDATE payment_orders SET status = 'expired', pay_url = NULL, updated_at = ? WHERE id = ?")
+      .run(nowIso(), order.id);
   }
   return getPaymentOrder(order.id, userId);
 }
 
 export function handleLinuxDoNotification(query: Record<string, unknown>) {
-  const { channel, credentials } = requireConfiguredChannel({ allowDisabled: true });
+  const { channel, linuxDoCredentials: credentials } = requireConfiguredChannel(LINUXDO_CHANNEL_ID, { allowDisabled: true });
+  if (!credentials) throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
   const notify = Object.fromEntries(
     Object.entries(query).map(([key, value]) => [key, Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "")]),
   ) as LinuxDoNotify;
@@ -471,6 +606,49 @@ export function handleLinuxDoNotification(query: Record<string, unknown>) {
   return getPaymentOrder(order.id);
 }
 
+export function handleAlipayNotification(form: Record<string, unknown>) {
+  const { channel, alipayCredentials: credentials } = requireConfiguredChannel(ALIPAY_CHANNEL_ID, { allowDisabled: true });
+  if (!credentials) throw new PaymentError(503, "payment_channel_incomplete", "Alipay credentials are incomplete");
+  const notify = Object.fromEntries(
+    Object.entries(form).map(([key, value]) => [key, Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "")]),
+  ) as Record<string, string>;
+  const signature = notify.sign || "";
+  if (!signature || !verifyAlipaySignature(notify, signature, credentials.alipayPublicKey)) {
+    throw new PaymentError(400, "invalid_signature", "Invalid Alipay notification signature");
+  }
+  if (notify.app_id !== credentials.appId || !["TRADE_SUCCESS", "TRADE_FINISHED"].includes(notify.trade_status)) {
+    throw new PaymentError(400, "invalid_notification", "Unexpected Alipay notification values");
+  }
+  if (credentials.sellerId && notify.seller_id !== credentials.sellerId) {
+    throw new PaymentError(400, "invalid_seller", "Alipay seller does not match the configured merchant");
+  }
+  const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(notify.out_trade_no) as PaymentOrder | undefined;
+  if (!order || order.channel_id !== channel.id) throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
+  ensureAmountMatches(order, notify.total_amount);
+  const externalId = `${notify.notify_id || notify.trade_no}:${notify.out_trade_no}`;
+  db.transaction(() => {
+    const eventId = uuid();
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO payment_events (
+        id, order_id, channel_id, event_type, external_id, payload, verified, processed, created_at
+      ) VALUES (?, ?, ?, 'payment.notify', ?, ?, 1, 0, ?)`,
+    ).run(eventId, order.id, channel.id, externalId, JSON.stringify(notify), nowIso());
+    if (insert.changes === 0) {
+      const existing = db.prepare(
+        "SELECT id, processed FROM payment_events WHERE channel_id = ? AND event_type = 'payment.notify' AND external_id = ?",
+      ).get(channel.id, externalId) as { id: string; processed: number } | undefined;
+      if (!existing || existing.processed === 1) return;
+      creditOrderInTransaction(order.id, notify.trade_no, notify.gmt_payment || nowIso());
+      db.prepare("UPDATE payment_events SET processed = 1, error = NULL, processed_at = ? WHERE id = ?")
+        .run(nowIso(), existing.id);
+      return;
+    }
+    creditOrderInTransaction(order.id, notify.trade_no, notify.gmt_payment || nowIso());
+    db.prepare("UPDATE payment_events SET processed = 1, processed_at = ? WHERE id = ?").run(nowIso(), eventId);
+  })();
+  return getPaymentOrder(order.id);
+}
+
 export async function refundPaymentOrder(idOrNo: string, reason: string) {
   const visible = getPaymentOrder(idOrNo);
   if (!visible) throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
@@ -479,7 +657,7 @@ export async function refundPaymentOrder(idOrNo: string, reason: string) {
   if (order.status !== "credited" || !order.channel_trade_no) {
     throw new PaymentError(409, "payment_not_refundable", "Only credited orders can be refunded");
   }
-  const { credentials } = requireConfiguredChannel({ allowDisabled: true });
+  const configured = requireConfiguredChannel(order.channel_id, { allowDisabled: true });
   const refundId = uuid();
   const refundNo = newOrderNo("RF");
   const now = nowIso();
@@ -502,11 +680,19 @@ export async function refundPaymentOrder(idOrNo: string, reason: string) {
   })();
 
   try {
-    const response = await refundLinuxDoOrder(credentials, {
-      tradeNo: order.channel_trade_no,
-      orderNo: order.order_no,
-      money: formatAssetAmount(order.amount_minor),
-    });
+    const response = order.channel_id === ALIPAY_CHANNEL_ID
+      ? await refundAlipayOrder(configured.alipayCredentials!, {
+        tradeNo: order.channel_trade_no,
+        orderNo: order.order_no,
+        refundNo,
+        amount: formatAssetAmount(order.amount_minor),
+        reason,
+      })
+      : await refundLinuxDoOrder(configured.linuxDoCredentials!, {
+        tradeNo: order.channel_trade_no,
+        orderNo: order.order_no,
+        money: formatAssetAmount(order.amount_minor),
+      });
     db.transaction(() => {
       const completed = nowIso();
       db.prepare(

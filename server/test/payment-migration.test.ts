@@ -48,6 +48,7 @@ test("payment migration upgrades an existing wallet ledger before creating its i
     assert.ok(columns.includes("reference_id"));
     assert.ok(indexes.some((index) => index.name === "idx_wallet_ledger_reference"));
     assert.ok(db.prepare("SELECT id FROM payment_channels WHERE id = 'linuxdo-credit'").get());
+    assert.ok(db.prepare("SELECT id FROM payment_channels WHERE id = 'alipay'").get());
   } finally {
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });

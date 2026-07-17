@@ -25,6 +25,7 @@ import {
   cancelPaymentOrder,
   deletePaymentOrder,
   getPaymentChannelAdmin,
+  getPaymentChannelsAdmin,
   listPaymentOrders,
   listPaymentRefunds,
   refundPaymentOrder,
@@ -50,7 +51,7 @@ const limits = {
 };
 const userSchema = z.object({
   username: z.string().trim().min(2).max(120),
-  display_name: z.string().trim().min(1).max(120).optional(),
+  display_name: z.string().trim().max(120).optional().transform((value) => value || undefined),
   password: z.string().min(8).max(256),
   status: z.enum(["active", "suspended", "disabled"]).optional(),
 });
@@ -79,13 +80,17 @@ const paymentChannelSchema = z.object({
   enabled: z.boolean().optional(),
   name: z.string().trim().min(1).max(120).optional(),
   client_id: z.string().trim().max(256).optional(),
-  client_secret: z.string().trim().max(512).optional(),
+  client_secret: z.string().trim().max(16_000).optional(),
   gateway_url: z.string().url().max(500).optional(),
   exchange_rate_micros: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   min_amount_minor: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   max_amount_minor: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   fee_bps: z.coerce.number().int().min(0).max(10_000).optional(),
   fee_fixed_minor: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  alipay_public_key: z.string().trim().max(16_000).optional(),
+  seller_id: z.string().trim().max(64).optional(),
+  web_enabled: z.boolean().optional(),
+  wap_enabled: z.boolean().optional(),
 });
 const tierSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -286,6 +291,29 @@ commercialAdminRouter.put("/payments/channel", (req, res) => {
       target_type: "payment_channel",
       target_id: "linuxdo-credit",
       detail: { ...body, client_secret: body.client_secret === undefined ? undefined : "[updated]" },
+    });
+    return res.json(channel);
+  } catch (error) {
+    return paymentFailure(res, error);
+  }
+});
+commercialAdminRouter.get("/payments/channels", (_req, res) => {
+  return res.json({ items: getPaymentChannelsAdmin() });
+});
+commercialAdminRouter.put("/payments/channels/:id", (req, res) => {
+  const body = parseBody(paymentChannelSchema, req.body, res);
+  if (!body) return;
+  try {
+    const channel = updatePaymentChannel(body, req.params.id);
+    writeAudit({
+      action: "payment.channel.update",
+      target_type: "payment_channel",
+      target_id: req.params.id,
+      detail: {
+        ...body,
+        client_secret: body.client_secret === undefined ? undefined : "[updated]",
+        alipay_public_key: body.alipay_public_key === undefined ? undefined : "[updated]",
+      },
     });
     return res.json(channel);
   } catch (error) {

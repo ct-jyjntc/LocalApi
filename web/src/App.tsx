@@ -14,6 +14,7 @@ import { UsersPage } from "@/features/UsersPage";
 import { PricingPage } from "@/features/PricingPage";
 import { PlansPage } from "@/features/PlansPage";
 import { UserDashboardPage } from "@/features/UserDashboardPage";
+import { UserModelsPage } from "@/features/UserModelsPage";
 import { UserKeysPage } from "@/features/UserKeysPage";
 import { UserUsagePage } from "@/features/UserUsagePage";
 import { CommercialUsagePage } from "@/features/CommercialUsagePage";
@@ -76,6 +77,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
           ) : (
             <>
               <Route index element={<UserDashboardPage />} />
+              <Route path="models" element={<UserModelsPage />} />
               <Route path="keys" element={<UserKeysPage />} />
               <Route path="plan" element={<UserPlanPage />} />
               <Route path="usage" element={<UserUsagePage />} />
@@ -96,6 +98,13 @@ function Root() {
   const [adminEntryPath, setAdminEntryPathState] = useState(getAdminEntryPath());
 
   const verify = useCallback(async () => {
+    const params = new URLSearchParams(window.location.search);
+    const linuxdoToken = params.get("linuxdo_token");
+    if (linuxdoToken) {
+      localStorage.setItem("localapi_user_token", linuxdoToken);
+      localStorage.setItem("localapi_auth_mode", "user");
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     const preferred = localStorage.getItem("localapi_auth_mode") as AuthMode | null;
     const attempts: AuthMode[] = preferred === "user" ? ["user", "admin"] : ["admin", "user"];
     for (const candidate of attempts) {

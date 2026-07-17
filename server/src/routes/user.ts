@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import crypto from "crypto";
 import { z } from "zod";
 import { getSetting, type User } from "../db";
 import { requireUser } from "../middleware/auth";
@@ -40,6 +41,7 @@ import {
   createTopupOrder,
   deletePaymentOrder,
   getPaymentChannelPublic,
+  getPaymentChannelsPublic,
   getPaymentOrder,
   listPaymentOrders,
   syncPaymentOrder,
@@ -47,6 +49,44 @@ import {
 import { listCommerceLedger, listCommerceOrders } from "../services/commerce";
 
 export const userRouter = Router();
+
+const linuxdoStates = new Map<string, number>();
+const linuxdoClientId = process.env.LINUXDO_CLIENT_ID?.trim() || "";
+const linuxdoClientSecret = process.env.LINUXDO_CLIENT_SECRET?.trim() || "";
+const linuxdoRelayUrl = process.env.LINUXDO_RELAY_URL?.trim().replace(/\/$/, "") || "";
+const linuxdoRelaySecret = process.env.LINUXDO_RELAY_SECRET?.trim() || "";
+const linuxdoBaseUrl = "https://connect.linux.do";
+const publicBaseUrl = () => (process.env.PUBLIC_BASE_URL?.trim() || getSetting("public_base_url") || "").replace(/\/$/, "");
+
+userRouter.get("/auth/linuxdo", (_req, res) => {
+  if ((!linuxdoRelayUrl && (!linuxdoClientId || !linuxdoClientSecret)) || !publicBaseUrl()) return res.status(503).send("LinuxDo login is not configured");
+  const state = crypto.randomBytes(24).toString("hex");
+  linuxdoStates.set(state, Date.now() + 10 * 60_000);
+  const url = new URL(`${linuxdoBaseUrl}/oauth2/authorize`);
+  url.search = new URLSearchParams({ client_id: linuxdoClientId, redirect_uri: `${publicBaseUrl()}/user/api/auth/linuxdo/callback`, response_type: "code", scope: "openid profile", state }).toString();
+  return res.redirect(url.toString());
+});
+
+userRouter.get("/auth/linuxdo/callback", async (req, res) => {
+  const state = String(req.query.state || "");
+  const expires = linuxdoStates.get(state); linuxdoStates.delete(state);
+  const code = String(req.query.code || "");
+  if (!expires || expires < Date.now() || !code) return res.status(400).send("Invalid or expired OAuth request");
+  try {
+    const profileResponse = linuxdoRelayUrl
+      ? await fetch(`${linuxdoRelayUrl}/exchange`, { method: "POST", headers: { "content-type": "application/json", "x-relay-secret": linuxdoRelaySecret }, body: JSON.stringify({ code, redirect_uri: `${publicBaseUrl()}/user/api/auth/linuxdo/callback` }) })
+      : await fetch(`${linuxdoBaseUrl}/api/user`, { headers: { accept: "application/json" } });
+    if (linuxdoRelayUrl) { if (!profileResponse.ok) throw new Error(`OAuth relay failed (${profileResponse.status})`); }
+    else { throw new Error("Direct LinuxDo access is unavailable; configure LINUXDO_RELAY_URL"); }
+    const profile = await profileResponse.json() as { username?: string; name?: string; id?: string | number };
+    const username = (profile.username || `linuxdo_${profile.id || crypto.randomBytes(6).toString("hex")}`).trim();
+    let user = getUserByUsername(username);
+    if (!user) user = getUserByUsername(createUser({ username, display_name: profile.name || username, password: crypto.randomBytes(32).toString("base64url") }).username);
+    if (!user) throw new Error("Unable to create user");
+    const session = createUserSession(user.id);
+    return res.redirect(`${publicBaseUrl()}/?linuxdo_token=${encodeURIComponent(session.token)}`);
+  } catch (error) { return res.status(502).send(error instanceof Error ? error.message : "LinuxDo login failed"); }
+});
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
   const parsed = schema.safeParse(body);
@@ -73,6 +113,8 @@ const topupSchema = z.object({
     z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
     z.coerce.number().positive(),
   ]),
+  channel_id: z.string().trim().min(1).max(120).optional(),
+  mode: z.enum(["page", "wap"]).optional(),
 });
 
 function paymentFailure(res: Response, error: unknown) {
@@ -106,7 +148,7 @@ userRouter.post("/login", (req, res) => {
 });
 
 userRouter.get("/config", (_req, res) => {
-  return res.json({ registration_enabled: getSetting("registration_enabled") === "true" });
+  return res.json({ registration_enabled: getSetting("registration_enabled") === "true", linuxdo_enabled: Boolean((linuxdoRelayUrl || (linuxdoClientId && linuxdoClientSecret)) && publicBaseUrl()) });
 });
 
 userRouter.post("/register", (req, res) => {
@@ -212,7 +254,8 @@ userRouter.get("/ledger", (req, res) => {
 });
 
 userRouter.get("/payments/config", (_req, res) => {
-  return res.json({ channel: getPaymentChannelPublic() });
+  const channels = getPaymentChannelsPublic();
+  return res.json({ channel: getPaymentChannelPublic(), channels });
 });
 userRouter.patch("/subscription/auto-renew", (req, res) => {
   const body = parseBody(z.object({ enabled: z.boolean() }), req.body, res);
@@ -306,7 +349,7 @@ userRouter.post("/payments/topups", async (req, res) => {
     return res.status(429).json({ error: "Too many payment orders", code: "payment_rate_limited" });
   }
   try {
-    const order = await createTopupOrder(user.id, body.amount);
+    const order = await createTopupOrder(user.id, body.amount, { channelId: body.channel_id, mode: body.mode });
     return res.status(201).json(order);
   } catch (error) {
     return paymentFailure(res, error);

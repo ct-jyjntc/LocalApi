@@ -575,6 +575,15 @@ export function initDb() {
     ) VALUES ('linuxdo-credit', 'linuxdo_credit', 'LINUX DO Credit', 0, '', '',
       'https://credit.linux.do/epay', 1000000, 100, 100000, 0, 0, '{}', ?, ?)`,
   ).run(paymentNow, paymentNow);
+  db.prepare(
+    `INSERT OR IGNORE INTO payment_channels (
+      id, provider, name, enabled, client_id, client_secret, gateway_url,
+      exchange_rate_micros, min_amount_minor, max_amount_minor,
+      fee_bps, fee_fixed_minor, config_json, created_at, updated_at
+    ) VALUES ('alipay', 'alipay', '支付宝', 0, '', '',
+      'https://openapi.alipay.com/gateway.do', 1000000, 100, 100000, 0, 0,
+      '{"alipay_public_key":"","seller_id":"","web_enabled":true,"wap_enabled":true}', ?, ?)`,
+  ).run(paymentNow, paymentNow);
 
   const paymentOrderCols = (
     db.prepare("PRAGMA table_info(payment_orders)").all() as Array<{ name: string }>

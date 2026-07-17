@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  PanelsTopLeft,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -48,6 +49,7 @@ const ADMIN_NAV: NavItem[] = [
 
 const USER_NAV: NavItem[] = [
   { to: "/", label: { zh: "概览", en: "Overview" }, icon: LayoutDashboard, end: true },
+  { to: "/models", label: { zh: "模型广场", en: "Models" }, icon: PanelsTopLeft },
   { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
   { to: "/plan", label: { zh: "套餐详情", en: "Plan details" }, icon: Package },
   { to: "/usage", label: { zh: "账单与订单", en: "Billing" }, icon: ChartNoAxesCombined },
@@ -143,7 +145,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           />
           <aside className="absolute inset-y-0 left-0 flex w-[min(240px,calc(100vw-2rem))] flex-col bg-sidebar py-6 shadow-lg">
             <div className="flex h-8 shrink-0 items-center gap-1 px-3">
-              <span className="min-w-0 flex-1 truncate px-0.5 text-sm font-semibold">
+              <span className="min-w-0 flex-1 truncate px-0.5 text-base font-semibold tracking-tight">
                 {brandName}
               </span>
               <Button
@@ -192,7 +194,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           >
             <Menu strokeWidth={1.8} />
           </Button>
-          <span className="text-sm font-semibold">{brandName}</span>
+          <span className="truncate text-base font-semibold tracking-tight">{brandName}</span>
         </header>
 
         <main className="mx-auto w-full max-w-[1280px] flex-1 min-w-0 px-3 py-5 pb-10 sm:px-8 sm:py-8">
@@ -244,7 +246,7 @@ function SidebarChrome({
         )}
       </Button>
       {!collapsed ? (
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">
+        <span className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight">
           {brand}
         </span>
       ) : null}
