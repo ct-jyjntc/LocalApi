@@ -34,6 +34,7 @@ import {
 } from "../services/users";
 import { resolveUserTier } from "../services/tiers";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { createCaptcha, verifyCaptcha } from "../services/captcha";
 import { writeAudit } from "../services/audit";
 import {
   PaymentError,
@@ -104,6 +105,8 @@ const registerSchema = z.object({
   username: z.string().trim().min(2).max(120),
   display_name: z.string().trim().max(120).optional(),
   password: z.string().min(8).max(256),
+  captcha_id: z.string().trim().min(1).max(80),
+  captcha_answer: z.string().trim().min(1).max(16),
 });
 const userKeyCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -149,7 +152,24 @@ userRouter.post("/login", (req, res) => {
 });
 
 userRouter.get("/config", (_req, res) => {
-  return res.json({ registration_enabled: getSetting("registration_enabled") === "true", linuxdo_enabled: Boolean((linuxdoRelayUrl || (linuxdoClientId && linuxdoClientSecret)) && publicBaseUrl()) });
+  return res.json({
+    registration_enabled: getSetting("registration_enabled") === "true",
+    linuxdo_enabled: Boolean((linuxdoRelayUrl || (linuxdoClientId && linuxdoClientSecret)) && publicBaseUrl()),
+    captcha_enabled: true,
+  });
+});
+
+userRouter.get("/captcha", (req, res) => {
+  if (getSetting("registration_enabled") !== "true") {
+    return res.status(403).json({ error: "Registration is currently closed", code: "registration_closed" });
+  }
+  const limiterKey = `user-captcha:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const rate = consumeRateLimit(limiterKey, 30, 10 * 60_000);
+  if (!rate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).json({ error: "Too many captcha requests", code: "captcha_rate_limited" });
+  }
+  return res.json(createCaptcha());
 });
 
 userRouter.post("/register", (req, res) => {
@@ -158,11 +178,28 @@ userRouter.post("/register", (req, res) => {
   }
   const body = parseBody(registerSchema, req.body, res);
   if (!body) return;
-  const limiterKey = `user-register:${req.ip || req.socket.remoteAddress || "unknown"}:${body.username.toLowerCase()}`;
+  const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+  const limiterKey = `user-register:${clientIp}:${body.username.toLowerCase()}`;
+  const ipLimiterKey = `user-register-ip:${clientIp}`;
   const rate = consumeRateLimit(limiterKey, 3, 15 * 60_000);
   if (!rate.allowed) {
     res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
     return res.status(429).json({ error: "Too many registration attempts" });
+  }
+  const ipRate = consumeRateLimit(ipLimiterKey, 8, 15 * 60_000);
+  if (!ipRate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(ipRate.retryAfterMs / 1000)));
+    return res.status(429).json({ error: "Too many registration attempts" });
+  }
+  const captcha = verifyCaptcha(body.captcha_id, body.captcha_answer);
+  if (!captcha.ok) {
+    const message =
+      captcha.code === "captcha_expired"
+        ? "Captcha expired, please refresh"
+        : captcha.code === "captcha_required"
+          ? "Captcha is required"
+          : "Incorrect captcha answer";
+    return res.status(400).json({ error: message, code: captcha.code });
   }
   if (getUserByUsername(body.username)) {
     return res.status(409).json({ error: "Username is already registered", code: "username_taken" });

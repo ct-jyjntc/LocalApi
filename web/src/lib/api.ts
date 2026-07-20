@@ -721,17 +721,19 @@ export const userApi = {
     create: (subject: string, body: string, attachments: FeedbackAttachment[]) => request<FeedbackThread>("/user/api/feedback", { method: "POST", body: JSON.stringify({ subject, body, attachments }) }, { auth: "user" }),
     reply: (id: string, body: string, attachments: FeedbackAttachment[]) => request<{ messages: FeedbackMessage[] }>(`/user/api/feedback/${id}/replies`, { method: "POST", body: JSON.stringify({ body, attachments }) }, { auth: "user" }),
   },
-  config: () => request<{ registration_enabled: boolean; linuxdo_enabled: boolean }>("/user/api/config", {}, { auth: false }),
+  config: () => request<{ registration_enabled: boolean; linuxdo_enabled: boolean; captcha_enabled: boolean }>("/user/api/config", {}, { auth: false }),
+  captcha: () =>
+    request<{ captcha_id: string; image: string; expires_in: number }>("/user/api/captcha", {}, { auth: false }),
   login: (username: string, password: string) =>
     request<{ token: string; expires_at: string; user: UserRow }>(
       "/user/api/login",
       { method: "POST", body: JSON.stringify({ username, password }) },
       { auth: false },
     ),
-  register: (username: string, password: string, display_name?: string) =>
+  register: (username: string, password: string, display_name: string | undefined, captcha_id: string, captcha_answer: string) =>
     request<{ token: string; expires_at: string; user: UserRow }>(
       "/user/api/register",
-      { method: "POST", body: JSON.stringify({ username, password, display_name }) },
+      { method: "POST", body: JSON.stringify({ username, password, display_name, captcha_id, captcha_answer }) },
       { auth: false },
     ),
   logout: () => request<{ ok: boolean }>("/user/api/logout", { method: "POST" }, { auth: "user" }),

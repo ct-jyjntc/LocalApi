@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, setAdminToken, setUserToken, userApi } from "@/lib/api";
@@ -29,6 +29,10 @@ export function LoginPage({
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [captchaId, setCaptchaId] = useState("");
+  const [captchaImage, setCaptchaImage] = useState("");
+  const [captchaAnswer, setCaptchaAnswer] = useState("");
+  const [captchaLoading, setCaptchaLoading] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -41,6 +45,27 @@ export function LoginPage({
     if (branding.data.company_name?.trim()) localStorage.setItem(COMPANY_CACHE_KEY, branding.data.company_name.trim());
     else localStorage.removeItem(COMPANY_CACHE_KEY);
   }, [branding.data]);
+
+  const loadCaptcha = useCallback(async () => {
+    if (mode !== "user" || !isRegistering || !registration.data?.registration_enabled) return;
+    setCaptchaLoading(true);
+    try {
+      const captcha = await userApi.captcha();
+      setCaptchaId(captcha.captcha_id);
+      setCaptchaImage(captcha.image);
+      setCaptchaAnswer("");
+    } catch {
+      setCaptchaId("");
+      setCaptchaImage("");
+      toast.error(zh ? "验证码加载失败" : "Failed to load captcha");
+    } finally {
+      setCaptchaLoading(false);
+    }
+  }, [isRegistering, mode, registration.data?.registration_enabled, zh]);
+
+  useEffect(() => {
+    void loadCaptcha();
+  }, [loadCaptcha]);
 
   async function submit(e?: FormEvent) {
     e?.preventDefault();
@@ -56,6 +81,10 @@ export function LoginPage({
       toast.error(t("login.registrationClosed"));
       return;
     }
+    if (mode === "user" && isRegistering && !captchaAnswer.trim()) {
+      toast.error(t("login.captchaRequired"));
+      return;
+    }
     setLoading(true);
     try {
       if (mode === "admin") {
@@ -63,15 +92,19 @@ export function LoginPage({
         setAdminToken(password.trim());
       } else {
         const result = isRegistering
-          ? await userApi.register(username.trim(), password, displayName.trim() || undefined)
+          ? await userApi.register(username.trim(), password, displayName.trim() || undefined, captchaId, captchaAnswer.trim())
           : await userApi.login(username.trim(), password);
         setUserToken(result.token);
       }
       toast.success(t("login.ok"));
       localStorage.setItem("localapi_auth_mode", mode);
       onSuccess(mode);
-    } catch {
-      toast.error(t("login.failed"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      toast.error(message || t("login.failed"));
+      if (mode === "user" && isRegistering) {
+        void loadCaptcha();
+      }
     } finally {
       setLoading(false);
     }
@@ -136,6 +169,36 @@ export function LoginPage({
               placeholder={mode === "admin" ? t("login.placeholder") : zh ? "用户密码" : "Password"}
             />
           </div>
+          {mode === "user" && isRegistering ? (
+            <div className="space-y-2">
+              <Label htmlFor="captcha-answer">{t("login.captcha")}</Label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="h-14 w-[180px] shrink-0 overflow-hidden rounded-2xl border border-border bg-card transition-opacity hover:opacity-90 disabled:opacity-60"
+                  onClick={() => void loadCaptcha()}
+                  disabled={captchaLoading}
+                  title={t("login.captchaRefresh")}
+                  aria-label={t("login.captchaRefresh")}
+                >
+                  {captchaImage ? (
+                    <img src={captchaImage} alt={t("login.captcha")} className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">{captchaLoading ? t("common.loading") : t("login.captchaRefresh")}</span>
+                  )}
+                </button>
+                <Input
+                  id="captcha-answer"
+                  className="h-10 rounded-full bg-card px-4"
+                  value={captchaAnswer}
+                  onChange={(event) => setCaptchaAnswer(event.target.value)}
+                  placeholder={t("login.captchaPlaceholder")}
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+          ) : null}
           <Button type="submit" className="h-10 w-full rounded-full px-4 text-sm" disabled={loading}>
             {submitLabel}
           </Button>
