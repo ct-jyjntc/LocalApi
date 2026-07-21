@@ -3,17 +3,20 @@ import crypto from "crypto";
 import { getSetting } from "../db";
 import { authenticateApiKey } from "../services/keys";
 import { authenticateUserSession } from "../services/users";
+import { hashAdminSecret, isHashedAdminSecret } from "../utils/admin-secret";
 import type { ApiKey, User } from "../db";
 
 function secretEquals(left: string, right: string) {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  const a = crypto.createHash("sha256").update(left, "utf8").digest();
+  const b = crypto.createHash("sha256").update(right, "utf8").digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 export function verifyAdminToken(token: string) {
-  const admin = getSetting("admin_token") || "";
-  return Boolean(token && admin && secretEquals(token, admin));
+  const stored = getSetting("admin_token") || "";
+  if (!token || !stored) return false;
+  const expected = isHashedAdminSecret(stored) ? stored : hashAdminSecret(stored);
+  return secretEquals(hashAdminSecret(token), expected);
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {

@@ -122,11 +122,11 @@ export function updateApiKey(
   ).run(
     safeInput.name ?? existing.name,
     safeInput.enabled !== undefined ? (safeInput.enabled ? 1 : 0) : existing.enabled,
-    userId ? 0 : (safeInput.rate_limit ?? existing.rate_limit),
-    userId ? 0 : (safeInput.tpm_limit ?? existing.tpm_limit),
-    userId ? 0 : (safeInput.concurrency_limit ?? existing.concurrency_limit),
-    userId ? "[]" : (safeInput.allowed_models ? JSON.stringify(safeInput.allowed_models) : existing.allowed_models),
-    userId ? null : (safeInput.expires_at !== undefined ? safeInput.expires_at : existing.expires_at),
+    safeInput.rate_limit ?? existing.rate_limit,
+    safeInput.tpm_limit ?? existing.tpm_limit,
+    safeInput.concurrency_limit ?? existing.concurrency_limit,
+    safeInput.allowed_models ? JSON.stringify(safeInput.allowed_models) : existing.allowed_models,
+    safeInput.expires_at !== undefined ? safeInput.expires_at : existing.expires_at,
     id,
   );
 
@@ -142,6 +142,15 @@ export function deleteApiKey(id: string, userId?: string) {
     pendingLastUsed.delete(id);
     refreshApiKeyCache();
   }
+  return deleted;
+}
+
+export function deleteApiKeysForUser(userId: string, refresh = true) {
+  const rows = db.prepare("SELECT id FROM api_keys WHERE user_id = ?").all(userId) as Array<{ id: string }>;
+  if (rows.length === 0) return 0;
+  const deleted = db.prepare("DELETE FROM api_keys WHERE user_id = ?").run(userId).changes;
+  for (const row of rows) pendingLastUsed.delete(row.id);
+  if (refresh) refreshApiKeyCache();
   return deleted;
 }
 

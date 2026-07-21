@@ -4,6 +4,7 @@ import { db, User } from "../db";
 import { sha256 } from "../utils/hash";
 import { hashPassword, verifyPassword } from "../utils/password";
 import { nowIso } from "../utils/time";
+import { deleteApiKeysForUser, refreshApiKeyCache } from "./keys";
 import { resolveTierForTopup } from "./tiers";
 
 const SESSION_DAYS = 7;
@@ -162,6 +163,7 @@ export function changeUserPassword(userId: string, currentPassword: string, newP
 export function deleteUser(id: string) {
   let deleted = false;
   db.transaction(() => {
+    deleteApiKeysForUser(id, false);
     db.prepare("DELETE FROM payment_refunds WHERE order_id IN (SELECT id FROM payment_orders WHERE user_id = ?)").run(id);
     // These historical/commercial tables intentionally retain a restrictive
     // user foreign key, so remove their user-scoped records explicitly.
@@ -177,6 +179,7 @@ export function deleteUser(id: string) {
         .run(nowIso(), active.plan_id);
     }
   })();
+  if (deleted) refreshApiKeyCache();
   return deleted;
 }
 

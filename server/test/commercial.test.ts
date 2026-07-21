@@ -20,7 +20,7 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
     upsertModelPrice,
   } = await import("../src/services/billing");
   const { createApiKey } = await import("../src/services/keys");
-    const { createPlan, assignPlan, getActiveSubscription, listPlanOrders } = await import("../src/services/plans");
+    const { createPlan, assignPlan, getActiveSubscription, listPlanOrders, maintainActiveSubscription } = await import("../src/services/plans");
   const { beginRequestAccess, AccessError } = await import("../src/services/access");
 
   try {
@@ -161,7 +161,8 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
     const paidDue = new Date(Date.now() - 60_000).toISOString();
     db.prepare("UPDATE subscriptions SET period_end = ?, entitlement_end = ?, reserved_micros = 0 WHERE id = ?")
       .run(paidDue, paidDue, paidSubscription.id);
-    const renewed = getActiveSubscription(user.id);
+    assert.equal(Date.parse(getActiveSubscription(user.id)!.period_end) <= Date.now(), true);
+    const renewed = maintainActiveSubscription(user.id);
     assert.ok(renewed);
     assert.ok(Date.parse(renewed!.period_end) > Date.now());
     assert.equal(getWallet(user.id)!.balance_micros, balanceBeforeRenewal - 2_000_000);
@@ -180,7 +181,7 @@ test("user wallet, price snapshot and usage settlement are atomic", async () => 
     const unpaidDue = new Date(Date.now() - 60_000).toISOString();
     db.prepare("UPDATE subscriptions SET period_end = ?, entitlement_end = ?, reserved_micros = 0 WHERE id = ?")
       .run(unpaidDue, unpaidDue, unpaidSubscription.id);
-    assert.equal(getActiveSubscription(secondUser.id), null);
+    assert.equal(maintainActiveSubscription(secondUser.id), null);
     const expired = db.prepare("SELECT status FROM subscriptions WHERE id = ?").get(unpaidSubscription.id) as {
       status: string;
     };

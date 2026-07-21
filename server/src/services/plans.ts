@@ -32,24 +32,16 @@ function publicPlan(row: Plan) {
   };
 }
 
-function expireDueSubscriptions() {
+export function maintainDueSubscriptions() {
   const rows = db.prepare(
-    `SELECT id, plan_id FROM subscriptions
-     WHERE status = 'active' AND auto_renew = 0 AND reserved_micros = 0 AND entitlement_end <= ?`,
-  ).all(nowIso()) as Array<{ id: string; plan_id: string }>;
-  if (rows.length === 0) return;
-  const now = nowIso();
-  db.transaction(() => {
-    for (const row of rows) {
-      db.prepare("UPDATE subscriptions SET status = 'expired', updated_at = ? WHERE id = ?").run(now, row.id);
-      db.prepare("UPDATE plans SET stock_used = MAX(0, stock_used - 1), updated_at = ? WHERE id = ?")
-        .run(now, row.plan_id);
-    }
-  })();
+    `SELECT DISTINCT user_id FROM subscriptions
+     WHERE status = 'active' AND reserved_micros = 0 AND period_end <= ?`,
+  ).all(nowIso()) as Array<{ user_id: string }>;
+  for (const row of rows) maintainActiveSubscription(row.user_id);
+  return rows.length;
 }
 
 export function listPlans(enabledOnly = false) {
-  expireDueSubscriptions();
   const rows = db
     .prepare(`SELECT * FROM plans ${enabledOnly ? "WHERE enabled = 1" : ""} ORDER BY sort_order ASC, created_at DESC`)
     .all() as Plan[];
@@ -501,6 +493,21 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
 }
 
 export function getActiveSubscription(userId: string): ActiveSubscription | null {
+  const row = db
+    .prepare(
+      `SELECT s.* FROM subscriptions s
+       WHERE s.user_id = ? AND s.status = 'active'
+       ORDER BY s.created_at DESC LIMIT 1`,
+    )
+    .get(userId) as Subscription | undefined;
+  if (!row) return null;
+  const plan = getPlan(row.plan_id);
+  if (!plan) return null;
+
+  return { ...row, plan: publicPlan(plan) };
+}
+
+export function maintainActiveSubscription(userId: string): ActiveSubscription | null {
   let row = db
     .prepare(
       `SELECT s.* FROM subscriptions s
@@ -556,7 +563,7 @@ export function setSubscriptionOverage(userId: string, enabled: boolean) {
 export function purchasePlan(userId: string, planId: string, requestId = uuid()) {
   const duplicate = existingPlanTransaction(userId, requestId);
   if (duplicate) return duplicate;
-  getActiveSubscription(userId);
+  maintainActiveSubscription(userId);
   const orderId = uuid();
   db.transaction(() => {
     const current = db.prepare(
@@ -619,7 +626,7 @@ export function purchasePlan(userId: string, planId: string, requestId = uuid())
 export function upgradePlan(userId: string, targetPlanId: string, requestId = uuid()) {
   const duplicate = existingPlanTransaction(userId, requestId);
   if (duplicate) return duplicate;
-  const active = getActiveSubscription(userId);
+  const active = maintainActiveSubscription(userId);
   if (!active) throw new PlanTransactionError(404, "active_subscription_not_found", "Active subscription not found");
   const orderId = uuid();
   db.transaction(() => {
@@ -727,7 +734,7 @@ export function upgradePlan(userId: string, targetPlanId: string, requestId = uu
 export function renewPlan(userId: string, requestId = uuid()) {
   const duplicate = existingPlanTransaction(userId, requestId);
   if (duplicate) return duplicate;
-  const active = getActiveSubscription(userId);
+  const active = maintainActiveSubscription(userId);
   if (!active) throw new PlanTransactionError(404, "active_subscription_not_found", "Active subscription not found");
   const orderId = uuid();
   db.transaction(() => {
@@ -779,7 +786,6 @@ export function renewPlan(userId: string, requestId = uuid()) {
 }
 
 export function assignPlan(userId: string, planId: string, autoRenew = true) {
-  expireDueSubscriptions();
   const plan = getPlan(planId);
   if (!plan || plan.enabled !== 1) return null;
   const id = uuid();

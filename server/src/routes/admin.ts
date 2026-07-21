@@ -24,6 +24,7 @@ import {
 import { getAllSettings, getSetting, setSetting } from "../db";
 import { requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { hashAdminSecret } from "../utils/admin-secret";
 import { DEFAULT_ADMIN_ENTRY_PATH, isValidAdminEntryPath, normalizeAdminEntryPath } from "../utils/admin-entry";
 import { commercialAdminRouter } from "./commercial-admin";
 import { testProviderConnection } from "../services/proxy";
@@ -269,9 +270,8 @@ adminRouter.delete("/logs", (_req, res) => {
 adminRouter.get("/settings", (_req, res) => {
   const all = getAllSettings();
   res.json({
-    // Never return the full password to the browser — only a mask + length hint
     admin_password_set: Boolean(all.admin_token),
-    admin_password_hint: maskSecret(all.admin_token || ""),
+    admin_password_hint: all.admin_token ? "••••••••" : "",
     port: all.port,
     max_retries: Number(all.max_retries ?? 2),
     retry_delay_ms: Number(all.retry_delay_ms ?? 400),
@@ -296,7 +296,7 @@ adminRouter.patch("/settings", (req, res) => {
     if (!body.current_admin_password || !verifyAdminToken(body.current_admin_password)) {
       return res.status(403).json({ error: "Current admin password is incorrect" });
     }
-    setSetting("admin_token", body.admin_password);
+    setSetting("admin_token", hashAdminSecret(body.admin_password));
   }
 
   if (body.port !== undefined) setSetting("port", String(body.port));
@@ -336,7 +336,7 @@ adminRouter.patch("/settings", (req, res) => {
   const all = getAllSettings();
   res.json({
     admin_password_set: Boolean(all.admin_token),
-    admin_password_hint: maskSecret(all.admin_token || ""),
+    admin_password_hint: all.admin_token ? "••••••••" : "",
     port: all.port,
     max_retries: Number(all.max_retries ?? 2),
     retry_delay_ms: Number(all.retry_delay_ms ?? 400),
@@ -359,12 +359,6 @@ adminRouter.get("/meta", (_req, res) => {
     version: "1.0.0",
   });
 });
-
-function maskSecret(value: string): string {
-  if (!value) return "";
-  if (value.length <= 4) return "••••";
-  return `${"•".repeat(Math.min(8, value.length - 2))}${value.slice(-2)}`;
-}
 
 function normalizePublicBaseUrl(value: string): string {
   const trimmed = value.trim();

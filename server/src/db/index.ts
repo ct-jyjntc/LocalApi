@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { hashAdminSecret, isHashedAdminSecret } from "../utils/admin-secret";
 import { encryptSecret } from "../utils/secrets";
 
 const dataDir = path.resolve(process.env.LOCALAPI_DATA_DIR || path.join(process.cwd(), "data"));
@@ -465,6 +467,30 @@ export function initDb() {
   addKeyCol("tpm_limit", "tpm_limit INTEGER NOT NULL DEFAULT 0");
   addKeyCol("concurrency_limit", "concurrency_limit INTEGER NOT NULL DEFAULT 0");
   addKeyCol("expires_at", "expires_at TEXT");
+  db.exec(`
+    DELETE FROM api_keys
+    WHERE user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM users WHERE users.id = api_keys.user_id);
+
+    CREATE TRIGGER IF NOT EXISTS api_keys_user_insert_guard
+    BEFORE INSERT ON api_keys
+    WHEN NEW.user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM users WHERE users.id = NEW.user_id)
+    BEGIN
+      SELECT RAISE(ABORT, 'api_keys.user_id references a missing user');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS api_keys_user_update_guard
+    BEFORE UPDATE OF user_id ON api_keys
+    WHEN NEW.user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM users WHERE users.id = NEW.user_id)
+    BEGIN
+      SELECT RAISE(ABORT, 'api_keys.user_id references a missing user');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS users_delete_api_keys
+    AFTER DELETE ON users
+    BEGIN
+      DELETE FROM api_keys WHERE user_id = OLD.id;
+    END;
+  `);
   // Encrypt legacy client secrets in place; the admin API may decrypt them
   // after authentication when the operator explicitly requests visibility.
   const plainKeys = db
@@ -621,13 +647,22 @@ export function initDb() {
     );
   `);
 
+  const configuredAdmin = process.env.ADMIN_TOKEN?.trim();
+  const existingAdmin = db.prepare("SELECT value FROM settings WHERE key = 'admin_token'").get() as
+    | { value: string }
+    | undefined;
+  let generatedAdmin = "";
+  if (!configuredAdmin && !existingAdmin?.value) {
+    generatedAdmin = `adm_${crypto.randomBytes(24).toString("base64url")}`;
+  }
+
   const defaults: Record<string, string> = {
     cache_enabled: "false",
     cache_ttl_seconds: "3600",
     cache_max_entries: "1000",
     cache_methods: '["GET"]',
     cache_paths: '["/v1/models"]',
-    admin_token: process.env.ADMIN_TOKEN?.trim() || "a2366021253",
+    admin_token: hashAdminSecret(configuredAdmin || generatedAdmin),
     admin_entry_path: "/admin",
     port: "5555",
     // Upstream request retries (network / 429 / 5xx). 0 = no retry.
@@ -646,13 +681,24 @@ export function initDb() {
     insert.run(key, value);
   }
 
-  // Migrate legacy default admin password → user-specified password
+  // Store only a one-way hash. Preserve custom legacy passwords while rotating
+  // publicly known defaults on installations that do not set ADMIN_TOKEN.
   const currentAdmin = getSetting("admin_token");
-  const configuredAdmin = process.env.ADMIN_TOKEN?.trim();
-  if (configuredAdmin && currentAdmin !== configuredAdmin) {
-    setSetting("admin_token", configuredAdmin);
-  } else if (!currentAdmin || currentAdmin === "localapi-admin") {
-    setSetting("admin_token", "a2366021253");
+  if (configuredAdmin) {
+    setSetting("admin_token", hashAdminSecret(configuredAdmin));
+  } else if (!currentAdmin) {
+    generatedAdmin ||= `adm_${crypto.randomBytes(24).toString("base64url")}`;
+    setSetting("admin_token", hashAdminSecret(generatedAdmin));
+  } else if (!isHashedAdminSecret(currentAdmin)) {
+    if (currentAdmin === "localapi-admin" || currentAdmin === "a2366021253") {
+      generatedAdmin = `adm_${crypto.randomBytes(24).toString("base64url")}`;
+      setSetting("admin_token", hashAdminSecret(generatedAdmin));
+    } else {
+      setSetting("admin_token", hashAdminSecret(currentAdmin));
+    }
+  }
+  if (generatedAdmin) {
+    console.warn(`[security] Generated initial admin password: ${generatedAdmin}`);
   }
 
   // Force single-port deployment

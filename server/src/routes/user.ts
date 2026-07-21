@@ -53,6 +53,13 @@ import { createFeedback, getFeedbackThread, listUserFeedback, replyFeedback } fr
 export const userRouter = Router();
 
 const linuxdoStates = new Map<string, number>();
+const linuxdoStateCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [state, expiresAt] of linuxdoStates) {
+    if (expiresAt <= now) linuxdoStates.delete(state);
+  }
+}, 60_000);
+linuxdoStateCleanupTimer.unref?.();
 const linuxdoClientId = process.env.LINUXDO_CLIENT_ID?.trim() || "";
 const linuxdoClientSecret = process.env.LINUXDO_CLIENT_SECRET?.trim() || "";
 const linuxdoRelayUrl = process.env.LINUXDO_RELAY_URL?.trim().replace(/\/$/, "") || "";
@@ -60,8 +67,14 @@ const linuxdoRelaySecret = process.env.LINUXDO_RELAY_SECRET?.trim() || "";
 const linuxdoBaseUrl = "https://connect.linux.do";
 const publicBaseUrl = () => (process.env.PUBLIC_BASE_URL?.trim() || getSetting("public_base_url") || "").replace(/\/$/, "");
 
-userRouter.get("/auth/linuxdo", (_req, res) => {
+userRouter.get("/auth/linuxdo", (req, res) => {
   if ((!linuxdoRelayUrl && (!linuxdoClientId || !linuxdoClientSecret)) || !publicBaseUrl()) return res.status(503).send("LinuxDo login is not configured");
+  const limiterKey = `linuxdo-oauth:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const rate = consumeRateLimit(limiterKey, 30, 5 * 60_000);
+  if (!rate.allowed) {
+    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).send("Too many OAuth requests");
+  }
   const state = crypto.randomBytes(24).toString("hex");
   linuxdoStates.set(state, Date.now() + 10 * 60_000);
   const url = new URL(`${linuxdoBaseUrl}/oauth2/authorize`);

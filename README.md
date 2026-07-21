@@ -14,7 +14,7 @@ Local OpenAI-compatible API relay with a Quiet Console admin UI.
 ## Features
 
 - **Proxy relay** — Forward `/v1/*` to configured upstream providers
-- **API keys** — Client authentication for the proxy (full secret visible in the authenticated admin console)
+- **API keys** — Client authentication for the proxy
 - **Providers** — Multiple upstreams, multi-key round-robin, model routing
 - **Retries** — Configurable max retries for network / 429 / 5xx
 - **Streaming** — Transparent SSE passthrough (`stream: true`)
@@ -51,7 +51,7 @@ the connection pools and client-side timeouts when needed:
 | `CLIENT_REQUEST_TIMEOUT_MS` | `120000` | Maximum time allowed to receive a request body |
 | `HOST` | `127.0.0.1` | Address used by the Node server |
 | `CORS_ORIGINS` | empty | Comma-separated browser origins allowed to call the API |
-| `ADMIN_TOKEN` | built-in fallback | Admin password injected at startup/deployment |
+| `ADMIN_TOKEN` | random on first boot | Admin password injected at startup/deployment |
 | `SECRETS_KEY` | empty | Encryption key for provider credentials at rest |
 | `LOG_CONTENT` | `false` | Set to `true` only when prompt/output logging is explicitly required |
 
@@ -60,7 +60,7 @@ be replayed safely. JSON requests remain replayable for configured upstream retr
 Non-idempotent requests are retried only when the caller supplies an
 `Idempotency-Key` or `X-Idempotency-Key` header.
 
-Default **admin password**: `a2366021253`  
+Set `ADMIN_TOKEN` in production. Without it, a random initial password is printed once on first boot.
 A default client API key is printed on first server boot (also listed under **API Keys**).
 
 ### Try the proxy
@@ -85,7 +85,7 @@ curl -N http://127.0.0.1:5555/v1/chat/completions \
 | Setting | Default | Notes |
 |---------|---------|-------|
 | Port | `5555` | Override with `PORT` env (still single process) |
-| Admin password | `a2366021253` | Change in Settings |
+| Admin password | random on first boot | Prefer setting `ADMIN_TOKEN` in the environment |
 | Max retries | `2` | Settings → Relay |
 
 Data is stored in `server/data/localapi.db`.

@@ -198,15 +198,7 @@ export function listProvidersForModel(model?: string | null): Provider[] {
     const models = providerRuntime.get(provider.id)?.models ?? safeParseModels(provider.models);
     return models.includes(model) || models.includes("*");
   });
-  if (exact.length) return exact;
-
-  const lower = model.toLowerCase();
-  return providers.filter((provider) => {
-    const models = providerRuntime.get(provider.id)?.models ?? safeParseModels(provider.models);
-    return models.some(
-      (candidate) => lower.startsWith(candidate.toLowerCase()) || candidate.toLowerCase().startsWith(lower),
-    );
-  });
+  return exact;
 }
 
 export function resolveProviderForModel(model?: string | null): Provider | null {
@@ -220,8 +212,8 @@ export function sanitizeProvider(p: Provider) {
     id: p.id,
     name: p.name,
     base_url: p.base_url,
-    api_key: keys[0] ?? "",
-    api_keys: keys,
+    api_key: "",
+    api_keys: [],
     key_count: keys.length,
     has_api_key: keys.length > 0,
     models: runtime?.models ?? safeParseModels(p.models),

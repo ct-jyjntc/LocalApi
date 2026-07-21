@@ -1,7 +1,7 @@
 import { ApiKey } from "../db";
 import { estimateRequestTokens } from "./billing";
 import { consumeRateLimit } from "./rate-limit";
-import { getActiveSubscription } from "./plans";
+import { getActiveSubscription, maintainActiveSubscription } from "./plans";
 import { getUser } from "./users";
 import { resolveUserTier } from "./tiers";
 
@@ -98,7 +98,7 @@ export function beginRequestAccess(
     throw new AccessError(401, "api_key_expired", "API key has expired");
   }
 
-  const subscription = billingMode === "coding" && user ? getActiveSubscription(user.id) : null;
+  const subscription = billingMode === "coding" && user ? maintainActiveSubscription(user.id) : null;
   const tier = billingMode === "wallet" && user ? resolveUserTier(user.id).current : null;
   if (billingMode === "coding" && key.user_id && !subscription) {
     throw new AccessError(402, "coding_plan_required", "An active Coding Plan is required for /coding requests");

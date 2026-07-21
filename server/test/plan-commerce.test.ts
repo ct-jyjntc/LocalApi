@@ -18,6 +18,7 @@ test("plan purchase, prorated upgrade and renewal are atomic and idempotent", as
     getActiveSubscription,
     listPlans,
     listPlanOrders,
+    maintainActiveSubscription,
     purchasePlan,
     reorderPlans,
     renewPlan,
@@ -101,7 +102,7 @@ test("plan purchase, prorated upgrade and renewal are atomic and idempotent", as
       upgraded.subscription!.id,
     );
     const beforePaidRolloverBalance = getWallet(user.id)!.balance_micros;
-    const rolled = getActiveSubscription(user.id)!;
+    const rolled = maintainActiveSubscription(user.id)!;
     assert.ok(Date.parse(rolled.period_end) > Date.now());
     assert.equal(rolled.remaining_credits_micros, 35_000_000);
     assert.equal(getWallet(user.id)!.balance_micros, beforePaidRolloverBalance);

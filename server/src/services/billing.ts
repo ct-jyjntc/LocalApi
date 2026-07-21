@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { db, ModelPrice } from "../db";
 import { nowIso } from "../utils/time";
-import { getActiveSubscription } from "./plans";
+import { maintainActiveSubscription } from "./plans";
 
 export const MICROS_PER_CREDIT = 1_000_000;
 const PRICE_TOKEN_UNIT = 1_000_000n;
@@ -95,17 +95,39 @@ function modelAllowed(models: string[], model: string) {
   return models.length === 0 || models.includes("*") || models.includes(model);
 }
 
-export function estimateRequestTokens(body: unknown, requestBytes = 0) {
-  let chars = 0;
-  if (requestBytes > 0) {
-    chars = requestBytes;
-  } else {
-    try {
-      chars = JSON.stringify(body ?? "").length;
-    } catch {
-      chars = String(body ?? "").length;
-    }
+const NON_PROMPT_FIELDS = new Set([
+  "model",
+  "stream",
+  "stream_options",
+  "max_tokens",
+  "max_completion_tokens",
+  "maxOutputTokens",
+  "temperature",
+  "top_p",
+  "top_k",
+  "n",
+  "seed",
+  "stop",
+  "presence_penalty",
+  "frequency_penalty",
+  "user",
+]);
+
+function estimateTokenizableChars(value: unknown, depth = 0): number {
+  if (typeof value === "string") return value.length;
+  if (typeof value === "number" || typeof value === "boolean") return String(value).length;
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + estimateTokenizableChars(item, depth + 1) + 4, 0);
   }
+  if (!value || typeof value !== "object") return 0;
+  return Object.entries(value as Record<string, unknown>).reduce((total, [key, item]) => {
+    if (depth === 0 && NON_PROMPT_FIELDS.has(key)) return total;
+    return total + key.length + estimateTokenizableChars(item, depth + 1) + 4;
+  }, 0);
+}
+
+export function estimateRequestTokens(body: unknown, _requestBytes = 0) {
+  const chars = estimateTokenizableChars(body);
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const requested = Number(
     record.max_tokens ?? record.max_completion_tokens ?? record.maxOutputTokens ?? 4096,
@@ -151,7 +173,7 @@ export function reserveUsage(input: {
     prompt_tokens: estimate.prompt,
     completion_tokens: estimate.completion,
   });
-  const subscription = billingMode === "coding" ? getActiveSubscription(input.userId) : null;
+  const subscription = billingMode === "coding" ? maintainActiveSubscription(input.userId) : null;
   if (billingMode === "coding" && !subscription) {
     throw new BillingError(402, "coding_plan_required", "An active Coding Plan is required for /coding requests");
   }
@@ -186,10 +208,10 @@ export function reserveUsage(input: {
         throw new BillingError(402, "plan_quota_exhausted", "Plan quota is insufficient");
       }
       const availableWallet = wallet.balance_micros - wallet.reserved_micros;
-      if (availableWallet <= 0) {
+      if (availableWallet < remainder) {
         throw new BillingError(402, "insufficient_balance", "Insufficient account balance");
       }
-      reservedWallet = Math.min(remainder, availableWallet);
+      reservedWallet = remainder;
     }
 
     if (subscription && reservedPlan > 0) {
@@ -295,9 +317,15 @@ export function settleUsage(
         `UPDATE subscriptions SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ? WHERE id = ?`,
       ).run(reservation.reservedPlan, nowIso(), reservation.subscriptionId);
       const subscription = db
-        .prepare("SELECT remaining_credits_micros FROM subscriptions WHERE id = ?")
-        .get(reservation.subscriptionId) as { remaining_credits_micros: number } | undefined;
-      planCost = Math.min(cost, Math.max(0, subscription?.remaining_credits_micros ?? 0));
+        .prepare("SELECT remaining_credits_micros, reserved_micros FROM subscriptions WHERE id = ?")
+        .get(reservation.subscriptionId) as
+        | { remaining_credits_micros: number; reserved_micros: number }
+        | undefined;
+      const availablePlan = Math.max(
+        0,
+        (subscription?.remaining_credits_micros ?? 0) - (subscription?.reserved_micros ?? 0),
+      );
+      planCost = Math.min(cost, availablePlan);
       if (planCost > 0) {
         db.prepare(
           "UPDATE subscriptions SET remaining_credits_micros = remaining_credits_micros - ?, updated_at = ? WHERE id = ?",
@@ -306,15 +334,23 @@ export function settleUsage(
     }
 
     const remainder = cost - planCost;
-    if (remainder > 0 && !reservation.overageEnabled) {
-      uncoveredCost = remainder;
-      walletCost = 0;
+    if (remainder > 0 && reservation.overageEnabled) {
+      const wallet = db.prepare(
+        "SELECT balance_micros, reserved_micros FROM wallet_accounts WHERE user_id = ?",
+      ).get(reservation.userId) as { balance_micros: number; reserved_micros: number } | undefined;
+      const otherReserved = Math.max(
+        0,
+        (wallet?.reserved_micros ?? 0) - reservation.reservedWallet,
+      );
+      const availableWallet = Math.max(0, (wallet?.balance_micros ?? 0) - otherReserved);
+      walletCost = Math.min(remainder, availableWallet);
+    }
+    uncoveredCost = Math.max(0, remainder - walletCost);
+    if (uncoveredCost > 0) {
       db.prepare("UPDATE users SET status = 'suspended', updated_at = ? WHERE id = ?").run(
         nowIso(),
         reservation.userId,
       );
-    } else {
-      walletCost = remainder;
     }
     db.prepare(
       `UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?),
@@ -338,12 +374,6 @@ export function settleUsage(
         `${reservation.model} usage`,
         nowIso(),
       );
-      if (wallet.balance_micros < 0) {
-        db.prepare("UPDATE users SET status = 'suspended', updated_at = ? WHERE id = ?").run(
-          nowIso(),
-          reservation.userId,
-        );
-      }
     }
 
     db.prepare(

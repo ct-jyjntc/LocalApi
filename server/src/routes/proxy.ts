@@ -6,7 +6,7 @@ import { lookupCache, storeCache } from "../services/cache";
 import type { ApiKey } from "../db";
 import { isModelAllowedForKey } from "../services/access";
 import { getModelPrice } from "../services/billing";
-import { getActiveSubscription } from "../services/plans";
+import { maintainActiveSubscription } from "../services/plans";
 
 export const proxyRouter = Router();
 const MAX_BUFFERED_BODY = 20 * 1024 * 1024;
@@ -75,7 +75,7 @@ v1.use(requireApiKey);
 v1.get("/models", async (req: Request, res: Response) => {
   const apiKey = (req as Request & { apiKey?: ApiKey }).apiKey;
   const billingMode = (req as BillingRequest).billingMode ?? "wallet";
-  if (billingMode === "coding" && apiKey?.user_id && !getActiveSubscription(apiKey.user_id)) {
+  if (billingMode === "coding" && apiKey?.user_id && !maintainActiveSubscription(apiKey.user_id)) {
     return res.status(402).json({
       error: { message: "An active Coding Plan is required for /coding requests", type: "coding_plan_required" },
     });

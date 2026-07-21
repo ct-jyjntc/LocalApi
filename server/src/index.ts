@@ -11,6 +11,7 @@ import { paymentsRouter } from "./routes/payments";
 import { createProvider, listProviders } from "./services/providers";
 import { createApiKey, listApiKeys } from "./services/keys";
 import { cleanupStaleReservations } from "./services/billing";
+import { maintainDueSubscriptions } from "./services/plans";
 
 initDb();
 
@@ -35,12 +36,30 @@ function seedIfEmpty() {
   if (listApiKeys().length === 0) {
     const key = createApiKey({ name: "default" });
     console.log(`[seed] Default API key created: ${key.key}`);
-    console.log("[seed] Admin password initialized");
   }
 }
 
 seedIfEmpty();
 cleanupStaleReservations();
+maintainDueSubscriptions();
+
+const reservationCleanupTimer = setInterval(() => {
+  try {
+    cleanupStaleReservations();
+  } catch (error) {
+    console.error("[maintenance] Failed to clean stale billing reservations", error);
+  }
+}, 10 * 60_000);
+reservationCleanupTimer.unref?.();
+
+const subscriptionMaintenanceTimer = setInterval(() => {
+  try {
+    maintainDueSubscriptions();
+  } catch (error) {
+    console.error("[maintenance] Failed to update due subscriptions", error);
+  }
+}, 60_000);
+subscriptionMaintenanceTimer.unref?.();
 
 const app = express();
 app.disable("x-powered-by");
