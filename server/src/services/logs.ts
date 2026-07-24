@@ -34,8 +34,17 @@ type LogInput = {
 const pendingLogs: Array<LogInput & { id: string }> = [];
 const MAX_PENDING_LOGS = 10_000;
 const STORE_LOG_CONTENT = process.env.LOG_CONTENT === "true";
+const MAX_LOG_ROWS = Number(process.env.MAX_LOG_ROWS || 5_000);
 let insertLogStatement: ReturnType<typeof db.prepare> | null = null;
 let logsSincePrune = 0;
+
+type DashboardStats = ReturnType<typeof computeDashboardStats>;
+let dashboardCache: { at: number; value: DashboardStats } | null = null;
+const DASHBOARD_TTL_MS = 5_000;
+
+function invalidateDashboardCache() {
+  dashboardCache = null;
+}
 
 export function flushLogs(limit = 500) {
   if (pendingLogs.length === 0) return;
@@ -85,14 +94,16 @@ export function flushLogs(limit = 500) {
       }
       logsSincePrune += rows.length;
       if (logsSincePrune >= 500) {
+        const keep = Number.isFinite(MAX_LOG_ROWS) && MAX_LOG_ROWS > 0 ? MAX_LOG_ROWS : 5_000;
         db.prepare(
           `DELETE FROM request_logs WHERE id IN (
-            SELECT id FROM request_logs ORDER BY created_at DESC LIMIT -1 OFFSET 5000
+            SELECT id FROM request_logs ORDER BY created_at DESC LIMIT -1 OFFSET ?
           )`,
-        ).run();
+        ).run(keep);
         logsSincePrune = 0;
       }
     })();
+    invalidateDashboardCache();
   } catch {
     pendingLogs.unshift(...rows);
     if (pendingLogs.length > MAX_PENDING_LOGS) {
@@ -174,10 +185,25 @@ export function getLog(id: string, userId?: string) {
 
 export function clearLogs() {
   flushLogs(Number.MAX_SAFE_INTEGER);
+  invalidateDashboardCache();
   return db.prepare("DELETE FROM request_logs").run().changes;
 }
 
-export function getDashboardStats() {
+/** Drop stored prompt/response bodies to reclaim disk and speed up scans. */
+export function stripLogContent() {
+  flushLogs(Number.MAX_SAFE_INTEGER);
+  const result = db
+    .prepare(
+      `UPDATE request_logs
+       SET input_text = NULL, output_text = NULL, reasoning_text = NULL
+       WHERE input_text IS NOT NULL OR output_text IS NOT NULL OR reasoning_text IS NOT NULL`,
+    )
+    .run();
+  invalidateDashboardCache();
+  return result.changes;
+}
+
+function computeDashboardStats() {
   flushLogs(Number.MAX_SAFE_INTEGER);
   const totals = db
     .prepare(
@@ -293,4 +319,14 @@ export function getDashboardStats() {
     })),
     byHour,
   };
+}
+
+export function getDashboardStats() {
+  const now = Date.now();
+  if (dashboardCache && now - dashboardCache.at < DASHBOARD_TTL_MS) {
+    return dashboardCache.value;
+  }
+  const value = computeDashboardStats();
+  dashboardCache = { at: now, value };
+  return value;
 }

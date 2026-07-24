@@ -126,7 +126,25 @@ const webDist = webDistCandidates.find((p) =>
 );
 
 if (webDist) {
-  app.use(express.static(webDist));
+  // Hashed assets can be cached forever; HTML stays revalidated.
+  app.use(
+    express.static(webDist, {
+      etag: true,
+      lastModified: true,
+      index: false,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith(".html")) {
+          res.setHeader("Cache-Control", "no-cache");
+          return;
+        }
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          return;
+        }
+        res.setHeader("Cache-Control", "public, max-age=3600");
+      },
+    }),
+  );
   // SPA fallback for client routes (not API)
   app.get("/{*spa}", (req, res, next) => {
     if (
@@ -139,6 +157,7 @@ if (webDist) {
     ) {
       return next();
     }
+    res.setHeader("Cache-Control", "no-cache");
     return res.sendFile(path.join(webDist, "index.html"));
   });
   console.log(`[ui] Serving admin console from ${webDist}`);

@@ -20,7 +20,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useState, type CSSProperties } from "react";
+import { Suspense, useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -202,7 +202,15 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
         </header>
 
         <main className="mx-auto w-full max-w-[1280px] flex-1 min-w-0 px-3 py-5 pb-10 sm:px-8 sm:py-8">
-          <Outlet />
+          <Suspense
+            fallback={
+              <div className="flex min-h-[40vh] items-center justify-center text-xs text-muted-foreground">
+                …
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
         {companyName ? (
           <div className="pointer-events-none fixed bottom-3 left-3 right-3 z-10 text-center text-[11px] text-muted-foreground/75 sm:left-auto sm:right-5 sm:text-right">

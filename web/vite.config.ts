@@ -29,5 +29,26 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    target: "es2022",
+    cssCodeSplit: true,
+    sourcemap: false,
+    reportCompressedSize: true,
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("react-dom") || id.includes("/react/") || id.includes("react-router")) {
+            return "react-vendor";
+          }
+          if (id.includes("@tanstack") || id.includes("zustand") || id.includes("sonner") || id.includes("next-themes")) {
+            return "app-vendor";
+          }
+          if (id.includes("lucide-react") || id.includes("@radix-ui")) {
+            return "ui-vendor";
+          }
+        },
+      },
+    },
   },
 });

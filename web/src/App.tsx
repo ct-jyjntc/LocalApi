@@ -1,30 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, useCallback, useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "next-themes";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppShell } from "@/components/AppShell";
-import { DashboardPage } from "@/features/DashboardPage";
-import { KeysPage } from "@/features/KeysPage";
 import { LoginPage } from "@/features/LoginPage";
-import { LogsPage } from "@/features/LogsPage";
-import { ProvidersPage } from "@/features/ProvidersPage";
-import { SettingsPage } from "@/features/SettingsPage";
-import { UsersPage } from "@/features/UsersPage";
-import { PricingPage } from "@/features/PricingPage";
-import { PlansPage } from "@/features/PlansPage";
-import { UserDashboardPage } from "@/features/UserDashboardPage";
-import { UserModelsPage } from "@/features/UserModelsPage";
-import { UserFeedbackPage } from "@/features/UserFeedbackPage";
-import { FeedbackPage } from "@/features/FeedbackPage";
-import { UserKeysPage } from "@/features/UserKeysPage";
-import { UserUsagePage } from "@/features/UserUsagePage";
-import { CommercialUsagePage } from "@/features/CommercialUsagePage";
-import { UserPlanPage } from "@/features/UserPlanPage";
-import { PaymentsPage } from "@/features/PaymentsPage";
-import { UserPaymentsPage } from "@/features/UserPaymentsPage";
-import { TiersPage } from "@/features/TiersPage";
-import { UserSettingsPage } from "@/features/UserSettingsPage";
 import { I18nProvider } from "@/lib/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import {
@@ -37,6 +17,67 @@ import {
   setAdminEntryPath,
   userApi,
 } from "@/lib/api";
+
+const DashboardPage = lazy(() =>
+  import("@/features/DashboardPage").then((m) => ({ default: m.DashboardPage })),
+);
+const KeysPage = lazy(() =>
+  import("@/features/KeysPage").then((m) => ({ default: m.KeysPage })),
+);
+const LogsPage = lazy(() =>
+  import("@/features/LogsPage").then((m) => ({ default: m.LogsPage })),
+);
+const ProvidersPage = lazy(() =>
+  import("@/features/ProvidersPage").then((m) => ({ default: m.ProvidersPage })),
+);
+const SettingsPage = lazy(() =>
+  import("@/features/SettingsPage").then((m) => ({ default: m.SettingsPage })),
+);
+const UsersPage = lazy(() =>
+  import("@/features/UsersPage").then((m) => ({ default: m.UsersPage })),
+);
+const PricingPage = lazy(() =>
+  import("@/features/PricingPage").then((m) => ({ default: m.PricingPage })),
+);
+const PlansPage = lazy(() =>
+  import("@/features/PlansPage").then((m) => ({ default: m.PlansPage })),
+);
+const UserDashboardPage = lazy(() =>
+  import("@/features/UserDashboardPage").then((m) => ({ default: m.UserDashboardPage })),
+);
+const UserModelsPage = lazy(() =>
+  import("@/features/UserModelsPage").then((m) => ({ default: m.UserModelsPage })),
+);
+const UserFeedbackPage = lazy(() =>
+  import("@/features/UserFeedbackPage").then((m) => ({ default: m.UserFeedbackPage })),
+);
+const FeedbackPage = lazy(() =>
+  import("@/features/FeedbackPage").then((m) => ({ default: m.FeedbackPage })),
+);
+const UserKeysPage = lazy(() =>
+  import("@/features/UserKeysPage").then((m) => ({ default: m.UserKeysPage })),
+);
+const UserUsagePage = lazy(() =>
+  import("@/features/UserUsagePage").then((m) => ({ default: m.UserUsagePage })),
+);
+const CommercialUsagePage = lazy(() =>
+  import("@/features/CommercialUsagePage").then((m) => ({ default: m.CommercialUsagePage })),
+);
+const UserPlanPage = lazy(() =>
+  import("@/features/UserPlanPage").then((m) => ({ default: m.UserPlanPage })),
+);
+const PaymentsPage = lazy(() =>
+  import("@/features/PaymentsPage").then((m) => ({ default: m.PaymentsPage })),
+);
+const UserPaymentsPage = lazy(() =>
+  import("@/features/UserPaymentsPage").then((m) => ({ default: m.UserPaymentsPage })),
+);
+const TiersPage = lazy(() =>
+  import("@/features/TiersPage").then((m) => ({ default: m.TiersPage })),
+);
+const UserSettingsPage = lazy(() =>
+  import("@/features/UserSettingsPage").then((m) => ({ default: m.UserSettingsPage })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
