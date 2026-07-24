@@ -32,7 +32,7 @@ export function listCommerceOrders(userId: string, limit = 200) {
     completed_at: order.credited_at || order.refunded_at || order.paid_at,
     actions: {
       pay: order.status === "pending" && Boolean(order.pay_url),
-      sync: ["pending", "paid"].includes(order.status),
+      sync: ["pending", "paid", "refunding"].includes(order.status),
       cancel: order.status === "pending",
       delete: ["failed", "expired", "cancelled"].includes(order.status),
     },

@@ -63,6 +63,15 @@ subscriptionMaintenanceTimer.unref?.();
 
 const app = express();
 app.disable("x-powered-by");
+const configuredTrustProxy = process.env.TRUST_PROXY?.trim().toLowerCase();
+app.set(
+  "trust proxy",
+  configuredTrustProxy === "true"
+    ? true
+    : configuredTrustProxy === "false"
+      ? false
+      : process.env.TRUST_PROXY?.trim() || "loopback",
+);
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())

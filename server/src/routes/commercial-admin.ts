@@ -93,6 +93,16 @@ const paymentChannelSchema = z.object({
   seller_id: z.string().trim().max(64).optional(),
   web_enabled: z.boolean().optional(),
   wap_enabled: z.boolean().optional(),
+  wechat_app_id: z.string().trim().max(128).optional(),
+  wechat_serial_no: z.string().trim().max(128).optional(),
+  wechat_private_key: z.string().trim().max(16_000).optional(),
+  wechat_platform_certificate: z.string().trim().max(32_000).optional(),
+  wechat_platform_serial_no: z.string().trim().max(128).optional(),
+  wechat_native_enabled: z.boolean().optional(),
+  wechat_h5_enabled: z.boolean().optional(),
+  wechat_h5_type: z.enum(["Wap", "iOS", "Android"]).optional(),
+  wechat_h5_app_name: z.string().trim().max(128).optional(),
+  wechat_h5_app_url: z.union([z.string().url().max(500), z.literal("")]).optional(),
 });
 const tierSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -295,7 +305,13 @@ commercialAdminRouter.put("/payments/channel", (req, res) => {
       action: "payment.channel.update",
       target_type: "payment_channel",
       target_id: "linuxdo-credit",
-      detail: { ...body, client_secret: body.client_secret === undefined ? undefined : "[updated]" },
+      detail: {
+        ...body,
+        client_secret: body.client_secret === undefined ? undefined : "[updated]",
+        alipay_public_key: body.alipay_public_key === undefined ? undefined : "[updated]",
+        wechat_private_key: body.wechat_private_key === undefined ? undefined : "[updated]",
+        wechat_platform_certificate: body.wechat_platform_certificate === undefined ? undefined : "[updated]",
+      },
     });
     return res.json(channel);
   } catch (error) {
@@ -318,6 +334,8 @@ commercialAdminRouter.put("/payments/channels/:id", (req, res) => {
         ...body,
         client_secret: body.client_secret === undefined ? undefined : "[updated]",
         alipay_public_key: body.alipay_public_key === undefined ? undefined : "[updated]",
+        wechat_private_key: body.wechat_private_key === undefined ? undefined : "[updated]",
+        wechat_platform_certificate: body.wechat_platform_certificate === undefined ? undefined : "[updated]",
       },
     });
     return res.json(channel);

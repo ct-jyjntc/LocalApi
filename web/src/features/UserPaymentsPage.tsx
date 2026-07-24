@@ -39,6 +39,8 @@ export function UserPaymentsPage() {
       const modes = channel?.payment_modes || [];
       const mode = channel?.provider === "alipay"
         ? (mobile && modes.includes("wap") ? "wap" : modes.includes("page") ? "page" : "wap")
+        : channel?.provider === "wechatpay"
+          ? (mobile && modes.includes("h5") ? "h5" : modes.includes("native") ? "native" : "h5")
         : undefined;
       return userApi.payments.createTopup(amount, channel?.id, mode);
     },
@@ -90,6 +92,7 @@ export function UserPaymentsPage() {
             <div>
               <h2 className="text-sm font-medium">账户充值</h2>
               <p className="mt-1 text-[11px] text-muted-foreground">支付完成后由回调自动入账，通常数秒内到账。</p>
+              {channel?.provider === "wechatpay" ? <p className="mt-1 text-[11px] text-muted-foreground">电脑端显示微信扫码，手机端跳转微信 H5 收银台。</p> : null}
             </div>
             <Badge variant={channel?.enabled ? "default" : "secondary"}>{channel?.enabled ? "渠道可用" : "暂不可用"}</Badge>
           </div>

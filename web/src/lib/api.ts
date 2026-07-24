@@ -288,6 +288,16 @@ export type PaymentChannel = {
   seller_id?: string;
   web_enabled?: boolean;
   wap_enabled?: boolean;
+  wechat_app_id?: string;
+  wechat_serial_no?: string;
+  wechat_private_key?: string;
+  wechat_platform_certificate?: string;
+  wechat_platform_serial_no?: string;
+  wechat_native_enabled?: boolean;
+  wechat_h5_enabled?: boolean;
+  wechat_h5_type?: string;
+  wechat_h5_app_name?: string;
+  wechat_h5_app_url?: string;
   created_at?: string;
   updated_at?: string;
 };
@@ -776,7 +786,7 @@ export const userApi = {
     config: () => request<{ channel: PaymentChannel | null; channels: PaymentChannel[] }>("/user/api/payments/config", {}, { auth: "user" }),
     orders: (limit = 200) =>
       request<{ items: PaymentOrder[] }>(`/user/api/payments/orders?limit=${limit}`, {}, { auth: "user" }),
-    createTopup: (amount: string, channel_id?: string, mode?: "page" | "wap") =>
+    createTopup: (amount: string, channel_id?: string, mode?: "page" | "wap" | "native" | "h5") =>
       request<PaymentOrder>(
         "/user/api/payments/topups",
         { method: "POST", body: JSON.stringify({ amount, channel_id, mode }) },

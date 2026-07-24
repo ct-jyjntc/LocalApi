@@ -131,7 +131,7 @@ const topupSchema = z.object({
     z.coerce.number().positive(),
   ]),
   channel_id: z.string().trim().min(1).max(120).optional(),
-  mode: z.enum(["page", "wap"]).optional(),
+  mode: z.enum(["page", "wap", "native", "h5"]).optional(),
 });
 
 function paymentFailure(res: Response, error: unknown) {
@@ -404,7 +404,11 @@ userRouter.post("/payments/topups", async (req, res) => {
     return res.status(429).json({ error: "Too many payment orders", code: "payment_rate_limited" });
   }
   try {
-    const order = await createTopupOrder(user.id, body.amount, { channelId: body.channel_id, mode: body.mode });
+    const order = await createTopupOrder(user.id, body.amount, {
+      channelId: body.channel_id,
+      mode: body.mode,
+      clientIp: req.ip || req.socket.remoteAddress || undefined,
+    });
     return res.status(201).json(order);
   } catch (error) {
     return paymentFailure(res, error);

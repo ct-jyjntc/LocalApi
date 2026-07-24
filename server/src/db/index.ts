@@ -631,6 +631,15 @@ export function initDb() {
       'https://openapi.alipay.com/gateway.do', 1000000, 100, 100000, 0, 0,
       '{"alipay_public_key":"","seller_id":"","web_enabled":true,"wap_enabled":true}', ?, ?)`,
   ).run(paymentNow, paymentNow);
+  db.prepare(
+    `INSERT OR IGNORE INTO payment_channels (
+      id, provider, name, enabled, client_id, client_secret, gateway_url,
+      exchange_rate_micros, min_amount_minor, max_amount_minor,
+      fee_bps, fee_fixed_minor, config_json, created_at, updated_at
+    ) VALUES ('wechatpay', 'wechatpay', '微信支付', 0, '', '',
+      'https://api.mch.weixin.qq.com', 1000000, 100, 100000, 0, 0,
+      '{"wechat_app_id":"","wechat_serial_no":"","wechat_private_key":"","wechat_platform_certificate":"","wechat_platform_serial_no":"","wechat_native_enabled":true,"wechat_h5_enabled":true,"wechat_h5_type":"Wap","wechat_h5_app_name":"","wechat_h5_app_url":""}', ?, ?)`,
+  ).run(paymentNow, paymentNow);
 
   const paymentOrderCols = (
     db.prepare("PRAGMA table_info(payment_orders)").all() as Array<{ name: string }>

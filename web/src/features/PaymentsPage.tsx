@@ -56,8 +56,50 @@ export function PaymentsPage() {
   const [alipayMaxAmount, setAlipayMaxAmount] = useState("1000");
   const [alipayWebEnabled, setAlipayWebEnabled] = useState(true);
   const [alipayWapEnabled, setAlipayWapEnabled] = useState(true);
+  const [wechatEnabled, setWechatEnabled] = useState(false);
+  const [wechatName, setWechatName] = useState("微信支付");
+  const [wechatMchId, setWechatMchId] = useState("");
+  const [wechatApiV3Key, setWechatApiV3Key] = useState("");
+  const [wechatAppId, setWechatAppId] = useState("");
+  const [wechatSerialNo, setWechatSerialNo] = useState("");
+  const [wechatPrivateKey, setWechatPrivateKey] = useState("");
+  const [wechatPlatformCertificate, setWechatPlatformCertificate] = useState("");
+  const [wechatPlatformSerialNo, setWechatPlatformSerialNo] = useState("");
+  const [wechatGateway, setWechatGateway] = useState("https://api.mch.weixin.qq.com");
+  const [wechatExchangeRate, setWechatExchangeRate] = useState("1");
+  const [wechatMinAmount, setWechatMinAmount] = useState("1");
+  const [wechatMaxAmount, setWechatMaxAmount] = useState("1000");
+  const [wechatNativeEnabled, setWechatNativeEnabled] = useState(true);
+  const [wechatH5Enabled, setWechatH5Enabled] = useState(true);
+  const [wechatH5Type, setWechatH5Type] = useState("Wap");
+  const [wechatH5AppName, setWechatH5AppName] = useState("");
+  const [wechatH5AppUrl, setWechatH5AppUrl] = useState("");
   const [linuxDoOpen, setLinuxDoOpen] = useState(false);
   const [alipayOpen, setAlipayOpen] = useState(false);
+  const [wechatOpen, setWechatOpen] = useState(false);
+
+  const resetWechatForm = () => {
+    const wechat = channels.data?.items.find((item) => item.id === "wechatpay");
+    if (!wechat) return;
+    setWechatEnabled(wechat.enabled);
+    setWechatName(wechat.name);
+    setWechatMchId(wechat.client_id || "");
+    setWechatApiV3Key(wechat.client_secret || "");
+    setWechatAppId(wechat.wechat_app_id || "");
+    setWechatSerialNo(wechat.wechat_serial_no || "");
+    setWechatPrivateKey(wechat.wechat_private_key || "");
+    setWechatPlatformCertificate(wechat.wechat_platform_certificate || "");
+    setWechatPlatformSerialNo(wechat.wechat_platform_serial_no || "");
+    setWechatGateway(wechat.gateway_url || "https://api.mch.weixin.qq.com");
+    setWechatExchangeRate(String(wechat.exchange_rate_micros / 1_000_000));
+    setWechatMinAmount((wechat.min_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
+    setWechatMaxAmount((wechat.max_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
+    setWechatNativeEnabled(wechat.wechat_native_enabled !== false);
+    setWechatH5Enabled(wechat.wechat_h5_enabled !== false);
+    setWechatH5Type(wechat.wechat_h5_type || "Wap");
+    setWechatH5AppName(wechat.wechat_h5_app_name || "");
+    setWechatH5AppUrl(wechat.wechat_h5_app_url || "");
+  };
 
   useEffect(() => {
     if (!channel.data) return;
@@ -86,6 +128,12 @@ export function PaymentsPage() {
     setAlipayMaxAmount((alipay.max_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
     setAlipayWebEnabled(alipay.web_enabled !== false);
     setAlipayWapEnabled(alipay.wap_enabled !== false);
+  }, [channels.data]);
+
+  useEffect(() => {
+    resetWechatForm();
+    // resetWechatForm is intentionally derived only from the latest channel query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels.data]);
 
   const save = useMutation({
@@ -129,6 +177,34 @@ export function PaymentsPage() {
     },
     onError: (error: Error) => toast.error(error.message),
   });
+  const saveWechat = useMutation({
+    mutationFn: () => api.commercial.payments.updateChannelById("wechatpay", {
+      enabled: wechatEnabled,
+      name: wechatName.trim(),
+      client_id: wechatMchId.trim(),
+      client_secret: wechatApiV3Key.trim(),
+      gateway_url: wechatGateway.trim(),
+      wechat_app_id: wechatAppId.trim(),
+      wechat_serial_no: wechatSerialNo.trim(),
+      wechat_private_key: wechatPrivateKey.trim(),
+      wechat_platform_certificate: wechatPlatformCertificate.trim(),
+      wechat_platform_serial_no: wechatPlatformSerialNo.trim(),
+      wechat_native_enabled: wechatNativeEnabled,
+      wechat_h5_enabled: wechatH5Enabled,
+      wechat_h5_type: wechatH5Type as "Wap" | "iOS" | "Android",
+      wechat_h5_app_name: wechatH5AppName.trim(),
+      wechat_h5_app_url: wechatH5AppUrl.trim(),
+      exchange_rate_micros: Math.max(1, Math.round(Number(wechatExchangeRate) * 1_000_000)),
+      min_amount_minor: Math.max(1, Math.round(Number(wechatMinAmount) * 100)),
+      max_amount_minor: Math.max(1, Math.round(Number(wechatMaxAmount) * 100)),
+    }),
+    onSuccess: () => {
+      toast.success("微信支付渠道已保存");
+      qc.invalidateQueries({ queryKey: ["payment-channels"] });
+      setWechatOpen(false);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
   const sync = useMutation({
     mutationFn: (id: string) => api.commercial.payments.sync(id),
     onSuccess: () => {
@@ -139,8 +215,8 @@ export function PaymentsPage() {
   });
   const refund = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) => api.commercial.payments.refund(id, reason),
-    onSuccess: () => {
-      toast.success("退款已完成");
+    onSuccess: (order) => {
+      toast.success(order.status === "refunded" ? "退款已完成" : "退款申请已受理，等待渠道处理");
       qc.invalidateQueries({ queryKey: ["payment-orders"] });
     },
     onError: (error: Error) => toast.error(error.message),
@@ -178,9 +254,10 @@ export function PaymentsPage() {
     <div className="space-y-6">
       <PageHeader title="支付与订单" description="配置收款渠道、核对充值订单并处理全额退款。" />
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <ChannelSummary name={name} description="EasyPay · LDC" enabled={enabled} rate={`1 LDC = ${exchangeRate} 额度`} range={`${minAmount}–${maxAmount} LDC`} onEdit={() => setLinuxDoOpen(true)} />
         <ChannelSummary name={alipayName} description="电脑网站支付 + 手机网站支付" enabled={alipayEnabled} rate={`1 CNY = ${alipayExchangeRate} 额度`} range={`${alipayMinAmount}–${alipayMaxAmount} CNY`} onEdit={() => setAlipayOpen(true)} />
+        <ChannelSummary name={wechatName} description="Native 扫码 + H5 手机支付" enabled={wechatEnabled} rate={`1 CNY = ${wechatExchangeRate} 额度`} range={`${wechatMinAmount}–${wechatMaxAmount} CNY`} onEdit={() => setWechatOpen(true)} />
       </div>
 
       <Dialog open={linuxDoOpen} onOpenChange={setLinuxDoOpen}><DialogContent className="max-w-[680px]"><DialogHeader><DialogTitle>编辑 LINUX DO Credit</DialogTitle><DialogDescription>配置商户凭据、兑换比例和充值范围。</DialogDescription></DialogHeader><div className="mt-4 space-y-5">
@@ -272,6 +349,64 @@ export function PaymentsPage() {
         </DialogFooter>
       </div></DialogContent></Dialog>
 
+      <Dialog open={wechatOpen} onOpenChange={(open) => { if (!open) resetWechatForm(); setWechatOpen(open); }}><DialogContent className="max-w-[820px]"><DialogHeader><DialogTitle>编辑微信支付</DialogTitle><DialogDescription>配置微信支付 API v3 商户凭据、Native 扫码和 H5 支付。</DialogDescription></DialogHeader><div className="mt-4 flex flex-col gap-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-medium">微信支付</h2>
+              <Badge variant={wechatEnabled ? "default" : "secondary"}>{wechatEnabled ? "已启用" : "未启用"}</Badge>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">API v3 · RSA 签名 · AES-GCM 回调解密 · 支持查单与全额退款</p>
+          </div>
+          <div className="flex items-center gap-2 rounded-md bg-secondary/55 px-3 py-2">
+            <span className="text-xs text-muted-foreground">接受新订单</span>
+            <Switch checked={wechatEnabled} onCheckedChange={setWechatEnabled} aria-label="启用微信支付" />
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="渠道名称"><Input value={wechatName} onChange={(event) => setWechatName(event.target.value)} /></Field>
+          <Field label="微信支付 API 地址"><Input className="font-mono text-xs" value={wechatGateway} onChange={(event) => setWechatGateway(event.target.value)} /></Field>
+          <Field label="商户号（mchid）"><Input className="font-mono text-xs" value={wechatMchId} onChange={(event) => setWechatMchId(event.target.value)} /></Field>
+          <Field label="API v3 密钥（32 字节）"><Input className="font-mono text-xs" type="password" value={wechatApiV3Key} onChange={(event) => setWechatApiV3Key(event.target.value)} /></Field>
+          <Field label="应用 AppID"><Input className="font-mono text-xs" value={wechatAppId} onChange={(event) => setWechatAppId(event.target.value)} /></Field>
+          <Field label="商户证书序列号（serial_no）"><Input className="font-mono text-xs" value={wechatSerialNo} onChange={(event) => setWechatSerialNo(event.target.value)} /></Field>
+          <Field label="验签标识（公钥 ID / 平台证书序列号）"><Input className="font-mono text-xs" value={wechatPlatformSerialNo} onChange={(event) => setWechatPlatformSerialNo(event.target.value)} placeholder="PUB_KEY_ID_..." /></Field>
+          <Field label="1 CNY 兑换账户额度"><Input type="number" min="0.000001" step="0.01" value={wechatExchangeRate} onChange={(event) => setWechatExchangeRate(event.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-3 sm:col-span-2">
+            <Field label="最低充值 / CNY"><Input type="number" min="0.01" step="0.01" value={wechatMinAmount} onChange={(event) => setWechatMinAmount(event.target.value)} /></Field>
+            <Field label="最高充值 / CNY"><Input type="number" min="0.01" step="0.01" value={wechatMaxAmount} onChange={(event) => setWechatMaxAmount(event.target.value)} /></Field>
+          </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <Field label="商户 API 私钥（明文编辑，加密保存）"><Textarea className="min-h-40 resize-y font-mono text-[11px] leading-5" spellCheck={false} value={wechatPrivateKey} onChange={(event) => setWechatPrivateKey(event.target.value)} placeholder="-----BEGIN PRIVATE KEY-----" /></Field>
+          <Field label="微信支付验签公钥 / 平台证书（明文编辑，加密保存）"><Textarea className="min-h-40 resize-y font-mono text-[11px] leading-5" spellCheck={false} value={wechatPlatformCertificate} onChange={(event) => setWechatPlatformCertificate(event.target.value)} placeholder="-----BEGIN PUBLIC KEY-----" /></Field>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <SwitchRow label="电脑端 Native 扫码" description="PC 浏览器展示二维码，使用微信扫一扫完成付款" checked={wechatNativeEnabled} onCheckedChange={setWechatNativeEnabled} />
+          <SwitchRow label="手机端 H5 支付" description="手机浏览器跳转微信 H5 收银台" checked={wechatH5Enabled} onCheckedChange={setWechatH5Enabled} />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="H5 场景类型"><select className="h-8 rounded-md border border-input bg-secondary/55 px-3 text-xs outline-none focus:bg-background focus:ring-1 focus:ring-ring" value={wechatH5Type} onChange={(event) => setWechatH5Type(event.target.value)}><option value="Wap">Wap</option><option value="iOS">iOS</option><option value="Android">Android</option></select></Field>
+          <Field label="H5 应用名称（可选）"><Input value={wechatH5AppName} onChange={(event) => setWechatH5AppName(event.target.value)} /></Field>
+          <Field label="H5 应用网址（可选）"><Input className="font-mono text-xs" type="url" value={wechatH5AppUrl} onChange={(event) => setWechatH5AppUrl(event.target.value)} placeholder="默认使用公开域名" /></Field>
+        </div>
+
+        <div className="grid gap-2 rounded-md bg-secondary/40 p-3 text-[11px] sm:grid-cols-2">
+          <CallbackRow label="异步通知" value={channels.data?.items.find((item) => item.id === "wechatpay")?.notify_url || "请先在设置中填写公开域名"} onCopy={copy} />
+          <CallbackRow label="支付返回" value={channels.data?.items.find((item) => item.id === "wechatpay")?.return_url || "请先在设置中填写公开域名"} onCopy={copy} />
+        </div>
+        <p className="rounded-md bg-amber-500/10 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">启用前请确认公开域名已配置为 HTTPS，且微信商户平台已将上面的异步通知地址加入支付通知配置。</p>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => { resetWechatForm(); setWechatOpen(false); }}>取消</Button>
+          <Button size="sm" disabled={saveWechat.isPending || !wechatName.trim() || !wechatGateway.trim()} onClick={() => saveWechat.mutate()}>
+            <Save />{saveWechat.isPending ? "保存中" : "保存微信支付"}
+          </Button>
+        </DialogFooter>
+      </div></DialogContent></Dialog>
+
       <Card className="overflow-hidden">
         <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <div>
@@ -351,7 +486,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function OrderActions({ order, sync, refund, cancel, remove, busy }: { order: PaymentOrder; sync: () => void; refund: () => void; cancel: () => void; remove: () => void; busy: boolean }) {
-  return <div className="flex flex-wrap justify-end gap-1.5"><Button variant="secondary" size="sm" disabled={busy || !["pending", "paid"].includes(order.status)} onClick={sync}><RefreshCw />查单</Button>{order.status === "pending" ? <Button variant="ghost" size="sm" disabled={busy} onClick={cancel}><Ban />取消</Button> : null}<Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy || order.status !== "credited"} onClick={refund}><RotateCcw />退款</Button>{["failed", "expired", "cancelled"].includes(order.status) ? <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={remove}><Trash2 />删除</Button> : null}</div>;
+  return <div className="flex flex-wrap justify-end gap-1.5"><Button variant="secondary" size="sm" disabled={busy || !["pending", "paid", "refunding"].includes(order.status)} onClick={sync}><RefreshCw />查单</Button>{order.status === "pending" ? <Button variant="ghost" size="sm" disabled={busy} onClick={cancel}><Ban />取消</Button> : null}<Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy || order.status !== "credited"} onClick={refund}><RotateCcw />退款</Button>{["failed", "expired", "cancelled"].includes(order.status) ? <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={remove}><Trash2 />删除</Button> : null}</div>;
 }
 
 function SmallStat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

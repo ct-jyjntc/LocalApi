@@ -50,6 +50,7 @@ the connection pools and client-side timeouts when needed:
 | `CLIENT_KEEP_ALIVE_MS` | `65000` | Client keep-alive window |
 | `CLIENT_REQUEST_TIMEOUT_MS` | `120000` | Maximum time allowed to receive a request body |
 | `HOST` | `127.0.0.1` | Address used by the Node server |
+| `TRUST_PROXY` | `loopback` | Express proxy trust setting; the default safely accepts Nginx headers from localhost |
 | `CORS_ORIGINS` | empty | Comma-separated browser origins allowed to call the API |
 | `ADMIN_TOKEN` | random on first boot | Admin password injected at startup/deployment |
 | `SECRETS_KEY` | empty | Encryption key for provider credentials at rest |
@@ -89,6 +90,30 @@ curl -N http://127.0.0.1:5555/v1/chat/completions \
 | Max retries | `2` | Settings → Relay |
 
 Data is stored in `server/data/localapi.db`.
+
+### 微信支付（API v3）
+
+微信支付已经和支付宝共用同一套充值订单、异步回调、查单、幂等入账和全额退款流程。配置位置：管理员后台 → **支付订单** → **微信支付**。
+
+启用前准备好以下微信商户资料：
+
+| 后台字段 | 来源 |
+|---------|------|
+| 商户号（mchid） | 微信商户平台 → 账户中心 → 商户信息 |
+| 应用 AppID | 绑定到商户号的公众号/小程序/开放平台应用 AppID |
+| API v3 密钥 | 微信商户平台 → 账户中心 → API 安全 |
+| 商户证书序列号 | `openssl x509 -in apiclient_cert.pem -noout -serial`，去掉 `serial=` 前缀 |
+| 商户 API 私钥 | 下载的 `apiclient_key.pem` 全文 |
+| 微信支付验签公钥 / 平台证书 | 公钥模式填写 `pub_key.pem` 全文；平台证书模式填写平台证书 PEM 全文 |
+| 验签标识 | 公钥模式填写 `PUB_KEY_ID_...`；平台证书模式填写平台证书序列号 |
+
+还需要在后台“设置”中填写公开的 HTTPS 域名（或设置 `PUBLIC_BASE_URL`），并在微信商户平台配置支付通知地址：
+
+```text
+https://你的域名/payment/wechatpay/notify
+```
+
+电脑浏览器默认使用 Native 扫码支付，手机浏览器默认使用 H5 支付。H5 支付还需要在微信商户平台配置 H5 支付域名；如果只做电脑扫码，可以关闭“手机端 H5 支付”。生产环境请设置 `SECRETS_KEY`，商户私钥、API v3 密钥和验签公钥/证书会加密保存。建议先用小额订单验证“下单 → 回调 → 入账 → 查单 → 退款”完整链路。
 
 ## Project layout
 
