@@ -7,6 +7,7 @@ import type { ApiKey } from "../db";
 import { isModelAllowedForKey } from "../services/access";
 import { getModelPrice } from "../services/billing";
 import { maintainActiveSubscription } from "../services/plans";
+import { normalizeOpenAICompatBody } from "../utils/openai-compat";
 
 export const proxyRouter = Router();
 const MAX_BUFFERED_BODY = 20 * 1024 * 1024;
@@ -163,6 +164,9 @@ async function handleProxy(req: Request, res: Response) {
             try {
               body = JSON.parse(rawBody.toString("utf8"));
               body = ensureStreamUsage(body, path);
+              // Pi / OpenAI SDK → Z.ai / DeepSeek-style pool compatibility
+              // (developer role, boolean thinking, store, prompt_cache_*).
+              body = normalizeOpenAICompatBody(body, path).body;
               rawBody = Buffer.from(JSON.stringify(body));
             } catch {
               res.status(400).json({ error: { message: "Invalid JSON body", type: "invalid_request_error" } });
