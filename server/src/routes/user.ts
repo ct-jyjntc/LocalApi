@@ -16,7 +16,7 @@ import {
   upgradePlan,
 } from "../services/plans";
 import {
-  getWallet,
+  getPublicWallet,
   getUsageTotals,
   listDailyUsage,
   listModelPrices,
@@ -298,7 +298,7 @@ userRouter.get("/me", (req, res) => {
   const user = requestUser(req);
   return res.json({
     user: publicUser(user),
-    wallet: getWallet(user.id) ?? null,
+    wallet: getPublicWallet(user.id),
     tier: resolveUserTier(user.id),
     subscription: getActiveSubscription(user.id),
     prices: listModelPrices().filter((price) => price.enabled),
@@ -324,7 +324,7 @@ userRouter.get("/dashboard", (req, res) => {
   const user = requestUser(req);
   return res.json({
     user: publicUser(user),
-    wallet: getWallet(user.id) ?? null,
+    wallet: getPublicWallet(user.id),
     subscription: getActiveSubscription(user.id),
     totals: getUsageTotals(user.id),
     trend: listDailyUsage(user.id, 30),

@@ -1,7 +1,11 @@
 import { v4 as uuid } from "uuid";
 import { db, Plan, PlanOrder, Subscription } from "../db";
 import { nowIso } from "../utils/time";
-import { cleanupStaleReservations, releaseUserPendingReservations } from "./billing";
+import {
+  cleanupStaleReservations,
+  releaseUserPendingReservations,
+  spendWalletMicros,
+} from "./billing";
 
 export class PlanTransactionError extends Error {
   status: number;
@@ -225,10 +229,12 @@ function debitWallet(input: {
     throw new PlanTransactionError(402, "insufficient_balance", "Insufficient wallet balance");
   }
   if (input.amountMicros > 0) {
-    db.prepare(
-      `UPDATE wallet_accounts SET balance_micros = balance_micros - ?,
-        lifetime_spent_micros = lifetime_spent_micros + ?, updated_at = ? WHERE user_id = ?`,
-    ).run(input.amountMicros, input.amountMicros, input.now, input.userId);
+    // Spend hidden check-in credits first so using balance frees the points hold cap.
+    try {
+      spendWalletMicros(input.userId, input.amountMicros, input.now);
+    } catch {
+      throw new PlanTransactionError(402, "insufficient_balance", "Insufficient wallet balance");
+    }
   }
   const balance = (db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?").get(input.userId) as {
     balance_micros: number;
@@ -436,10 +442,7 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
     }
 
     if (plan.price_micros > 0) {
-      db.prepare(
-        `UPDATE wallet_accounts SET balance_micros = balance_micros - ?,
-          lifetime_spent_micros = lifetime_spent_micros + ?, updated_at = ? WHERE user_id = ?`,
-      ).run(plan.price_micros, plan.price_micros, now, row.user_id);
+      spendWalletMicros(row.user_id, plan.price_micros, now);
     }
     const updatedWallet = db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?")
       .get(row.user_id) as { balance_micros: number };

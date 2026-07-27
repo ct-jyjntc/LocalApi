@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { v4 as uuid } from "uuid";
 import { db, getSetting, setSetting } from "../db";
 import { nowIso } from "../utils/time";
-import { getWallet } from "./billing";
+import { creditCheckinWallet, getPublicWallet, getWallet } from "./billing";
 
 /** Store points as integer cents (2 decimal places). 1.23 points => 123. */
 export const POINTS_SCALE = 100;
@@ -100,7 +100,10 @@ export function getCheckinSettings() {
     points_max: max,
     points_min_cents: toCents(min),
     points_max_cents: toCents(max),
-    /** Max points a user may hold; 0 means no limit. */
+    /**
+     * Max held points-equivalent: unexchanged points + unspent check-in wallet credits
+     * (converted back to points). 0 means no limit.
+     */
     balance_cap: balanceCap,
     balance_cap_cents: toCents(balanceCap),
     /** Balance credits granted per 1 point (display units). */
@@ -224,9 +227,35 @@ function randomPointsCents(minCents: number, maxCents: number) {
   return crypto.randomInt(lo, hi + 1);
 }
 
+/**
+ * Held points-equivalent for the anti-hoard cap:
+ * unexchanged points + unspent wallet credits that came from point exchange
+ * (converted back to points using the current exchange rate).
+ * Users only see a single wallet balance; the check-in pool is hidden.
+ */
+export function getHeldPointsCents(userId: string, settings = getCheckinSettings()) {
+  const account = getPointsAccount(userId);
+  const wallet = getWallet(userId);
+  const checkinWalletMicros = Math.max(0, Number(wallet?.checkin_balance_micros || 0));
+  let fromWalletCents = 0;
+  if (settings.exchange_micros > 0 && checkinWalletMicros > 0) {
+    fromWalletCents = Math.floor((checkinWalletMicros * POINTS_SCALE) / settings.exchange_micros);
+  }
+  return {
+    points_cents: account.balance_cents,
+    from_wallet_cents: fromWalletCents,
+    held_cents: account.balance_cents + fromWalletCents,
+    checkin_balance_micros: checkinWalletMicros,
+  };
+}
+
+const CAP_REACHED_MESSAGE =
+  "积分以及积分兑换成余额的持有已达上限，请将积分兑换成余额并使用掉后再进行签到";
+
 export function getCheckinStatus(userId: string) {
   const settings = getCheckinSettings();
   const account = getPointsAccount(userId);
+  const held = getHeldPointsCents(userId, settings);
   const today = todayKey();
   const todayRecord = db
     .prepare("SELECT * FROM checkin_records WHERE user_id = ? AND checkin_date = ?")
@@ -234,8 +263,7 @@ export function getCheckinStatus(userId: string) {
     | { id: string; user_id: string; checkin_date: string; points: number; created_at: string }
     | undefined;
 
-  const atCap =
-    settings.balance_cap_cents > 0 && account.balance_cents >= settings.balance_cap_cents;
+  const atCap = settings.balance_cap_cents > 0 && held.held_cents >= settings.balance_cap_cents;
   return {
     settings: {
       enabled: settings.enabled,
@@ -248,6 +276,8 @@ export function getCheckinStatus(userId: string) {
       balance: account.balance,
       lifetime_earned: account.lifetime_earned,
       lifetime_spent: account.lifetime_spent,
+      held: fromCents(held.held_cents),
+      held_from_wallet: fromCents(held.from_wallet_cents),
     },
     today,
     checked_in_today: Boolean(todayRecord),
@@ -256,7 +286,8 @@ export function getCheckinStatus(userId: string) {
     can_checkin: settings.enabled && !todayRecord && !atCap,
     recent_checkins: listCheckins(userId, 14),
     recent_ledger: listPointsLedger(userId, 20),
-    wallet: getWallet(userId) ?? null,
+    // Users only see a single total balance (check-in pool is hidden).
+    wallet: getPublicWallet(userId),
   };
 }
 
@@ -271,24 +302,17 @@ export function performCheckin(userId: string) {
 
   const today = todayKey();
   let account = getPointsAccount(userId);
-  if (settings.balance_cap_cents > 0 && account.balance_cents >= settings.balance_cap_cents) {
-    throw new CheckinError(
-      403,
-      "points_cap_reached",
-      `Points balance has reached the maximum (${settings.balance_cap.toFixed(2)}). Exchange some points before checking in again.`,
-    );
+  let held = getHeldPointsCents(userId, settings);
+  if (settings.balance_cap_cents > 0 && held.held_cents >= settings.balance_cap_cents) {
+    throw new CheckinError(403, "points_cap_reached", CAP_REACHED_MESSAGE);
   }
 
   let pointsCents = randomPointsCents(settings.points_min_cents, settings.points_max_cents);
-  // Do not push the balance over the configured hold cap.
+  // Room is against the combined hold (points + unspent check-in wallet credits).
   if (settings.balance_cap_cents > 0) {
-    const room = settings.balance_cap_cents - account.balance_cents;
+    const room = settings.balance_cap_cents - held.held_cents;
     if (room <= 0) {
-      throw new CheckinError(
-        403,
-        "points_cap_reached",
-        `Points balance has reached the maximum (${settings.balance_cap.toFixed(2)}). Exchange some points before checking in again.`,
-      );
+      throw new CheckinError(403, "points_cap_reached", CAP_REACHED_MESSAGE);
     }
     pointsCents = Math.min(pointsCents, room);
   }
@@ -305,25 +329,14 @@ export function performCheckin(userId: string) {
     }
 
     ensurePointsAccount(userId);
-    // Re-check cap inside transaction against latest balance.
-    const latest = db.prepare("SELECT balance FROM points_accounts WHERE user_id = ?").get(userId) as {
-      balance: number;
-    };
-    if (settings.balance_cap_cents > 0 && latest.balance >= settings.balance_cap_cents) {
-      throw new CheckinError(
-        403,
-        "points_cap_reached",
-        `Points balance has reached the maximum (${settings.balance_cap.toFixed(2)}). Exchange some points before checking in again.`,
-      );
+    held = getHeldPointsCents(userId, settings);
+    if (settings.balance_cap_cents > 0 && held.held_cents >= settings.balance_cap_cents) {
+      throw new CheckinError(403, "points_cap_reached", CAP_REACHED_MESSAGE);
     }
     if (settings.balance_cap_cents > 0) {
-      pointsCents = Math.min(pointsCents, settings.balance_cap_cents - latest.balance);
+      pointsCents = Math.min(pointsCents, settings.balance_cap_cents - held.held_cents);
       if (pointsCents <= 0) {
-        throw new CheckinError(
-          403,
-          "points_cap_reached",
-          `Points balance has reached the maximum (${settings.balance_cap.toFixed(2)}). Exchange some points before checking in again.`,
-        );
+        throw new CheckinError(403, "points_cap_reached", CAP_REACHED_MESSAGE);
       }
     }
 
@@ -477,18 +490,10 @@ export function exchangePoints(userId: string, points: number) {
       now,
     );
 
-    db.prepare(
-      `INSERT OR IGNORE INTO wallet_accounts (user_id, balance_micros, reserved_micros, lifetime_spent_micros, updated_at)
-       VALUES (?, 0, 0, 0, ?)`,
-    ).run(userId, now);
-    db.prepare(
-      "UPDATE wallet_accounts SET balance_micros = balance_micros + ?, updated_at = ? WHERE user_id = ?",
-    ).run(creditMicros, now, userId);
-    const balance = (
-      db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?").get(userId) as {
-        balance_micros: number;
-      }
-    ).balance_micros;
+    // Credits go into the hidden check-in pool (still part of total balance_micros).
+    // Held points-equivalent is unchanged by exchange alone; spending the balance frees the cap.
+    wallet = creditCheckinWallet(userId, creditMicros, now) ?? getWallet(userId);
+    const balanceAfter = wallet?.balance_micros ?? 0;
     db.prepare(
       `INSERT INTO wallet_ledger (id, user_id, type, amount_micros, balance_after_micros, description, reference_type, reference_id, created_at)
        VALUES (?, ?, 'points_exchange', ?, ?, ?, 'points_exchange', ?, ?)`,
@@ -496,12 +501,11 @@ export function exchangePoints(userId: string, points: number) {
       uuid(),
       userId,
       creditMicros,
-      balance,
+      balanceAfter,
       `Points exchange: ${formatPoints(amountCents)} points`,
       exchangeId,
       now,
     );
-    wallet = getWallet(userId);
   })();
 
   return {
@@ -512,7 +516,7 @@ export function exchangePoints(userId: string, points: number) {
       lifetime_earned: account.lifetime_earned,
       lifetime_spent: account.lifetime_spent,
     },
-    wallet,
+    wallet: getPublicWallet(userId),
     status: getCheckinStatus(userId),
   };
 }

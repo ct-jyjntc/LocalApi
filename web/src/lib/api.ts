@@ -542,7 +542,13 @@ export type CheckinStatus = {
     balance_cap: number;
     exchange_rate: number;
   };
-  points: { balance: number; lifetime_earned: number; lifetime_spent: number };
+  points: {
+    balance: number;
+    lifetime_earned: number;
+    lifetime_spent: number;
+    held?: number;
+    held_from_wallet?: number;
+  };
   today: string;
   checked_in_today: boolean;
   today_points: number | null;

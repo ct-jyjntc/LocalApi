@@ -868,12 +868,28 @@ function completeRefundInTransaction(
   if (!wallet || wallet.balance_micros < refund.debit_micros) {
     throw new PaymentError(409, "insufficient_refundable_balance", "The credited balance is no longer available for refund");
   }
+  // Prefer non-checkin balance for payment refunds; clamp check-in pool to remaining total.
+  const fullWallet = db
+    .prepare("SELECT balance_micros, checkin_balance_micros FROM wallet_accounts WHERE user_id = ?")
+    .get(order.user_id) as { balance_micros: number; checkin_balance_micros: number };
+  const checkinBal = Math.max(0, Number(fullWallet.checkin_balance_micros || 0));
+  const regularBal = Math.max(0, fullWallet.balance_micros - checkinBal);
+  const fromRegular = Math.min(refund.debit_micros, regularBal);
+  const fromCheckin = refund.debit_micros - fromRegular;
   db.prepare(
     `UPDATE wallet_accounts SET balance_micros = balance_micros - ?,
+      checkin_balance_micros = MAX(0, checkin_balance_micros - ?),
       reserved_micros = MAX(0, reserved_micros - ?),
       lifetime_topup_micros = MAX(0, lifetime_topup_micros - ?),
       updated_at = ? WHERE user_id = ?`,
-  ).run(refund.debit_micros, refund.debit_micros, refund.debit_micros, completedAt, order.user_id);
+  ).run(
+    refund.debit_micros,
+    fromCheckin,
+    refund.debit_micros,
+    refund.debit_micros,
+    completedAt,
+    order.user_id,
+  );
   const nextWallet = db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?").get(order.user_id) as {
     balance_micros: number;
   };

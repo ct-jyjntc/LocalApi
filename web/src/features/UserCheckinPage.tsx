@@ -126,11 +126,11 @@ export function UserCheckinPage() {
                 ? (zh ? "管理员已关闭签到。" : "Check-in is disabled by admin.")
                 : data?.at_balance_cap
                   ? (zh
-                      ? `积分已达持有上限 ${formatPts(settings.balance_cap)}，请先兑换后再签到。`
-                      : `Points reached the hold cap ${formatPts(settings.balance_cap)}. Exchange some points first.`)
+                      ? `积分以及积分兑换成余额的持有已达上限（${formatPts(settings.balance_cap)}）。请将积分兑换成余额并使用掉后再进行签到。`
+                      : `Points + unspent check-in balance reached the hold cap (${formatPts(settings.balance_cap)}). Spend that wallet balance, then check in again.`)
                   : (zh
                       ? `每次随机 ${formatPts(settings.points_min)}–${formatPts(settings.points_max)} 积分${settings.balance_cap > 0 ? ` · 持有上限 ${formatPts(settings.balance_cap)}` : ""}`
-                      : `Random ${formatPts(settings.points_min)}–${formatPts(settings.points_max)} points${settings.balance_cap > 0 ? ` · cap ${formatPts(settings.balance_cap)}` : ""}`)}
+                      : `Random ${formatPts(settings.points_min)}–${formatPts(settings.points_max)} points${settings.balance_cap > 0 ? ` · hold cap ${formatPts(settings.balance_cap)}` : ""}`)}
             </p>
             <Button
               className="w-full"
@@ -143,7 +143,7 @@ export function UserCheckinPage() {
                 : data?.checked_in_today
                   ? (zh ? "今日已签到" : "Already checked in")
                   : data?.at_balance_cap
-                    ? (zh ? "已达积分上限" : "Points cap reached")
+                    ? (zh ? "持有已达上限" : "Hold cap reached")
                     : (zh ? "立即签到" : "Check in now")}
             </Button>
           </CardContent>

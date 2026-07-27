@@ -353,10 +353,12 @@ export function settleUsage(
       );
     }
     db.prepare(
-      `UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?),
-       balance_micros = balance_micros - ?, lifetime_spent_micros = lifetime_spent_micros + ?, updated_at = ?
+      `UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ?
        WHERE user_id = ?`,
-    ).run(reservation.reservedWallet, walletCost, walletCost, nowIso(), reservation.userId);
+    ).run(reservation.reservedWallet, nowIso(), reservation.userId);
+    if (walletCost > 0) {
+      spendWalletMicros(reservation.userId, walletCost);
+    }
 
     if (walletCost > 0) {
       const wallet = db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?").get(
@@ -404,15 +406,83 @@ export function settleUsage(
   return { usageId: reservation.usageId, costMicros: cost, planCostMicros: planCost, walletCostMicros: walletCost };
 }
 
+export type WalletRow = {
+  user_id: string;
+  balance_micros: number;
+  checkin_balance_micros: number;
+  reserved_micros: number;
+  lifetime_spent_micros: number;
+  lifetime_topup_micros: number;
+  updated_at: string;
+};
+
+export function ensureWalletAccount(userId: string) {
+  db.prepare(
+    `INSERT OR IGNORE INTO wallet_accounts (
+      user_id, balance_micros, checkin_balance_micros, reserved_micros,
+      lifetime_spent_micros, lifetime_topup_micros, updated_at
+     ) VALUES (?, 0, 0, 0, 0, 0, ?)`,
+  ).run(userId, nowIso());
+}
+
+/**
+ * Spend from total balance, reducing the hidden check-in pool first so spending
+ * frees room under the points hold cap. Users only ever see balance_micros total.
+ */
+export function spendWalletMicros(userId: string, amountMicros: number, now = nowIso()) {
+  const amount = Math.max(0, Math.trunc(amountMicros));
+  if (amount <= 0) return getWallet(userId)!;
+  ensureWalletAccount(userId);
+  const wallet = db
+    .prepare(
+      "SELECT balance_micros, checkin_balance_micros, reserved_micros FROM wallet_accounts WHERE user_id = ?",
+    )
+    .get(userId) as {
+    balance_micros: number;
+    checkin_balance_micros: number;
+    reserved_micros: number;
+  };
+  const available = wallet.balance_micros - wallet.reserved_micros;
+  if (available < amount) {
+    throw new BillingError(402, "insufficient_balance", "Insufficient account balance");
+  }
+  const fromCheckin = Math.min(amount, Math.max(0, wallet.checkin_balance_micros));
+  db.prepare(
+    `UPDATE wallet_accounts
+     SET balance_micros = balance_micros - ?,
+         checkin_balance_micros = MAX(0, checkin_balance_micros - ?),
+         lifetime_spent_micros = lifetime_spent_micros + ?,
+         updated_at = ?
+     WHERE user_id = ?`,
+  ).run(amount, fromCheckin, amount, now, userId);
+  return getWallet(userId)!;
+}
+
+/** Credit wallet from check-in point exchange (counts toward hold cap until spent). */
+export function creditCheckinWallet(userId: string, amountMicros: number, now = nowIso()) {
+  const amount = Math.max(0, Math.trunc(amountMicros));
+  if (amount <= 0) return getWallet(userId);
+  ensureWalletAccount(userId);
+  db.prepare(
+    `UPDATE wallet_accounts
+     SET balance_micros = balance_micros + ?,
+         checkin_balance_micros = checkin_balance_micros + ?,
+         updated_at = ?
+     WHERE user_id = ?`,
+  ).run(amount, amount, now, userId);
+  return getWallet(userId)!;
+}
+
 export function adjustWallet(userId: string, amountMicros: number, description: string) {
   let balance = 0;
   db.transaction(() => {
-    db.prepare(
-      `INSERT OR IGNORE INTO wallet_accounts (user_id, balance_micros, reserved_micros, lifetime_spent_micros, updated_at)
-       VALUES (?, 0, 0, 0, ?)`,
-    ).run(userId, nowIso());
-    db.prepare("UPDATE wallet_accounts SET balance_micros = balance_micros + ?, updated_at = ? WHERE user_id = ?")
-      .run(amountMicros, nowIso(), userId);
+    ensureWalletAccount(userId);
+    if (amountMicros >= 0) {
+      db.prepare("UPDATE wallet_accounts SET balance_micros = balance_micros + ?, updated_at = ? WHERE user_id = ?")
+        .run(amountMicros, nowIso(), userId);
+    } else {
+      spendWalletMicros(userId, -amountMicros);
+    }
     balance = (db.prepare("SELECT balance_micros FROM wallet_accounts WHERE user_id = ?").get(userId) as {
       balance_micros: number;
     }).balance_micros;
@@ -425,9 +495,28 @@ export function adjustWallet(userId: string, amountMicros: number, description: 
 }
 
 export function getWallet(userId: string) {
-  return db.prepare("SELECT * FROM wallet_accounts WHERE user_id = ?").get(userId) as
-    | { user_id: string; balance_micros: number; reserved_micros: number; lifetime_spent_micros: number; lifetime_topup_micros: number; updated_at: string }
+  const row = db.prepare("SELECT * FROM wallet_accounts WHERE user_id = ?").get(userId) as
+    | (WalletRow & { checkin_balance_micros?: number })
     | undefined;
+  if (!row) return undefined;
+  return {
+    ...row,
+    checkin_balance_micros: Number(row.checkin_balance_micros || 0),
+  } as WalletRow;
+}
+
+/** Public wallet view: single total balance, no check-in pool split. */
+export function getPublicWallet(userId: string) {
+  const wallet = getWallet(userId);
+  if (!wallet) return null;
+  return {
+    user_id: wallet.user_id,
+    balance_micros: wallet.balance_micros,
+    reserved_micros: wallet.reserved_micros,
+    lifetime_spent_micros: wallet.lifetime_spent_micros,
+    lifetime_topup_micros: wallet.lifetime_topup_micros,
+    updated_at: wallet.updated_at,
+  };
 }
 
 export function listWalletLedger(userId: string, limit = 200) {

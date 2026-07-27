@@ -81,6 +81,8 @@ export function initDb() {
     CREATE TABLE IF NOT EXISTS wallet_accounts (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       balance_micros INTEGER NOT NULL DEFAULT 0,
+      -- Hidden pool from check-in point exchange; counts toward points hold cap until spent.
+      checkin_balance_micros INTEGER NOT NULL DEFAULT 0,
       reserved_micros INTEGER NOT NULL DEFAULT 0,
       lifetime_spent_micros INTEGER NOT NULL DEFAULT 0,
       lifetime_topup_micros INTEGER NOT NULL DEFAULT 0,
@@ -622,6 +624,9 @@ export function initDb() {
   const walletCols = (
     db.prepare("PRAGMA table_info(wallet_accounts)").all() as Array<{ name: string }>
   ).map((c) => c.name);
+  if (!walletCols.includes("checkin_balance_micros")) {
+    db.exec("ALTER TABLE wallet_accounts ADD COLUMN checkin_balance_micros INTEGER NOT NULL DEFAULT 0");
+  }
   if (!walletCols.includes("lifetime_topup_micros")) {
     db.exec("ALTER TABLE wallet_accounts ADD COLUMN lifetime_topup_micros INTEGER NOT NULL DEFAULT 0");
     db.exec(
