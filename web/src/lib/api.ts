@@ -121,6 +121,7 @@ export type Provider = {
   key_count?: number;
   has_api_key: boolean;
   models: string[];
+  model_mappings?: Record<string, string>;
   enabled: boolean;
   timeout_ms: number;
   created_at: string;
@@ -132,10 +133,18 @@ export type ProviderTestResult = {
   provider_id: string;
   provider_name: string;
   model: string;
+  upstream_model?: string;
   path: string;
   status_code: number | null;
   attempts: number;
   max_retries: number;
+  normal_max_retries?: number;
+  other_max_retries?: number;
+  normal_retries_used?: number;
+  other_retries_used?: number;
+  class_max_attempts?: number;
+  retry_class?: "normal" | "other" | "none";
+  stop_reason?: "ok" | "normal_budget" | "other_budget" | "non_retryable" | "error";
   latency_ms: number;
   error: string | null;
   response_preview: string;
@@ -184,6 +193,9 @@ export type LogRow = {
   usage_estimated?: boolean;
   stream: boolean;
   user_id?: string | null;
+  username?: string | null;
+  display_name?: string | null;
+  user_label?: string | null;
   usage_id?: string | null;
   cost_micros?: number;
 };
@@ -206,8 +218,15 @@ export type UserRow = {
   subscription_id?: string | null;
   plan_id?: string | null;
   plan_name?: string | null;
+  period_start?: string | null;
   period_end?: string | null;
   remaining_credits_micros?: number | null;
+  plan_reserved_micros?: number | null;
+  plan_included_credits_micros?: number | null;
+  subscription_status?: string | null;
+  points_balance?: number;
+  points_lifetime_earned?: number;
+  points_lifetime_spent?: number;
   lifetime_topup_micros?: number;
   tier?: TierSummary;
 };
@@ -480,6 +499,7 @@ export type Settings = {
   admin_token?: string;
   port: string;
   max_retries?: number;
+  other_max_retries?: number;
   retry_delay_ms?: number;
   cache_enabled: boolean;
   cache_ttl_seconds: number;
@@ -491,12 +511,53 @@ export type Settings = {
   public_base_url: string;
   admin_entry_path: string;
   registration_enabled: boolean;
+  password_login_enabled: boolean;
+  linuxdo_registration_enabled: boolean;
+  checkin_enabled: boolean;
+  checkin_points_min: number;
+  checkin_points_max: number;
+  points_balance_cap: number;
+  points_exchange_rate: number;
+  linuxdo_login_enabled: boolean;
+  linuxdo_client_id: string;
+  linuxdo_client_secret_set: boolean;
+  linuxdo_relay_url: string;
+  linuxdo_relay_secret_set: boolean;
+  linuxdo_configured: boolean;
+  linuxdo_callback_url: string;
+  linuxdo_authorize_ready: boolean;
 };
 
 export type Branding = {
   brand_name: string;
   company_name: string;
   public_base_url: string;
+};
+
+export type CheckinStatus = {
+  settings: {
+    enabled: boolean;
+    points_min: number;
+    points_max: number;
+    balance_cap: number;
+    exchange_rate: number;
+  };
+  points: { balance: number; lifetime_earned: number; lifetime_spent: number };
+  today: string;
+  checked_in_today: boolean;
+  today_points: number | null;
+  at_balance_cap?: boolean;
+  can_checkin?: boolean;
+  recent_checkins: Array<{ id: string; checkin_date: string; points: number; created_at: string }>;
+  recent_ledger: Array<{
+    id: string;
+    type: string;
+    amount: number;
+    balance_after: number;
+    description: string;
+    created_at: string;
+  }>;
+  wallet: Wallet | null;
 };
 
 export const api = {
@@ -587,12 +648,25 @@ export const api = {
       cache_enabled?: boolean;
       port?: string | number;
       max_retries?: number;
+      other_max_retries?: number;
       retry_delay_ms?: number;
       brand_name?: string;
       company_name?: string;
       public_base_url?: string;
       admin_entry_path?: string;
       registration_enabled?: boolean;
+      password_login_enabled?: boolean;
+      linuxdo_registration_enabled?: boolean;
+      checkin_enabled?: boolean;
+      checkin_points_min?: number;
+      checkin_points_max?: number;
+      points_balance_cap?: number;
+      points_exchange_rate?: number;
+      linuxdo_login_enabled?: boolean;
+      linuxdo_client_id?: string;
+      linuxdo_client_secret?: string;
+      linuxdo_relay_url?: string;
+      linuxdo_relay_secret?: string;
     }) =>
       request<Settings>("/admin/api/settings", {
         method: "PATCH",
@@ -625,6 +699,16 @@ export const api = {
           method: "POST",
           body: JSON.stringify({ amount_micros, description }),
         }),
+      adjustPoints: (id: string, points: number, description: string) =>
+        request<{ points: { balance: number; lifetime_earned: number; lifetime_spent: number } }>(
+          `/admin/api/commercial/users/${id}/points`,
+          { method: "POST", body: JSON.stringify({ points, description }) },
+        ),
+      adjustPlanCredits: (id: string, amount_micros: number, description: string) =>
+        request<{ subscription: SubscriptionRow | null; amount_micros: number }>(
+          `/admin/api/commercial/users/${id}/subscription/credits`,
+          { method: "POST", body: JSON.stringify({ amount_micros, description }) },
+        ),
       assignPlan: (id: string, plan_id: string, auto_renew = true) =>
         request<SubscriptionRow>(`/admin/api/commercial/users/${id}/subscription`, {
           method: "POST",
@@ -731,7 +815,16 @@ export const userApi = {
     create: (subject: string, body: string, attachments: FeedbackAttachment[]) => request<FeedbackThread>("/user/api/feedback", { method: "POST", body: JSON.stringify({ subject, body, attachments }) }, { auth: "user" }),
     reply: (id: string, body: string, attachments: FeedbackAttachment[]) => request<{ messages: FeedbackMessage[] }>(`/user/api/feedback/${id}/replies`, { method: "POST", body: JSON.stringify({ body, attachments }) }, { auth: "user" }),
   },
-  config: () => request<{ registration_enabled: boolean; linuxdo_enabled: boolean; captcha_enabled: boolean }>("/user/api/config", {}, { auth: false }),
+  config: () =>
+    request<{
+      registration_enabled: boolean;
+      password_registration_enabled?: boolean;
+      password_login_enabled?: boolean;
+      linuxdo_enabled: boolean;
+      linuxdo_login_enabled?: boolean;
+      linuxdo_registration_enabled?: boolean;
+      captcha_enabled: boolean;
+    }>("/user/api/config", {}, { auth: false }),
   captcha: () =>
     request<{ captcha_id: string; image: string; expires_in: number }>("/user/api/captcha", {}, { auth: false }),
   login: (username: string, password: string) =>
@@ -776,6 +869,23 @@ export const userApi = {
       { auth: "user" },
     ),
   usage: (limit = 200) => request<{ items: UsageRow[] }>(`/user/api/usage?limit=${limit}`, {}, { auth: "user" }),
+  checkin: {
+    status: () => request<CheckinStatus>("/user/api/checkin", {}, { auth: "user" }),
+    perform: () =>
+      request<{
+        record: { id: string; checkin_date: string; points: number; created_at: string };
+        points: { balance: number; lifetime_earned: number; lifetime_spent: number };
+        status: CheckinStatus;
+      }>("/user/api/checkin", { method: "POST" }, { auth: "user" }),
+    exchange: (points: number) =>
+      request<{
+        points_spent: number;
+        balance_credited_micros: number;
+        points: { balance: number; lifetime_earned: number; lifetime_spent: number };
+        wallet: Wallet | null;
+        status: CheckinStatus;
+      }>("/user/api/points/exchange", { method: "POST", body: JSON.stringify({ points }) }, { auth: "user" }),
+  },
   commerce: {
     orders: (limit = 200) =>
       request<{ items: CommerceOrder[] }>(`/user/api/commerce/orders?limit=${limit}`, {}, { auth: "user" }),

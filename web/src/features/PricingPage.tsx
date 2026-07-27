@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { creditsToMicros, formatCredits } from "@/lib/utils";
+import { creditsToMicros, formatCredits, formatCreditsInput } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
 const emptyForm = { model: "", input: "0", output: "0", cacheRead: "0", cacheWrite: "0", enabled: true };
@@ -48,10 +48,10 @@ export function PricingPage() {
 
   const edit = (price: ModelPrice) => { setForm({
     model: price.model,
-    input: formatCredits(price.input_price_micros),
-    output: formatCredits(price.output_price_micros),
-    cacheRead: formatCredits(price.cache_read_price_micros),
-    cacheWrite: formatCredits(price.cache_write_price_micros),
+    input: formatCreditsInput(price.input_price_micros),
+    output: formatCreditsInput(price.output_price_micros),
+    cacheRead: formatCreditsInput(price.cache_read_price_micros),
+    cacheWrite: formatCreditsInput(price.cache_write_price_micros),
     enabled: price.enabled,
   }); setFormOpen(true); };
 

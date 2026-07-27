@@ -850,3 +850,51 @@ export function cancelSubscription(userId: string) {
   })();
   return cancelled;
 }
+
+/**
+ * Adjust active subscription remaining credits.
+ * amountMicros may be negative. Result is clamped to >= 0 and never below reserved_micros.
+ */
+export function adjustSubscriptionCredits(
+  userId: string,
+  amountMicros: number,
+  description = "Admin plan credit adjustment",
+) {
+  const delta = Math.trunc(Number(amountMicros) || 0);
+  if (!Number.isFinite(delta) || delta === 0) {
+    throw new PlanTransactionError(400, "invalid_amount", "Credit adjustment must be a non-zero integer micros amount");
+  }
+
+  let subscription: ActiveSubscription | null = null;
+  db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT id, remaining_credits_micros, reserved_micros
+         FROM subscriptions WHERE user_id = ? AND status = 'active'
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(userId) as
+      | { id: string; remaining_credits_micros: number; reserved_micros: number }
+      | undefined;
+    if (!current) {
+      throw new PlanTransactionError(404, "no_active_plan", "User has no active plan subscription");
+    }
+
+    const floor = Math.max(0, Number(current.reserved_micros) || 0);
+    const next = Math.max(floor, Number(current.remaining_credits_micros) + delta);
+    db.prepare(
+      `UPDATE subscriptions
+       SET remaining_credits_micros = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(next, nowIso(), current.id);
+
+    // Keep a lightweight audit trail in plan_orders metadata is overkill; admin audit log covers it.
+    subscription = getActiveSubscription(userId);
+  })();
+
+  return {
+    subscription,
+    description: String(description || "").trim() || "Admin plan credit adjustment",
+    amount_micros: delta,
+  };
+}

@@ -72,11 +72,12 @@ export function LogsPage() {
           <span className="w-3.5 shrink-0" />
           <span className="w-10 shrink-0">{t("common.method")}</span>
           <span className="min-w-0 flex-1">{t("common.path")} / {t("common.model")}</span>
-          <span className="hidden w-28 shrink-0 md:block">{t("logs.channel")}</span>
+          <span className="hidden w-28 shrink-0 md:block">{t("logs.user")}</span>
+          <span className="hidden w-28 shrink-0 lg:block">{t("logs.channel")}</span>
           <span className="hidden w-44 shrink-0 text-right sm:block">{t("logs.tokens")}</span>
           <span className="w-10 shrink-0 text-right">HTTP</span>
           <span className="hidden w-14 shrink-0 text-right md:block">{t("common.latency")}</span>
-          <span className="hidden w-36 shrink-0 text-right lg:block">{t("common.time")}</span>
+          <span className="hidden w-36 shrink-0 text-right xl:block">{t("common.time")}</span>
         </div>
         {!items.length ? (
           <EmptyState>
@@ -147,7 +148,14 @@ function LogItem({
           ) : null}
         </span>
 
-        <span className="hidden w-28 shrink-0 truncate text-[11px] text-muted-foreground md:inline" title={log.provider_name || undefined}>
+        <span
+          className="hidden w-28 shrink-0 truncate text-[11px] text-muted-foreground md:inline"
+          title={userTitle(log)}
+        >
+          {userLabel(log)}
+        </span>
+
+        <span className="hidden w-28 shrink-0 truncate text-[11px] text-muted-foreground lg:inline" title={log.provider_name || undefined}>
           {log.provider_name || "—"}
         </span>
 
@@ -177,7 +185,7 @@ function LogItem({
           {formatMs(log.latency_ms)}
         </span>
         {log.stream ? <Badge className="hidden sm:inline-flex" variant="outline">{t("logs.stream")}</Badge> : null}
-        <span className="hidden w-36 shrink-0 text-right text-[11px] text-muted-foreground lg:inline">
+        <span className="hidden w-36 shrink-0 text-right text-[11px] text-muted-foreground xl:inline">
           {shortTime(log.created_at)}
         </span>
       </button>
@@ -186,6 +194,7 @@ function LogItem({
       <div className="space-y-1 px-3 pb-2 text-[11px] tabular-nums text-muted-foreground sm:hidden">
         <p className="break-all font-mono text-foreground/80">{log.model || "—"}</p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>{t("logs.user")} {userLabel(log)}</span>
           <span>{t("logs.channel")} {log.provider_name || "—"}</span>
           {log.stream ? <Badge variant="outline">{t("logs.stream")}</Badge> : null}
           <span>{t("logs.input")} {inputTok}</span>
@@ -198,6 +207,14 @@ function LogItem({
       {open ? (
         <div className="min-w-0 space-y-3 border-t border-border/30 bg-secondary/20 px-3 py-3 sm:px-4">
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <span>{t("logs.user")} {userLabel(fullLog)}</span>
+            {fullLog.username ? (
+              <>
+                <span>·</span>
+                <span className="font-mono">@{fullLog.username}</span>
+              </>
+            ) : null}
+            <span>·</span>
             <span>{fullLog.provider_name || "—"}</span>
             <span>·</span>
             <span>
@@ -219,7 +236,7 @@ function LogItem({
             {fullLog.api_key_name ? (
               <>
                 <span>·</span>
-                <span>{fullLog.api_key_name}</span>
+                <span>{t("logs.key")} {fullLog.api_key_name}</span>
               </>
             ) : null}
           </div>
@@ -266,6 +283,17 @@ function Tok({ n }: { n: number }) {
       {Number(n || 0).toLocaleString()}
     </span>
   );
+}
+
+function userLabel(log: Pick<LogRow, "user_label" | "display_name" | "username" | "user_id">) {
+  return log.user_label || log.display_name || (log.username ? `@${log.username}` : null) || "—";
+}
+
+function userTitle(log: Pick<LogRow, "display_name" | "username" | "user_id">) {
+  if (log.display_name && log.username) return `${log.display_name} (@${log.username})`;
+  if (log.username) return `@${log.username}`;
+  if (log.display_name) return log.display_name;
+  return log.user_id || undefined;
 }
 
 function DetailBlock({

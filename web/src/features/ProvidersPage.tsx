@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { FlaskConical, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, FlaskConical, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, type Provider, type ProviderTestResult } from "@/lib/api";
 import {
   EmptyState,
@@ -16,9 +16,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type MessageKey } from "@/lib/i18n";
 import { useAppDialog } from "@/components/app-dialog-context";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 const emptyForm = {
   name: "",
@@ -29,11 +30,58 @@ const emptyForm = {
   timeout_ms: 60000,
 };
 
+/** Parse "public" or "public => upstream" lines from the models editor. */
+function parseModelsEditor(raw: string): {
+  models: string[];
+  model_mappings: Record<string, string>;
+} {
+  const models: string[] = [];
+  const model_mappings: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(.+?)\s*(?:=>|->|=)\s*(.+)$/);
+    const publicName = (match ? match[1] : trimmed).trim();
+    const upstreamName = (match ? match[2] : "").trim();
+    if (!publicName || seen.has(publicName)) continue;
+    seen.add(publicName);
+    models.push(publicName);
+    if (upstreamName && upstreamName !== publicName) {
+      model_mappings[publicName] = upstreamName;
+    }
+  }
+  return { models, model_mappings };
+}
+
+function formatModelsEditor(
+  models: string[],
+  mappings: Record<string, string> = {},
+): string {
+  return models
+    .map((model) => {
+      const upstream = mappings[model]?.trim();
+      return upstream && upstream !== model ? `${model} => ${upstream}` : model;
+    })
+    .join("\n");
+}
+
+type ModelTestItem = {
+  model: string;
+  status: "pending" | "running" | "ok" | "error";
+  result?: ProviderTestResult;
+  error?: string;
+};
+
 function parseKeys(raw: string): string[] {
   return raw
     .split(/[\n,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function concreteModels(models: string[]) {
+  return models.map((item) => item.trim()).filter((item) => item && item !== "*");
 }
 
 export function ProvidersPage() {
@@ -47,14 +95,17 @@ export function ProvidersPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Provider | null>(null);
   const [form, setForm] = useState(emptyForm);
-  const [testResult, setTestResult] = useState<{ provider: Provider; result: ProviderTestResult } | null>(null);
+  const [testProvider, setTestProvider] = useState<Provider | null>(null);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [customModel, setCustomModel] = useState("");
+  const [testPhase, setTestPhase] = useState<"select" | "results">("select");
+  const [testItems, setTestItems] = useState<ModelTestItem[]>([]);
+  const [testing, setTesting] = useState(false);
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
 
   const save = useMutation({
     mutationFn: async () => {
-      const models = form.models
-        .split(/[\n,]/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const { models, model_mappings } = parseModelsEditor(form.models);
       const keys = parseKeys(form.api_keys);
 
       if (editing) {
@@ -64,6 +115,7 @@ export function ProvidersPage() {
           // A blank field preserves encrypted credentials already on the server.
           ...(keys.length > 0 ? { api_keys: keys } : {}),
           models,
+          model_mappings,
           enabled: form.enabled,
           timeout_ms: form.timeout_ms,
         });
@@ -74,6 +126,7 @@ export function ProvidersPage() {
         base_url: form.base_url,
         api_keys: keys,
         models,
+        model_mappings,
         enabled: form.enabled,
         timeout_ms: form.timeout_ms,
       });
@@ -109,15 +162,10 @@ export function ProvidersPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const testProvider = useMutation({
-    mutationFn: ({ provider, model }: { provider: Provider; model: string }) =>
-      api.providers.test(provider.id, model),
-    onSuccess: (result, variables) => {
-      setTestResult({ provider: variables.provider, result });
-      if (result.ok) toast.success(t("providers.testSuccess"));
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
+  const availableModels = useMemo(
+    () => (testProvider ? concreteModels(testProvider.models) : []),
+    [testProvider],
+  );
 
   function startCreate() {
     setEditing(null);
@@ -137,28 +185,109 @@ export function ProvidersPage() {
       name: p.name,
       base_url: p.base_url,
       api_keys: existingKeys.join("\n"),
-      models: p.models.join("\n"),
+      models: formatModelsEditor(p.models, p.model_mappings || {}),
       enabled: p.enabled,
       timeout_ms: p.timeout_ms,
     });
     setOpen(true);
   }
 
-  async function startTest(provider: Provider) {
-    let model = provider.models.find((item) => item && item !== "*") || "";
-    if (!model) {
-      const selected = await dialogs.prompt({
-        title: t("providers.testTitle"),
-        description: t("providers.testModelHint"),
-        label: t("providers.testModel"),
-        placeholder: "gpt-4o-mini",
-        confirmText: t("providers.test"),
-        required: true,
-      });
-      if (!selected) return;
-      model = selected;
+  function closeTestDialog() {
+    if (testing) return;
+    setTestProvider(null);
+    setSelectedModels([]);
+    setCustomModel("");
+    setTestPhase("select");
+    setTestItems([]);
+    setExpandedModel(null);
+  }
+
+  function startTest(provider: Provider) {
+    const models = concreteModels(provider.models);
+    setTestProvider(provider);
+    setSelectedModels(models);
+    setCustomModel("");
+    setTestPhase("select");
+    setTestItems([]);
+    setExpandedModel(null);
+  }
+
+  function toggleModel(model: string) {
+    setSelectedModels((current) =>
+      current.includes(model)
+        ? current.filter((item) => item !== model)
+        : [...current, model],
+    );
+  }
+
+  function addCustomModel() {
+    const model = customModel.trim();
+    if (!model || model === "*") return;
+    setSelectedModels((current) =>
+      current.includes(model) ? current : [...current, model],
+    );
+    setCustomModel("");
+  }
+
+  async function runSelectedTests() {
+    if (!testProvider) return;
+    const models = selectedModels
+      .map((item) => item.trim())
+      .filter((item) => item && item !== "*");
+    if (models.length === 0) {
+      toast.error(t("providers.testSelectRequired"));
+      return;
     }
-    testProvider.mutate({ provider, model });
+
+    const uniqueModels = [...new Set(models)];
+    setTesting(true);
+    setTestPhase("results");
+    setExpandedModel(uniqueModels[0] ?? null);
+    setTestItems(uniqueModels.map((model) => ({ model, status: "pending" })));
+
+    let passed = 0;
+    let failed = 0;
+
+    for (const model of uniqueModels) {
+      setTestItems((current) =>
+        current.map((item) =>
+          item.model === model ? { ...item, status: "running" } : item,
+        ),
+      );
+      setExpandedModel(model);
+
+      try {
+        const result = await api.providers.test(testProvider.id, model);
+        if (result.ok) passed += 1;
+        else failed += 1;
+        setTestItems((current) =>
+          current.map((item) =>
+            item.model === model
+              ? { ...item, status: result.ok ? "ok" : "error", result }
+              : item,
+          ),
+        );
+      } catch (error) {
+        failed += 1;
+        const message = error instanceof Error ? error.message : t("providers.testFailed");
+        setTestItems((current) =>
+          current.map((item) =>
+            item.model === model
+              ? { ...item, status: "error", error: message }
+              : item,
+          ),
+        );
+      }
+    }
+
+    setTesting(false);
+    if (failed === 0) {
+      toast.success(t("providers.testAllPassed", { n: passed }));
+    } else if (passed === 0) {
+      toast.error(t("providers.testAllFailed", { n: failed }));
+    } else {
+      toast.message(t("providers.testPartial", { passed, failed }));
+    }
   }
 
   return (
@@ -229,11 +358,15 @@ export function ProvidersPage() {
             <div className="sm:col-span-2">
               <Field label={t("providers.models")}>
                 <Textarea
-                  rows={3}
+                  rows={5}
+                  spellCheck={false}
+                  className="font-mono text-[11px]"
                   value={form.models}
                   onChange={(e) => setForm({ ...form, models: e.target.value })}
+                  placeholder={"qwen3.7-max => openrouter/qwen/qwen3.7-max\nkimi-k2.6\nglm-5.2"}
                 />
               </Field>
+              <p className="mt-1 text-[11px] text-muted-foreground">{t("providers.modelsHint")}</p>
             </div>
             <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2 sm:col-span-2">
               <div>
@@ -253,27 +386,287 @@ export function ProvidersPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(testResult)} onOpenChange={(next) => { if (!next) setTestResult(null); }}>
-        <DialogContent>
+      <Dialog
+        open={Boolean(testProvider)}
+        onOpenChange={(next) => {
+          if (!next) closeTestDialog();
+        }}
+      >
+        <DialogContent className="max-w-[680px]">
           <DialogHeader>
-            <DialogTitle>{t("providers.testTitle")} · {testResult?.provider.name}</DialogTitle>
-            <DialogDescription>{testResult?.result.ok ? t("providers.testSuccessDesc") : t("providers.testFailedDesc")}</DialogDescription>
+            <DialogTitle>
+              {t("providers.testTitle")}{testProvider ? ` · ${testProvider.name}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {testPhase === "select"
+                ? t("providers.testSelectDesc")
+                : testing
+                  ? t("providers.testRunningDesc")
+                  : t("providers.testResultsDesc")}
+            </DialogDescription>
           </DialogHeader>
-          {testResult ? <div className="mt-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5">
-              <div className="min-w-0"><p className="text-[11px] text-muted-foreground">{t("providers.testStatus")}</p><p className="truncate text-sm font-medium">{testResult.result.ok ? t("providers.testPassed") : t("providers.testFailed")}</p></div>
-              <Badge variant={testResult.result.ok ? "success" : "destructive"}>{testResult.result.status_code ?? "—"}</Badge>
+
+          {testPhase === "select" ? (
+            <div className="mt-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">
+                  {t("providers.testSelectedCount", { n: selectedModels.length })}
+                </p>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={availableModels.length === 0}
+                    onClick={() => setSelectedModels(availableModels)}
+                  >
+                    {t("providers.testSelectAll")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={selectedModels.length === 0}
+                    onClick={() => setSelectedModels([])}
+                  >
+                    {t("providers.testClearAll")}
+                  </Button>
+                </div>
+              </div>
+
+              {availableModels.length > 0 ? (
+                <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-md border border-border/60 p-2">
+                  {availableModels.map((model) => {
+                    const checked = selectedModels.includes(model);
+                    return (
+                      <button
+                        key={model}
+                        type="button"
+                        onClick={() => toggleModel(model)}
+                        className={cn(
+                          "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors",
+                          checked ? "bg-primary/8" : "hover:bg-secondary/60",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "flex size-4 shrink-0 items-center justify-center rounded border",
+                            checked
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border bg-background",
+                          )}
+                        >
+                          {checked ? <Check className="size-3" strokeWidth={2.4} /> : null}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-md bg-secondary/45 px-3 py-2.5 text-[11px] text-muted-foreground">
+                  {t("providers.testNoModelsHint")}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label>{t("providers.testCustomModel")}</Label>
+                <div className="flex gap-2">
+                  <Input
+                    className="font-mono text-xs"
+                    value={customModel}
+                    placeholder="gpt-4o-mini"
+                    onChange={(event) => setCustomModel(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addCustomModel();
+                      }
+                    }}
+                  />
+                  <Button type="button" variant="secondary" onClick={addCustomModel} disabled={!customModel.trim()}>
+                    {t("providers.testAddModel")}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">{t("providers.testCustomModelHint")}</p>
+              </div>
+
+              {selectedModels.some((model) => !availableModels.includes(model)) ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedModels
+                    .filter((model) => !availableModels.includes(model))
+                    .map((model) => (
+                      <button
+                        key={model}
+                        type="button"
+                        onClick={() => toggleModel(model)}
+                        className="inline-flex items-center gap-1 rounded-full bg-secondary px-2.5 py-1 font-mono text-[11px] text-secondary-foreground transition-colors hover:bg-secondary/80"
+                      >
+                        {model}
+                        <span className="text-muted-foreground">×</span>
+                      </button>
+                    ))}
+                </div>
+              ) : null}
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-              <TestStat label={t("providers.testModel")} value={testResult.result.model || "—"} />
-              <TestStat label={t("providers.testAttempts")} value={`${testResult.result.attempts} / ${testResult.result.max_retries + 1}`} />
-              <TestStat label={t("providers.testLatency")} value={`${testResult.result.latency_ms} ms`} />
-              <TestStat label={t("providers.testPath")} value={testResult.result.path} />
+          ) : (
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                <span>{t("providers.testSummary", {
+                  total: testItems.length,
+                  passed: testItems.filter((item) => item.status === "ok").length,
+                  failed: testItems.filter((item) => item.status === "error").length,
+                  pending: testItems.filter((item) => item.status === "pending" || item.status === "running").length,
+                })}</span>
+              </div>
+
+              <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-0.5">
+                {testItems.map((item) => {
+                  const open = expandedModel === item.model;
+                  return (
+                    <div key={item.model} className="overflow-hidden rounded-md border border-border/60">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-secondary/40"
+                        onClick={() => setExpandedModel(open ? null : item.model)}
+                      >
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{item.model}</span>
+                        <ModelTestStatusBadge item={item} t={t} />
+                        {item.result?.latency_ms != null && (item.status === "ok" || item.status === "error") ? (
+                          <span className="tabular-nums text-[11px] text-muted-foreground">{item.result.latency_ms} ms</span>
+                        ) : null}
+                      </button>
+                      {open ? (
+                        <div className="space-y-2 border-t border-border/50 px-3 py-3">
+                          {item.status === "running" || item.status === "pending" ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              {item.status === "running" ? t("providers.testRunningItem") : t("providers.testPendingItem")}
+                            </p>
+                          ) : null}
+                          {item.error ? (
+                            <div className="rounded-md bg-destructive/8 px-3 py-2.5">
+                              <p className="text-[11px] text-destructive">{t("providers.testError")}</p>
+                              <p className="mt-1 break-words font-mono text-[11px] leading-5">{item.error}</p>
+                            </div>
+                          ) : null}
+                          {item.result ? (
+                            <>
+                              <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/40 px-3 py-2.5">
+                                <div className="min-w-0">
+                                  <p className="text-[11px] text-muted-foreground">{t("providers.testStatus")}</p>
+                                  <p className="truncate text-sm font-medium">
+                                    {item.result.ok ? t("providers.testPassed") : t("providers.testFailed")}
+                                  </p>
+                                </div>
+                                <Badge variant={item.result.ok ? "success" : "destructive"}>
+                                  {item.result.status_code ?? "—"}
+                                </Badge>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                                <TestStat
+                                  label={t("providers.testAttempts")}
+                                  value={t("providers.testAttemptsValue", {
+                                    attempts: item.result.attempts,
+                                    max: item.result.class_max_attempts ?? item.result.max_retries + 1,
+                                  })}
+                                />
+                                <TestStat label={t("providers.testLatency")} value={`${item.result.latency_ms} ms`} />
+                                <TestStat label={t("providers.testPath")} value={item.result.path} />
+                                {item.result.upstream_model && item.result.upstream_model !== item.result.model ? (
+                                  <TestStat label={t("providers.testUpstreamModel")} value={item.result.upstream_model} />
+                                ) : null}
+                              </div>
+                              {!item.result.ok ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                  {item.result.stop_reason === "normal_budget"
+                                    ? t("providers.testStopNormalBudget", {
+                                        used: item.result.normal_retries_used ?? 0,
+                                        max: item.result.normal_max_retries ?? 0,
+                                      })
+                                    : item.result.stop_reason === "other_budget"
+                                      ? t("providers.testStopOtherBudget", {
+                                          used: item.result.other_retries_used ?? 0,
+                                          max: item.result.other_max_retries ?? 0,
+                                        })
+                                      : item.result.stop_reason === "non_retryable"
+                                        ? t("providers.testStoppedEarly")
+                                        : t("providers.testStopError")}
+                                </p>
+                              ) : null}
+                              {item.result.error ? (
+                                <div className="rounded-md bg-destructive/8 px-3 py-2.5">
+                                  <p className="text-[11px] text-destructive">{t("providers.testError")}</p>
+                                  <p className="mt-1 break-words font-mono text-[11px] leading-5">{item.result.error}</p>
+                                </div>
+                              ) : null}
+                              {item.result.response_preview ? (
+                                <div className="rounded-md bg-secondary/40 px-3 py-2.5">
+                                  <p className="text-[11px] text-muted-foreground">{t("providers.testResponse")}</p>
+                                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">
+                                    {item.result.response_preview}
+                                  </pre>
+                                </div>
+                              ) : null}
+                            </>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            {testResult.result.error ? <div className="rounded-md bg-destructive/8 px-3 py-2.5"><p className="text-[11px] text-destructive">{t("providers.testError")}</p><p className="mt-1 break-words font-mono text-[11px] leading-5">{testResult.result.error}</p></div> : null}
-            {testResult.result.response_preview ? <div className="rounded-md bg-secondary/40 px-3 py-2.5"><p className="text-[11px] text-muted-foreground">{t("providers.testResponse")}</p><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{testResult.result.response_preview}</pre></div> : null}
-          </div> : null}
-          <DialogFooter><Button variant="secondary" onClick={() => setTestResult(null)}>{t("common.close")}</Button></DialogFooter>
+          )}
+
+          <DialogFooter>
+            {testPhase === "results" ? (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={testing}
+                  onClick={() => {
+                    setTestPhase("select");
+                    setTestItems([]);
+                    setExpandedModel(null);
+                  }}
+                >
+                  {t("providers.testBack")}
+                </Button>
+                <Button type="button" disabled={testing} onClick={() => void runSelectedTests()}>
+                  {testing ? (
+                    <>
+                      <LoaderCircle className="animate-spin" data-icon="inline-start" />
+                      {t("providers.testRunning")}
+                    </>
+                  ) : (
+                    t("providers.testAgain")
+                  )}
+                </Button>
+                <Button type="button" variant="secondary" disabled={testing} onClick={closeTestDialog}>
+                  {t("common.close")}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button type="button" variant="secondary" onClick={closeTestDialog}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  type="button"
+                  disabled={selectedModels.length === 0 || testing}
+                  onClick={() => void runSelectedTests()}
+                >
+                  <FlaskConical data-icon="inline-start" />
+                  {selectedModels.length > 1
+                    ? t("providers.testRunMany", { n: selectedModels.length })
+                    : t("providers.testRunOne")}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -297,7 +690,7 @@ export function ProvidersPage() {
                     <span className="min-w-0 break-all">{t("providers.modelsCol")} {p.models.join(", ") || "—"}</span>
                   </div>
                   <div className="flex items-center justify-end gap-1">
-                    <Button variant="secondary" size="sm" disabled={testProvider.isPending && testProvider.variables?.provider.id === p.id} onClick={() => startTest(p)}>{testProvider.isPending && testProvider.variables?.provider.id === p.id ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <FlaskConical data-icon="inline-start" />}{t("providers.test")}</Button>
+                    <Button variant="secondary" size="sm" disabled={testing && testProvider?.id === p.id} onClick={() => startTest(p)}>{testing && testProvider?.id === p.id ? <LoaderCircle className="animate-spin" data-icon="inline-start" /> : <FlaskConical data-icon="inline-start" />}{t("providers.test")}</Button>
                     <Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} />
                     <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button>
                     <Button variant="ghost" size="icon" className="size-7 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: p.name, description: t("providers.deleteConfirm", { name: p.name }), confirmText: "Delete", destructive: true })) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button>
@@ -312,7 +705,7 @@ export function ProvidersPage() {
               {data.items.map((p) => (
                 <div key={p.id} className={TABLE_ROW_CLASS}>
                   <span className="w-36 truncate font-medium">{p.name}</span><span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{p.base_url}</span><span className="w-16 text-right tabular-nums">{p.key_count ?? (p.has_api_key ? 1 : 0)}</span><span className="w-36 truncate text-muted-foreground">{p.models.slice(0, 2).join(", ")}{p.models.length > 2 ? ` +${p.models.length - 2}` : ""}</span><span className="w-16">{p.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}</span>
-                  <span className="flex w-32 items-center justify-end gap-1"><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" disabled={testProvider.isPending && testProvider.variables?.provider.id === p.id} onClick={() => startTest(p)} aria-label={t("providers.test")} title={t("providers.test")}>{testProvider.isPending && testProvider.variables?.provider.id === p.id ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}</Button><Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: p.name, description: t("providers.deleteConfirm", { name: p.name }), confirmText: "Delete", destructive: true })) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
+                  <span className="flex w-32 items-center justify-end gap-1"><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" disabled={testing && testProvider?.id === p.id} onClick={() => startTest(p)} aria-label={t("providers.test")} title={t("providers.test")}>{testing && testProvider?.id === p.id ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}</Button><Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: p.name, description: t("providers.deleteConfirm", { name: p.name }), confirmText: "Delete", destructive: true })) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
                 </div>
               ))}
             </div>
@@ -340,4 +733,28 @@ function Field({
 
 function TestStat({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0 rounded-md bg-secondary/40 px-3 py-2"><p className="text-[11px] text-muted-foreground">{label}</p><p className="mt-1 truncate font-mono tabular-nums" title={value}>{value}</p></div>;
+}
+
+function ModelTestStatusBadge({
+  item,
+  t,
+}: {
+  item: ModelTestItem;
+  t: (key: MessageKey, vars?: Record<string, string | number>) => string;
+}) {
+  if (item.status === "running") {
+    return (
+      <Badge variant="secondary" className="gap-1">
+        <LoaderCircle className="size-3 animate-spin" />
+        {t("providers.testRunningItem")}
+      </Badge>
+    );
+  }
+  if (item.status === "pending") {
+    return <Badge variant="outline">{t("providers.testPendingItem")}</Badge>;
+  }
+  if (item.status === "ok") {
+    return <Badge variant="success">{t("providers.testPassed")}</Badge>;
+  }
+  return <Badge variant="destructive">{t("providers.testFailed")}</Badge>;
 }

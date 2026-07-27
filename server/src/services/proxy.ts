@@ -6,7 +6,13 @@ import type { Response as ExpressResponse } from "express";
 import { v4 as uuid } from "uuid";
 import { ApiKey, getSetting, Provider } from "../db";
 import { writeLog } from "./logs";
-import { getProvider, listProviders, listProvidersForModel, pickProviderKey } from "./providers";
+import {
+  getProvider,
+  listProviders,
+  listProvidersForModel,
+  mapProviderModel,
+  pickProviderKey,
+} from "./providers";
 import { createResponseLogCollector, extractIO } from "../utils/content";
 import { createUpstreamTimeout, upstreamTimeoutError } from "./upstream-timeout";
 import { AccessError, beginRequestAccess, RequestAccess } from "./access";
@@ -116,9 +122,19 @@ function headersToObject(
   return out;
 }
 
+function clampRetryCount(value: unknown, fallback: number) {
+  const n = Number(value ?? fallback);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.floor(n))) : fallback;
+}
+
+/** Retries for normal upstream failures: 401/403/408/429/5xx + network errors. */
 export function getMaxRetries(): number {
-  const n = Number(getSetting("max_retries") ?? 2);
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 2;
+  return clampRetryCount(getSetting("max_retries"), 2);
+}
+
+/** Retries for all other upstream failures (e.g. HTTP 400 business errors). */
+export function getOtherMaxRetries(): number {
+  return clampRetryCount(getSetting("other_max_retries"), 0);
 }
 
 export function getRetryDelayMs(): number {
@@ -130,8 +146,14 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Normal retry class used by settings → max_retries. */
+function isNormalRetryableStatus(status: number): boolean {
+  return [401, 403, 408, 429, 500, 502, 503, 504].includes(status);
+}
+
 function isRetryableStatus(status: number): boolean {
-  return [401, 403, 404, 408, 409, 429, 500, 502, 503, 504].includes(status);
+  // Keep broader classification for affinity / diagnostics; retry budgets use the split helpers.
+  return isNormalRetryableStatus(status) || [404, 409].includes(status);
 }
 
 function isRetryableError(err: unknown): boolean {
@@ -150,13 +172,26 @@ function isRetrySafe(ctx: ProxyContext) {
   return Boolean(Array.isArray(value) ? value[0] : value);
 }
 
-function canRetryStatus(ctx: ProxyContext, status: number) {
+function canRetryNormalStatus(ctx: ProxyContext, status: number) {
   if (ctx.bodyStream) return false;
-  // Authentication/model/gateway failures explicitly rejected the request and
-  // are safe to rotate to another configured provider. A generic 500 still
-  // requires caller-provided idempotency because upstream work may have run.
-  if ([401, 403, 404, 408, 409, 429, 502, 503, 504].includes(status)) return true;
+  if (!isNormalRetryableStatus(status)) return false;
+  // Auth/rate-limit/gateway failures are safe to rotate. Generic 500 needs idempotency
+  // because upstream work may already have started.
+  if ([401, 403, 408, 429, 502, 503, 504].includes(status)) return true;
   return isRetrySafe(ctx);
+}
+
+function canRetryOtherStatus(ctx: ProxyContext, status: number) {
+  if (ctx.bodyStream) return false;
+  if (status < 400 || isNormalRetryableStatus(status)) return false;
+  // 4xx business/client errors were usually rejected without side effects.
+  if (status < 500) return true;
+  return isRetrySafe(ctx);
+}
+
+/** @deprecated use canRetryNormalStatus; kept for internal call sites during transition */
+function canRetryStatus(ctx: ProxyContext, status: number) {
+  return canRetryNormalStatus(ctx, status) || canRetryOtherStatus(ctx, status);
 }
 
 function buildUpstreamUrl(
@@ -194,19 +229,49 @@ function agentFor(url: string) {
   return url.startsWith("https:") ? httpsAgent : httpAgent;
 }
 
+function withMappedModel(provider: Provider, ctx: ProxyContext): ProxyContext {
+  const publicModel = pickModel(ctx.body, ctx.query);
+  if (!publicModel) return ctx;
+  const upstreamModel = mapProviderModel(provider, publicModel);
+  if (upstreamModel === publicModel) return ctx;
+
+  const nextQuery =
+    typeof ctx.query.model === "string"
+      ? { ...ctx.query, model: upstreamModel }
+      : ctx.query;
+
+  if (ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body)) {
+    const nextBody = {
+      ...(ctx.body as Record<string, unknown>),
+      model: upstreamModel,
+    };
+    // If we rewrote JSON, drop the original raw/stream body so upstream gets the mapped model.
+    return {
+      ...ctx,
+      query: nextQuery,
+      body: nextBody,
+      rawBody: Buffer.from(JSON.stringify(nextBody)),
+      bodyStream: undefined,
+    };
+  }
+
+  return { ...ctx, query: nextQuery };
+}
+
 async function openUpstream(
   provider: Provider,
   ctx: ProxyContext,
   path: string,
 ): Promise<UpstreamHandle> {
-  const url = buildUpstreamUrl(provider, path, ctx.query);
-  const headers = buildUpstreamHeaders(provider, ctx);
+  const mappedCtx = withMappedModel(provider, ctx);
+  const url = buildUpstreamUrl(provider, path, mappedCtx.query);
+  const headers = buildUpstreamHeaders(provider, mappedCtx);
   const controller = new AbortController();
   const timeout = createUpstreamTimeout(controller, provider.timeout_ms);
 
   try {
     const init: Parameters<typeof fetch>[1] = {
-      method: ctx.method,
+      method: mappedCtx.method,
       headers,
       signal: controller.signal as AbortSignal,
       agent: agentFor(url),
@@ -214,14 +279,14 @@ async function openUpstream(
       compress: false,
     };
 
-    const method = ctx.method.toUpperCase();
+    const method = mappedCtx.method.toUpperCase();
     if (method !== "GET" && method !== "HEAD") {
-      if (ctx.rawBody !== undefined) {
-        init.body = ctx.rawBody;
-      } else if (ctx.bodyStream) {
-        init.body = ctx.bodyStream as never;
-      } else if (ctx.body !== undefined) {
-        init.body = JSON.stringify(ctx.body);
+      if (mappedCtx.rawBody !== undefined) {
+        init.body = mappedCtx.rawBody;
+      } else if (mappedCtx.bodyStream) {
+        init.body = mappedCtx.bodyStream as never;
+      } else if (mappedCtx.body !== undefined) {
+        init.body = JSON.stringify(mappedCtx.body);
         if (!headers["content-type"]) headers["content-type"] = "application/json";
       }
     }
@@ -247,10 +312,22 @@ export type ProviderTestResult = {
   provider_id: string;
   provider_name: string;
   model: string;
+  /** Model name actually sent upstream after mapping. */
+  upstream_model: string;
   path: string;
   status_code: number | null;
   attempts: number;
+  /** Total retry budget (normal + other). Kept for backward compatibility. */
   max_retries: number;
+  normal_max_retries: number;
+  other_max_retries: number;
+  normal_retries_used: number;
+  other_retries_used: number;
+  /** Max attempts allowed for the final failure class (1 + class budget). */
+  class_max_attempts: number;
+  /** Which retry class the final failure belonged to. */
+  retry_class: "normal" | "other" | "none";
+  stop_reason: "ok" | "normal_budget" | "other_budget" | "non_retryable" | "error";
   latency_ms: number;
   error: string | null;
   response_preview: string;
@@ -282,18 +359,37 @@ export async function testProviderConnection(
   const provider = getProvider(providerId);
   if (!provider) return null;
   const model = providerTestModel(provider, requestedModel);
-  const maxRetries = getMaxRetries();
+  const upstreamModel = model ? mapProviderModel(provider, model) : "";
+  // Use the same dual budgets as production proxy (no hidden caps).
+  const normalMaxRetries = getMaxRetries();
+  const otherMaxRetries = getOtherMaxRetries();
+  const maxRetries = normalMaxRetries + otherMaxRetries;
   const started = Date.now();
+
+  const baseResult = {
+    provider_id: provider.id,
+    provider_name: provider.name,
+    model,
+    upstream_model: upstreamModel,
+    path: "/v1/chat/completions",
+    max_retries: maxRetries,
+    normal_max_retries: normalMaxRetries,
+    other_max_retries: otherMaxRetries,
+    normal_retries_used: 0,
+    other_retries_used: 0,
+    class_max_attempts: 1,
+    retry_class: "none" as const,
+  };
+
   if (!model) {
     return {
+      ...baseResult,
       ok: false,
-      provider_id: provider.id,
-      provider_name: provider.name,
       model: "",
-      path: "/v1/chat/completions",
+      upstream_model: "",
       status_code: null,
       attempts: 0,
-      max_retries: maxRetries,
+      stop_reason: "non_retryable",
       latency_ms: 0,
       error: "A concrete model is required to test this provider",
       response_preview: "",
@@ -315,11 +411,16 @@ export async function testProviderConnection(
   };
   const retryDelay = getRetryDelayMs();
   let attempts = 0;
+  let normalRetriesUsed = 0;
+  let otherRetriesUsed = 0;
   let statusCode: number | null = null;
   let errorMessage: string | null = null;
   let responsePreview = "";
+  let retryClass: "normal" | "other" | "none" = "none";
+  let stopReason: ProviderTestResult["stop_reason"] = "error";
+  const hardCap = 1 + normalMaxRetries + otherMaxRetries;
 
-  while (attempts <= maxRetries) {
+  while (attempts < hardCap) {
     attempts += 1;
     let handle: UpstreamHandle | undefined;
     try {
@@ -330,41 +431,88 @@ export async function testProviderConnection(
       responsePreview = previewBody(body);
       if (statusCode >= 200 && statusCode < 300) {
         return {
+          ...baseResult,
           ok: true,
-          provider_id: provider.id,
-          provider_name: provider.name,
-          model,
-          path,
           status_code: statusCode,
           attempts,
-          max_retries: maxRetries,
+          normal_retries_used: normalRetriesUsed,
+          other_retries_used: otherRetriesUsed,
+          class_max_attempts: attempts,
+          retry_class: "none",
+          stop_reason: "ok",
           latency_ms: Date.now() - started,
           error: null,
           response_preview: responsePreview,
         };
       }
+
       errorMessage = `Upstream HTTP ${statusCode}`;
-      const retryable =
-        [401, 403, 408, 429, 500, 502, 503, 504].includes(statusCode) &&
-        attempts <= maxRetries;
-      if (!retryable) break;
+      if (isNormalRetryableStatus(statusCode)) {
+        retryClass = "normal";
+        if (normalRetriesUsed < normalMaxRetries) {
+          normalRetriesUsed += 1;
+          await sleep(retryDelay * attempts);
+          continue;
+        }
+        stopReason = "normal_budget";
+        break;
+      }
+
+      if (statusCode >= 400) {
+        retryClass = "other";
+        if (otherRetriesUsed < otherMaxRetries) {
+          otherRetriesUsed += 1;
+          await sleep(retryDelay * attempts);
+          continue;
+        }
+        stopReason = otherMaxRetries > 0 ? "other_budget" : "non_retryable";
+        break;
+      }
+
+      retryClass = "none";
+      stopReason = "non_retryable";
+      break;
     } catch (error) {
       handle?.abort();
       errorMessage = error instanceof Error ? error.message : String(error);
-      if (attempts > maxRetries || !isRetryableError(error)) break;
+      if (isRetryableError(error)) {
+        retryClass = "normal";
+        if (normalRetriesUsed < normalMaxRetries) {
+          normalRetriesUsed += 1;
+          await sleep(retryDelay * attempts);
+          continue;
+        }
+        stopReason = "normal_budget";
+        break;
+      }
+      retryClass = "other";
+      if (otherRetriesUsed < otherMaxRetries) {
+        otherRetriesUsed += 1;
+        await sleep(retryDelay * attempts);
+        continue;
+      }
+      stopReason = otherMaxRetries > 0 ? "other_budget" : "non_retryable";
+      break;
     }
-    await sleep(retryDelay * attempts);
   }
 
+  const classMaxAttempts =
+    retryClass === "normal"
+      ? 1 + normalMaxRetries
+      : retryClass === "other"
+        ? 1 + otherMaxRetries
+        : 1;
+
   return {
+    ...baseResult,
     ok: false,
-    provider_id: provider.id,
-    provider_name: provider.name,
-    model,
-    path,
     status_code: statusCode,
     attempts,
-    max_retries: maxRetries,
+    normal_retries_used: normalRetriesUsed,
+    other_retries_used: otherRetriesUsed,
+    class_max_attempts: classMaxAttempts,
+    retry_class: retryClass,
+    stop_reason: stopReason,
     latency_ms: Date.now() - started,
     error: errorMessage || "Provider test failed",
     response_preview: responsePreview,
@@ -601,7 +749,9 @@ export async function handleProxyHttp(
   const stream = isStreamBody(ctx.body);
   const baseIo = extractIO({ path, body: ctx.body, stream });
   const estimatedTokens = estimateRequestTokens(ctx.body, requestBytes(ctx));
-  const maxRetries = getMaxRetries();
+  const normalMaxRetries = getMaxRetries();
+  const otherMaxRetries = getOtherMaxRetries();
+  const maxRetries = normalMaxRetries + otherMaxRetries;
   const retryDelay = getRetryDelayMs();
   const replayableBody = !ctx.bodyStream;
 
@@ -710,33 +860,43 @@ export async function handleProxyHttp(
 
   let lastError: string | null = null;
   let attempts = 0;
+  let normalRetriesUsed = 0;
+  let otherRetriesUsed = 0;
   let lastProvider: Provider | null = null;
+  const hardCap = 1 + normalMaxRetries + otherMaxRetries;
 
-  while (attempts <= maxRetries) {
+  while (attempts < hardCap) {
     attempts += 1;
     const provider = providerOrder[(attempts - 1) % providerOrder.length];
     lastProvider = provider;
     let handle: UpstreamHandle | undefined;
     try {
       handle = await openUpstream(provider, ctx, path);
-      const providerFailure =
-        isRetryableStatus(handle.response.status) &&
-        replayableBody &&
-        canRetryStatus(ctx, handle.response.status);
-      const retryable = providerFailure && attempts <= maxRetries;
-      if (retryable) {
+      const status = handle.response.status;
+      const normalFailure =
+        replayableBody
+        && canRetryNormalStatus(ctx, status)
+        && normalRetriesUsed < normalMaxRetries;
+      const otherFailure =
+        replayableBody
+        && canRetryOtherStatus(ctx, status)
+        && otherRetriesUsed < otherMaxRetries;
+
+      if (normalFailure || otherFailure) {
         try {
           await handle.response.buffer();
         } finally {
           handle.clearTimeout();
         }
+        if (normalFailure) normalRetriesUsed += 1;
+        else otherRetriesUsed += 1;
         forgetProviderAffinity(affinityKey, provider.id);
-        lastError = `Upstream HTTP ${handle.response.status}`;
+        lastError = `Upstream HTTP ${status}`;
         await sleep(retryDelay * attempts);
         continue;
       }
 
-      if (providerFailure) forgetProviderAffinity(affinityKey, provider.id);
+      if (isRetryableStatus(status)) forgetProviderAffinity(affinityKey, provider.id);
       else rememberProviderAffinity(affinityKey, provider.id);
       const result = await pipeResponseToClient({
         ctx,
@@ -764,15 +924,19 @@ export async function handleProxyHttp(
     } catch (error) {
       handle?.abort();
       lastError = error instanceof Error ? error.message : String(error);
-      if (
-        !res.headersSent &&
-        replayableBody &&
-        attempts <= maxRetries &&
-        isRetryableError(error)
-      ) {
-        forgetProviderAffinity(affinityKey, provider.id);
-        await sleep(retryDelay * attempts);
-        continue;
+      if (!res.headersSent && replayableBody) {
+        if (isRetryableError(error) && normalRetriesUsed < normalMaxRetries) {
+          normalRetriesUsed += 1;
+          forgetProviderAffinity(affinityKey, provider.id);
+          await sleep(retryDelay * attempts);
+          continue;
+        }
+        if (!isRetryableError(error) && otherRetriesUsed < otherMaxRetries) {
+          otherRetriesUsed += 1;
+          forgetProviderAffinity(affinityKey, provider.id);
+          await sleep(retryDelay * attempts);
+          continue;
+        }
       }
       forgetProviderAffinity(affinityKey, provider.id);
       break;

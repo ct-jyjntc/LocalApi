@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { creditsToMicros, formatCredits } from "@/lib/utils";
+import { creditsToMicros, formatCredits, formatCreditsInput } from "@/lib/utils";
 
 type TierForm = { id?: string; name: string; description: string; threshold: string; rpm: string; tpm: string; concurrency: string; enabled: boolean };
 const emptyForm: TierForm = { name: "", description: "", threshold: "0", rpm: "60", tpm: "100000", concurrency: "5", enabled: true };
@@ -34,7 +34,7 @@ export function TiersPage() {
     onError: (error: Error) => toast.error(error.message),
   });
   const remove = useMutation({ mutationFn: api.commercial.tiers.remove, onSuccess: () => { toast.success("用户层级已删除"); refresh(); }, onError: (error: Error) => toast.error(error.message) });
-  const edit = (tier: UserTier) => { setForm({ id: tier.id, name: tier.name, description: tier.description, threshold: formatCredits(tier.threshold_micros), rpm: String(tier.rpm_limit), tpm: String(tier.tpm_limit), concurrency: String(tier.concurrency_limit), enabled: tier.enabled }); setOpen(true); };
+  const edit = (tier: UserTier) => { setForm({ id: tier.id, name: tier.name, description: tier.description, threshold: formatCreditsInput(tier.threshold_micros), rpm: String(tier.rpm_limit), tpm: String(tier.tpm_limit), concurrency: String(tier.concurrency_limit), enabled: tier.enabled }); setOpen(true); };
   const requestDelete = async (tier: UserTier) => {
     if (await dialogs.confirm({ title: "删除用户层级", description: `确认删除“${tier.name}”？用户会立即重新匹配剩余层级。基础层级不能被删除。`, confirmText: "删除", destructive: true })) remove.mutate(tier.id);
   };

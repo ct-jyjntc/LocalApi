@@ -28,6 +28,11 @@ import { hashAdminSecret } from "../utils/admin-secret";
 import { DEFAULT_ADMIN_ENTRY_PATH, isValidAdminEntryPath, normalizeAdminEntryPath } from "../utils/admin-entry";
 import { commercialAdminRouter } from "./commercial-admin";
 import { testProviderConnection } from "../services/proxy";
+import {
+  getLinuxDoOAuthPublicConfig,
+  updateLinuxDoOAuthConfig,
+} from "../services/linuxdo-oauth";
+import { getCheckinSettings, updateCheckinSettings } from "../services/checkin";
 
 export const adminRouter = Router();
 
@@ -38,12 +43,16 @@ const httpUrl = z
   .refine((value) => value.startsWith("http://") || value.startsWith("https://"), {
     message: "base_url must use http or https",
   });
+const modelMappingsSchema = z
+  .record(z.string().trim().min(1).max(200), z.string().trim().min(1).max(200))
+  .optional();
 const providerSchema = z.object({
   name: z.string().trim().min(1).max(120),
   base_url: httpUrl,
   api_key: z.string().max(16_384).optional(),
   api_keys: z.array(z.string().trim().min(1).max(4096)).max(64).optional(),
   models: z.array(z.string().trim().min(1).max(200)).max(256).optional(),
+  model_mappings: modelMappingsSchema,
   enabled: z.boolean().optional(),
   timeout_ms: z.coerce.number().int().min(100).max(600_000).optional(),
 });
@@ -75,7 +84,8 @@ const settingsSchema = z.object({
   admin_password: z.string().trim().min(8).max(256).optional(),
   current_admin_password: z.string().max(256).optional(),
   port: z.coerce.number().int().min(1).max(65_535).optional(),
-  max_retries: z.coerce.number().int().min(0).optional(),
+  max_retries: z.coerce.number().int().min(0).max(100).optional(),
+  other_max_retries: z.coerce.number().int().min(0).max(100).optional(),
   retry_delay_ms: z.coerce.number().int().min(0).max(10_000).optional(),
   cache_enabled: z.boolean().optional(),
   cache_ttl_seconds: z.coerce.number().int().min(1).max(604_800).optional(),
@@ -91,6 +101,34 @@ const settingsSchema = z.object({
     message: "admin_entry_path must be a single safe path segment",
   }).optional(),
   registration_enabled: z.boolean().optional(),
+  password_login_enabled: z.boolean().optional(),
+  linuxdo_registration_enabled: z.boolean().optional(),
+  linuxdo_login_enabled: z.boolean().optional(),
+  linuxdo_client_id: z.string().trim().max(256).optional(),
+  linuxdo_client_secret: z.string().max(4096).optional(),
+  linuxdo_relay_url: z
+    .string()
+    .trim()
+    .max(512)
+    .refine(
+      (value) => {
+        if (!value) return true;
+        try {
+          const url = new URL(value);
+          return url.protocol === "http:" || url.protocol === "https:";
+        } catch {
+          return false;
+        }
+      },
+      { message: "linuxdo_relay_url must be an http(s) URL" },
+    )
+    .optional(),
+  linuxdo_relay_secret: z.string().max(4096).optional(),
+  checkin_enabled: z.boolean().optional(),
+  checkin_points_min: z.coerce.number().min(0).max(1_000_000).optional(),
+  checkin_points_max: z.coerce.number().min(0).max(1_000_000).optional(),
+  points_balance_cap: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  points_exchange_rate: z.coerce.number().min(0).max(1_000_000).optional(),
 });
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
@@ -266,14 +304,16 @@ adminRouter.delete("/logs", (_req, res) => {
   res.json({ ok: true, removed: clearLogs() });
 });
 
-// Settings
-adminRouter.get("/settings", (_req, res) => {
+function serializeSettings() {
   const all = getAllSettings();
-  res.json({
+  const linuxdo = getLinuxDoOAuthPublicConfig();
+  const checkin = getCheckinSettings();
+  return {
     admin_password_set: Boolean(all.admin_token),
     admin_password_hint: all.admin_token ? "••••••••" : "",
     port: all.port,
     max_retries: Number(all.max_retries ?? 2),
+    other_max_retries: Number(all.other_max_retries ?? 0),
     retry_delay_ms: Number(all.retry_delay_ms ?? 400),
     cache_enabled: all.cache_enabled === "true",
     cache_ttl_seconds: Number(all.cache_ttl_seconds || 3600),
@@ -285,7 +325,27 @@ adminRouter.get("/settings", (_req, res) => {
     public_base_url: all.public_base_url || "",
     admin_entry_path: all.admin_entry_path || DEFAULT_ADMIN_ENTRY_PATH,
     registration_enabled: all.registration_enabled === "true",
-  });
+    password_login_enabled: (all.password_login_enabled ?? "true") === "true",
+    linuxdo_registration_enabled: (all.linuxdo_registration_enabled ?? "true") === "true",
+    checkin_enabled: checkin.enabled,
+    checkin_points_min: checkin.points_min,
+    checkin_points_max: checkin.points_max,
+    points_balance_cap: checkin.balance_cap,
+    points_exchange_rate: checkin.exchange_rate,
+    linuxdo_login_enabled: linuxdo.enabled,
+    linuxdo_client_id: linuxdo.client_id,
+    linuxdo_client_secret_set: linuxdo.client_secret_set,
+    linuxdo_relay_url: linuxdo.relay_url,
+    linuxdo_relay_secret_set: linuxdo.relay_secret_set,
+    linuxdo_configured: linuxdo.configured,
+    linuxdo_callback_url: linuxdo.callback_url,
+    linuxdo_authorize_ready: linuxdo.authorize_ready,
+  };
+}
+
+// Settings
+adminRouter.get("/settings", (_req, res) => {
+  res.json(serializeSettings());
 });
 
 adminRouter.patch("/settings", (req, res) => {
@@ -302,6 +362,9 @@ adminRouter.patch("/settings", (req, res) => {
   if (body.port !== undefined) setSetting("port", String(body.port));
   if (body.max_retries !== undefined) {
     setSetting("max_retries", String(body.max_retries));
+  }
+  if (body.other_max_retries !== undefined) {
+    setSetting("other_max_retries", String(body.other_max_retries));
   }
   if (body.retry_delay_ms !== undefined) {
     setSetting("retry_delay_ms", String(body.retry_delay_ms));
@@ -332,25 +395,61 @@ adminRouter.patch("/settings", (req, res) => {
   if (body.registration_enabled !== undefined) {
     setSetting("registration_enabled", body.registration_enabled ? "true" : "false");
   }
+  if (body.password_login_enabled !== undefined) {
+    setSetting("password_login_enabled", body.password_login_enabled ? "true" : "false");
+  }
+  if (body.linuxdo_registration_enabled !== undefined) {
+    setSetting(
+      "linuxdo_registration_enabled",
+      body.linuxdo_registration_enabled ? "true" : "false",
+    );
+  }
 
-  const all = getAllSettings();
-  res.json({
-    admin_password_set: Boolean(all.admin_token),
-    admin_password_hint: all.admin_token ? "••••••••" : "",
-    port: all.port,
-    max_retries: Number(all.max_retries ?? 2),
-    retry_delay_ms: Number(all.retry_delay_ms ?? 400),
-    cache_enabled: all.cache_enabled === "true",
-    cache_ttl_seconds: Number(all.cache_ttl_seconds || 3600),
-    cache_max_entries: Number(all.cache_max_entries || 1000),
-    cache_methods: JSON.parse(all.cache_methods || "[]"),
-    cache_paths: JSON.parse(all.cache_paths || "[]"),
-    brand_name: all.brand_name || "LocalAPI",
-    company_name: all.company_name || "",
-    public_base_url: all.public_base_url || "",
-    admin_entry_path: all.admin_entry_path || DEFAULT_ADMIN_ENTRY_PATH,
-    registration_enabled: all.registration_enabled === "true",
-  });
+  if (
+    body.checkin_enabled !== undefined
+    || body.checkin_points_min !== undefined
+    || body.checkin_points_max !== undefined
+    || body.points_balance_cap !== undefined
+    || body.points_exchange_rate !== undefined
+  ) {
+    try {
+      updateCheckinSettings({
+        enabled: body.checkin_enabled,
+        points_min: body.checkin_points_min,
+        points_max: body.checkin_points_max,
+        balance_cap: body.points_balance_cap,
+        exchange_rate: body.points_exchange_rate,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : "Invalid check-in settings",
+      });
+    }
+  }
+
+  if (
+    body.linuxdo_login_enabled !== undefined
+    || body.linuxdo_client_id !== undefined
+    || body.linuxdo_client_secret !== undefined
+    || body.linuxdo_relay_url !== undefined
+    || body.linuxdo_relay_secret !== undefined
+  ) {
+    try {
+      updateLinuxDoOAuthConfig({
+        enabled: body.linuxdo_login_enabled,
+        client_id: body.linuxdo_client_id,
+        client_secret: body.linuxdo_client_secret,
+        relay_url: body.linuxdo_relay_url,
+        relay_secret: body.linuxdo_relay_secret,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : "Invalid LinuxDo login settings",
+      });
+    }
+  }
+
+  res.json(serializeSettings());
 });
 
 adminRouter.get("/meta", (_req, res) => {

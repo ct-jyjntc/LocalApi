@@ -78,6 +78,9 @@ const TiersPage = lazy(() =>
 const UserSettingsPage = lazy(() =>
   import("@/features/UserSettingsPage").then((m) => ({ default: m.UserSettingsPage })),
 );
+const UserCheckinPage = lazy(() =>
+  import("@/features/UserCheckinPage").then((m) => ({ default: m.UserCheckinPage })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -126,6 +129,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="plan" element={<UserPlanPage />} />
               <Route path="usage" element={<UserUsagePage />} />
               <Route path="payments" element={<UserPaymentsPage />} />
+              <Route path="checkin" element={<UserCheckinPage />} />
               <Route path="feedback" element={<UserFeedbackPage />} />
               <Route path="settings" element={<UserSettingsPage />} />
             </>

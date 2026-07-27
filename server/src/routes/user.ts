@@ -49,6 +49,19 @@ import {
 } from "../services/payments";
 import { listCommerceLedger, listCommerceOrders } from "../services/commerce";
 import { createFeedback, getFeedbackThread, listUserFeedback, replyFeedback } from "../services/feedback";
+import {
+  exchangeLinuxDoCode,
+  getLinuxDoCallbackUrl,
+  getLinuxDoOAuthConfig,
+  getPublicBaseUrl,
+  isLinuxDoOAuthEnabled,
+} from "../services/linuxdo-oauth";
+import {
+  CheckinError,
+  exchangePoints,
+  getCheckinStatus,
+  performCheckin,
+} from "../services/checkin";
 
 export const userRouter = Router();
 
@@ -60,15 +73,13 @@ const linuxdoStateCleanupTimer = setInterval(() => {
   }
 }, 60_000);
 linuxdoStateCleanupTimer.unref?.();
-const linuxdoClientId = process.env.LINUXDO_CLIENT_ID?.trim() || "";
-const linuxdoClientSecret = process.env.LINUXDO_CLIENT_SECRET?.trim() || "";
-const linuxdoRelayUrl = process.env.LINUXDO_RELAY_URL?.trim().replace(/\/$/, "") || "";
-const linuxdoRelaySecret = process.env.LINUXDO_RELAY_SECRET?.trim() || "";
-const linuxdoBaseUrl = "https://connect.linux.do";
-const publicBaseUrl = () => (process.env.PUBLIC_BASE_URL?.trim() || getSetting("public_base_url") || "").replace(/\/$/, "");
 
 userRouter.get("/auth/linuxdo", (req, res) => {
-  if ((!linuxdoRelayUrl && (!linuxdoClientId || !linuxdoClientSecret)) || !publicBaseUrl()) return res.status(503).send("LinuxDo login is not configured");
+  const config = getLinuxDoOAuthConfig();
+  const publicBase = getPublicBaseUrl();
+  if (!isLinuxDoOAuthEnabled(config) || !publicBase) {
+    return res.status(503).send("LinuxDo login is not configured");
+  }
   const limiterKey = `linuxdo-oauth:${req.ip || req.socket.remoteAddress || "unknown"}`;
   const rate = consumeRateLimit(limiterKey, 30, 5 * 60_000);
   if (!rate.allowed) {
@@ -77,30 +88,55 @@ userRouter.get("/auth/linuxdo", (req, res) => {
   }
   const state = crypto.randomBytes(24).toString("hex");
   linuxdoStates.set(state, Date.now() + 10 * 60_000);
-  const url = new URL(`${linuxdoBaseUrl}/oauth2/authorize`);
-  url.search = new URLSearchParams({ client_id: linuxdoClientId, redirect_uri: `${publicBaseUrl()}/user/api/auth/linuxdo/callback`, response_type: "code", scope: "openid profile", state }).toString();
+  const url = new URL(`${config.base_url}/oauth2/authorize`);
+  url.search = new URLSearchParams({
+    client_id: config.client_id,
+    redirect_uri: getLinuxDoCallbackUrl(publicBase),
+    response_type: "code",
+    scope: "openid profile",
+    state,
+  }).toString();
   return res.redirect(url.toString());
 });
 
 userRouter.get("/auth/linuxdo/callback", async (req, res) => {
   const state = String(req.query.state || "");
-  const expires = linuxdoStates.get(state); linuxdoStates.delete(state);
+  const expires = linuxdoStates.get(state);
+  linuxdoStates.delete(state);
   const code = String(req.query.code || "");
-  if (!expires || expires < Date.now() || !code) return res.status(400).send("Invalid or expired OAuth request");
+  if (!expires || expires < Date.now() || !code) {
+    return res.status(400).send("Invalid or expired OAuth request");
+  }
+  const publicBase = getPublicBaseUrl();
+  if (!publicBase || !isLinuxDoOAuthEnabled()) {
+    return res.status(503).send("LinuxDo login is not configured");
+  }
   try {
-    const profileResponse = linuxdoRelayUrl
-      ? await fetch(`${linuxdoRelayUrl}/exchange`, { method: "POST", headers: { "content-type": "application/json", "x-relay-secret": linuxdoRelaySecret }, body: JSON.stringify({ code, redirect_uri: `${publicBaseUrl()}/user/api/auth/linuxdo/callback` }) })
-      : await fetch(`${linuxdoBaseUrl}/api/user`, { headers: { accept: "application/json" } });
-    if (linuxdoRelayUrl) { if (!profileResponse.ok) throw new Error(`OAuth relay failed (${profileResponse.status})`); }
-    else { throw new Error("Direct LinuxDo access is unavailable; configure LINUXDO_RELAY_URL"); }
-    const profile = await profileResponse.json() as { username?: string; name?: string; id?: string | number };
+    const profile = await exchangeLinuxDoCode(code, getLinuxDoCallbackUrl(publicBase));
     const username = (profile.username || `linuxdo_${profile.id || crypto.randomBytes(6).toString("hex")}`).trim();
     let user = getUserByUsername(username);
-    if (!user) user = getUserByUsername(createUser({ username, display_name: profile.name || username, password: crypto.randomBytes(32).toString("base64url") }).username);
+    if (!user) {
+      const linuxdoRegistrationEnabled =
+        (getSetting("linuxdo_registration_enabled") ?? "true") === "true";
+      if (!linuxdoRegistrationEnabled) {
+        return res
+          .status(403)
+          .send("LinuxDo registration is closed. Please sign in with an existing account or contact the administrator.");
+      }
+      user = getUserByUsername(
+        createUser({
+          username,
+          display_name: profile.name || username,
+          password: crypto.randomBytes(32).toString("base64url"),
+        }).username,
+      );
+    }
     if (!user) throw new Error("Unable to create user");
     const session = createUserSession(user.id);
-    return res.redirect(`${publicBaseUrl()}/?linuxdo_token=${encodeURIComponent(session.token)}`);
-  } catch (error) { return res.status(502).send(error instanceof Error ? error.message : "LinuxDo login failed"); }
+    return res.redirect(`${publicBase}/?linuxdo_token=${encodeURIComponent(session.token)}`);
+  } catch (error) {
+    return res.status(502).send(error instanceof Error ? error.message : "LinuxDo login failed");
+  }
 });
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
@@ -149,6 +185,12 @@ function planFailure(res: Response, error: unknown) {
 }
 
 userRouter.post("/login", (req, res) => {
+  if ((getSetting("password_login_enabled") ?? "true") !== "true") {
+    return res.status(403).json({
+      error: "Password login is currently disabled",
+      code: "password_login_disabled",
+    });
+  }
   const body = parseBody(loginSchema, req.body, res);
   if (!body) return;
   const limiterKey = `user-login:${req.ip || req.socket.remoteAddress || "unknown"}:${body.username.toLowerCase()}`;
@@ -165,9 +207,18 @@ userRouter.post("/login", (req, res) => {
 });
 
 userRouter.get("/config", (_req, res) => {
+  const passwordRegistration = getSetting("registration_enabled") === "true";
+  const passwordLogin = (getSetting("password_login_enabled") ?? "true") === "true";
+  const linuxdoLogin = isLinuxDoOAuthEnabled();
+  // Default true for backward compatibility when setting is missing.
+  const linuxdoRegistration = (getSetting("linuxdo_registration_enabled") ?? "true") === "true";
   return res.json({
-    registration_enabled: getSetting("registration_enabled") === "true",
-    linuxdo_enabled: Boolean((linuxdoRelayUrl || (linuxdoClientId && linuxdoClientSecret)) && publicBaseUrl()),
+    registration_enabled: passwordRegistration,
+    password_registration_enabled: passwordRegistration,
+    password_login_enabled: passwordLogin,
+    linuxdo_enabled: linuxdoLogin,
+    linuxdo_login_enabled: linuxdoLogin,
+    linuxdo_registration_enabled: linuxdoLogin && linuxdoRegistration,
     captcha_enabled: true,
   });
 });
@@ -306,6 +357,51 @@ userRouter.get("/usage", (req, res) => {
 userRouter.get("/ledger", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 500);
   return res.json({ items: listWalletLedger(requestUser(req).id, limit) });
+});
+
+userRouter.get("/checkin", (req, res) => {
+  return res.json(getCheckinStatus(requestUser(req).id));
+});
+
+userRouter.post("/checkin", (req, res) => {
+  try {
+    const rate = consumeRateLimit(`checkin:${requestUser(req).id}`, 5, 60_000);
+    if (!rate.allowed) {
+      res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+      return res.status(429).json({ error: "Too many check-in attempts", code: "rate_limited" });
+    }
+    return res.json(performCheckin(requestUser(req).id));
+  } catch (error) {
+    if (error instanceof CheckinError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Check-in failed" });
+  }
+});
+
+userRouter.post("/points/exchange", (req, res) => {
+  const body = parseBody(
+    z.object({
+      // Allow up to 2 decimal places (validated/rounded server-side).
+      points: z.coerce.number().positive().max(1_000_000_000),
+    }),
+    req.body,
+    res,
+  );
+  if (!body) return;
+  try {
+    const rate = consumeRateLimit(`points-exchange:${requestUser(req).id}`, 20, 60_000);
+    if (!rate.allowed) {
+      res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+      return res.status(429).json({ error: "Too many exchange attempts", code: "rate_limited" });
+    }
+    return res.json(exchangePoints(requestUser(req).id, body.points));
+  } catch (error) {
+    if (error instanceof CheckinError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Exchange failed" });
+  }
 });
 
 userRouter.get("/payments/config", (_req, res) => {

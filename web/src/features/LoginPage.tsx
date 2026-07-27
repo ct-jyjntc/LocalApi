@@ -67,8 +67,20 @@ export function LoginPage({
     void loadCaptcha();
   }, [loadCaptcha]);
 
+  const passwordLoginEnabled = mode !== "user" || registration.data?.password_login_enabled !== false;
+  const linuxdoLoginEnabled = Boolean(registration.data?.linuxdo_enabled);
+  const passwordRegistrationEnabled = Boolean(registration.data?.registration_enabled);
+  const showPasswordForm = mode === "admin" || isRegistering || passwordLoginEnabled;
+  const showLinuxdo = mode === "user" && linuxdoLoginEnabled && !isRegistering;
+  const noUserLoginMethods =
+    mode === "user" && !isRegistering && !passwordLoginEnabled && !linuxdoLoginEnabled;
+
   async function submit(e?: FormEvent) {
     e?.preventDefault();
+    if (mode === "user" && !isRegistering && !passwordLoginEnabled) {
+      toast.error(zh ? "当前未开放密码登录" : "Password login is disabled");
+      return;
+    }
     if (!password.trim()) {
       toast.error(t("login.required"));
       return;
@@ -77,7 +89,7 @@ export function LoginPage({
       toast.error(zh ? "请输入用户名" : "Username is required");
       return;
     }
-    if (mode === "user" && isRegistering && !registration.data?.registration_enabled) {
+    if (mode === "user" && isRegistering && !passwordRegistrationEnabled) {
       toast.error(t("login.registrationClosed"));
       return;
     }
@@ -114,7 +126,9 @@ export function LoginPage({
     ? (zh ? "使用管理员凭据进入系统控制台。" : "Use administrator credentials to enter the system console.")
     : isRegistering
       ? t("login.registerDesc")
-      : (zh ? "登录后查看余额、套餐、用量与 API Key。" : "Sign in to view balance, plan, usage and API keys.");
+      : noUserLoginMethods
+        ? (zh ? "当前未开放任何登录方式，请联系管理员。" : "No login methods are currently enabled. Contact the administrator.")
+        : (zh ? "登录后查看余额、套餐、用量与 API Key。" : "Sign in to view balance, plan, usage and API keys.");
 
   const submitLabel = loading
     ? t("common.loading")
@@ -130,94 +144,100 @@ export function LoginPage({
           <p className="mx-auto max-w-[280px] text-sm leading-6 text-muted-foreground">{description}</p>
         </div>
 
-        <form className="space-y-4" onSubmit={submit}>
-          {mode === "user" ? (
-            <div className="space-y-2">
-              <Label htmlFor="username">{zh ? "用户名" : "Username"}</Label>
-              <Input
-                id="username"
-                autoFocus
-                className="h-10 rounded-full bg-card px-4"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="username"
-              />
-            </div>
-          ) : null}
-          {mode === "user" && isRegistering ? (
-            <div className="space-y-2">
-              <Label htmlFor="display-name">{t("login.displayName")}</Label>
-              <Input
-                id="display-name"
-                className="h-10 rounded-full bg-card px-4"
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                autoComplete="name"
-              />
-            </div>
-          ) : null}
-          <div className="space-y-2">
-            <Label htmlFor="login-password">{t("login.password")}</Label>
-            <Input
-              id="login-password"
-              type="password"
-              autoFocus={mode === "admin"}
-              autoComplete={isRegistering ? "new-password" : "current-password"}
-              className="h-10 rounded-full bg-card px-4"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder={mode === "admin" ? t("login.placeholder") : zh ? "用户密码" : "Password"}
-            />
-          </div>
-          {mode === "user" && isRegistering ? (
-            <div className="space-y-2">
-              <Label htmlFor="captcha-answer">{t("login.captcha")}</Label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="h-14 w-[180px] shrink-0 overflow-hidden rounded-2xl border border-border bg-card transition-opacity hover:opacity-90 disabled:opacity-60"
-                  onClick={() => void loadCaptcha()}
-                  disabled={captchaLoading}
-                  title={t("login.captchaRefresh")}
-                  aria-label={t("login.captchaRefresh")}
-                >
-                  {captchaImage ? (
-                    <img src={captchaImage} alt={t("login.captcha")} className="h-full w-full object-cover" />
-                  ) : (
-                    <span className="text-xs text-muted-foreground">{captchaLoading ? t("common.loading") : t("login.captchaRefresh")}</span>
-                  )}
-                </button>
+        {showPasswordForm ? (
+          <form className="space-y-4" onSubmit={submit}>
+            {mode === "user" ? (
+              <div className="space-y-2">
+                <Label htmlFor="username">{zh ? "用户名" : "Username"}</Label>
                 <Input
-                  id="captcha-answer"
+                  id="username"
+                  autoFocus
                   className="h-10 rounded-full bg-card px-4"
-                  value={captchaAnswer}
-                  onChange={(event) => setCaptchaAnswer(event.target.value)}
-                  placeholder={t("login.captchaPlaceholder")}
-                  inputMode="numeric"
-                  autoComplete="off"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="username"
                 />
               </div>
+            ) : null}
+            {mode === "user" && isRegistering ? (
+              <div className="space-y-2">
+                <Label htmlFor="display-name">{t("login.displayName")}</Label>
+                <Input
+                  id="display-name"
+                  className="h-10 rounded-full bg-card px-4"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  autoComplete="name"
+                />
+              </div>
+            ) : null}
+            <div className="space-y-2">
+              <Label htmlFor="login-password">{t("login.password")}</Label>
+              <Input
+                id="login-password"
+                type="password"
+                autoFocus={mode === "admin"}
+                autoComplete={isRegistering ? "new-password" : "current-password"}
+                className="h-10 rounded-full bg-card px-4"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={mode === "admin" ? t("login.placeholder") : zh ? "用户密码" : "Password"}
+              />
             </div>
-          ) : null}
-          <Button type="submit" className="h-10 w-full rounded-full px-4 text-sm" disabled={loading}>
-            {submitLabel}
-          </Button>
-        </form>
+            {mode === "user" && isRegistering ? (
+              <div className="space-y-2">
+                <Label htmlFor="captcha-answer">{t("login.captcha")}</Label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="h-14 w-[180px] shrink-0 overflow-hidden rounded-2xl border border-border bg-card transition-opacity hover:opacity-90 disabled:opacity-60"
+                    onClick={() => void loadCaptcha()}
+                    disabled={captchaLoading}
+                    title={t("login.captchaRefresh")}
+                    aria-label={t("login.captchaRefresh")}
+                  >
+                    {captchaImage ? (
+                      <img src={captchaImage} alt={t("login.captcha")} className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">{captchaLoading ? t("common.loading") : t("login.captchaRefresh")}</span>
+                    )}
+                  </button>
+                  <Input
+                    id="captcha-answer"
+                    className="h-10 rounded-full bg-card px-4"
+                    value={captchaAnswer}
+                    onChange={(event) => setCaptchaAnswer(event.target.value)}
+                    placeholder={t("login.captchaPlaceholder")}
+                    inputMode="numeric"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+            ) : null}
+            <Button type="submit" className="h-10 w-full rounded-full px-4 text-sm" disabled={loading}>
+              {submitLabel}
+            </Button>
+          </form>
+        ) : null}
 
-        {mode === "user" && registration.data?.linuxdo_enabled && !isRegistering ? (
+        {showLinuxdo ? (
           <div className="space-y-4">
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              <span className="h-px flex-1 bg-border" />
-              <span>{zh ? "或" : "or"}</span>
-              <span className="h-px flex-1 bg-border" />
-            </div>
+            {showPasswordForm ? (
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                <span>{zh ? "或" : "or"}</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            ) : null}
             <Button type="button" variant="outline" className="h-10 w-full rounded-full px-4 text-sm" onClick={() => { window.location.href = "/user/api/auth/linuxdo"; }}>
-              {zh ? "使用 LinuxDo 登录" : "Continue with LinuxDo"}
+              {registration.data?.linuxdo_registration_enabled
+                ? (zh ? "使用 LinuxDo 登录 / 注册" : "Continue with LinuxDo")
+                : (zh ? "使用 LinuxDo 登录" : "Sign in with LinuxDo")}
             </Button>
           </div>
         ) : null}
 
-        {mode === "user" && registration.data?.registration_enabled ? (
+        {mode === "user" && passwordRegistrationEnabled ? (
           <div className="text-center text-xs text-muted-foreground">
             {isRegistering ? (
               <>

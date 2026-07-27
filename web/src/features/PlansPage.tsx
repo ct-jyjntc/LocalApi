@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { creditsToMicros, formatCredits } from "@/lib/utils";
+import { creditsToMicros, formatCredits, formatCreditsInput } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
 type FormState = {
@@ -64,7 +64,25 @@ export function PlansPage() {
     },
     onError: (error: Error) => toast.error(error.message),
   });
-  const edit = (plan: PlanRow) => { setForm({ id: plan.id, name: plan.name, description: plan.description, cycle: String(plan.cycle_days), price: formatCredits(plan.price_micros || 0), credits: formatCredits(plan.included_credits_micros), models: plan.allowed_models.join("\n"), rpm: String(plan.rpm_limit), tpm: String(plan.tpm_limit), concurrency: String(plan.concurrency_limit), stock: String(plan.stock_limit), overage: plan.overage_enabled, enabled: plan.enabled }); setFormOpen(true); };
+  const edit = (plan: PlanRow) => {
+    setForm({
+      id: plan.id,
+      name: plan.name,
+      description: plan.description,
+      cycle: String(plan.cycle_days),
+      // Use plain numeric strings — locale-formatted credits break type="number" inputs (blank when >= 1000).
+      price: formatCreditsInput(plan.price_micros || 0),
+      credits: formatCreditsInput(plan.included_credits_micros),
+      models: plan.allowed_models.join("\n"),
+      rpm: String(plan.rpm_limit),
+      tpm: String(plan.tpm_limit),
+      concurrency: String(plan.concurrency_limit),
+      stock: String(plan.stock_limit),
+      overage: plan.overage_enabled,
+      enabled: plan.enabled,
+    });
+    setFormOpen(true);
+  };
   const requestRemove = async (plan: PlanRow) => { if (await dialogs.confirm({ title: zh ? "删除套餐" : "Delete plan", description: zh ? `确认删除“${plan.name}”？已有用户使用时会改为停用。` : `Delete “${plan.name}”? Active plans will be disabled instead.`, confirmText: zh ? "删除" : "Delete", destructive: true })) remove.mutate(plan.id); };
   const move = (index: number, direction: -1 | 1) => {
     const items = query.data?.items || [];

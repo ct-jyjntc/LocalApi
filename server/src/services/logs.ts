@@ -132,7 +132,14 @@ export function writeLog(input: LogInput) {
   return id;
 }
 
-function mapLog(l: RequestLog) {
+type RequestLogWithUser = RequestLog & {
+  username?: string | null;
+  display_name?: string | null;
+};
+
+function mapLog(l: RequestLogWithUser) {
+  const username = l.username?.trim() || null;
+  const displayName = l.display_name?.trim() || null;
   return {
     ...l,
     cached: l.cached === 1,
@@ -147,6 +154,9 @@ function mapLog(l: RequestLog) {
     total_tokens: l.total_tokens ?? 0,
     usage_estimated: l.usage_estimated === 1,
     cost_micros: l.cost_micros ?? 0,
+    username,
+    display_name: displayName,
+    user_label: displayName || username || null,
   };
 }
 
@@ -155,15 +165,19 @@ export function listLogs(limit = 100, offset = 0, userId?: string) {
   const items = db
     .prepare(
       `SELECT
-         id, method, path, model, provider_id, provider_name, api_key_id, api_key_name,
-         status_code, latency_ms, cached, request_bytes, response_bytes, error, created_at,
+         l.id, l.method, l.path, l.model, l.provider_id, l.provider_name, l.api_key_id, l.api_key_name,
+         l.status_code, l.latency_ms, l.cached, l.request_bytes, l.response_bytes, l.error, l.created_at,
          NULL AS input_text, NULL AS output_text, NULL AS reasoning_text,
-         prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, total_tokens, usage_estimated, stream,
-         user_id, usage_id, cost_micros
-       FROM request_logs ${userId ? "WHERE user_id = ?" : ""}
-       ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+         l.prompt_tokens, l.completion_tokens, l.reasoning_tokens, l.cached_tokens, l.total_tokens, l.usage_estimated, l.stream,
+         l.user_id, l.usage_id, l.cost_micros,
+         u.username AS username,
+         u.display_name AS display_name
+       FROM request_logs l
+       LEFT JOIN users u ON u.id = l.user_id
+       ${userId ? "WHERE l.user_id = ?" : ""}
+       ORDER BY l.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...(userId ? [userId, limit, offset] : [limit, offset])) as RequestLog[];
+    .all(...(userId ? [userId, limit, offset] : [limit, offset])) as RequestLogWithUser[];
   const total = (
     db.prepare(`SELECT COUNT(*) as c FROM request_logs ${userId ? "WHERE user_id = ?" : ""}`)
       .get(...(userId ? [userId] : [])) as { c: number }
@@ -176,10 +190,14 @@ export function listLogs(limit = 100, offset = 0, userId?: string) {
 
 export function getLog(id: string, userId?: string) {
   flushLogs(Number.MAX_SAFE_INTEGER);
-  const row = db.prepare(`SELECT * FROM request_logs WHERE id = ? ${userId ? "AND user_id = ?" : ""}`)
-    .get(...(userId ? [id, userId] : [id])) as
-    | RequestLog
-    | undefined;
+  const row = db
+    .prepare(
+      `SELECT l.*, u.username AS username, u.display_name AS display_name
+       FROM request_logs l
+       LEFT JOIN users u ON u.id = l.user_id
+       WHERE l.id = ? ${userId ? "AND l.user_id = ?" : ""}`,
+    )
+    .get(...(userId ? [id, userId] : [id])) as RequestLogWithUser | undefined;
   return row ? mapLog(row) : null;
 }
 

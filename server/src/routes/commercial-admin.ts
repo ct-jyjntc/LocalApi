@@ -9,6 +9,7 @@ import {
   upsertModelPrice,
 } from "../services/billing";
 import {
+  adjustSubscriptionCredits,
   assignPlan,
   cancelSubscription,
   createPlan,
@@ -18,6 +19,7 @@ import {
   reorderPlans,
   updatePlan,
 } from "../services/plans";
+import { adjustPoints, CheckinError } from "../services/checkin";
 import { createUser, deleteUser, listUsers, updateUser } from "../services/users";
 import { listAuditLogs, writeAudit } from "../services/audit";
 import {
@@ -187,6 +189,62 @@ commercialAdminRouter.delete("/users/:id/subscription", (req, res) => {
   const ok = cancelSubscription(req.params.id);
   writeAudit({ action: "subscription.cancel", target_type: "user", target_id: req.params.id });
   return res.json({ ok });
+});
+commercialAdminRouter.post("/users/:id/subscription/credits", (req, res) => {
+  const body = parseBody(
+    z.object({
+      amount_micros: z.coerce.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
+      description: z.string().trim().min(1).max(500).optional(),
+    }),
+    req.body,
+    res,
+  );
+  if (!body) return;
+  try {
+    const result = adjustSubscriptionCredits(req.params.id, body.amount_micros, body.description);
+    writeAudit({
+      action: "subscription.credits.adjust",
+      target_type: "user",
+      target_id: req.params.id,
+      detail: body,
+    });
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof PlanTransactionError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to adjust plan credits",
+    });
+  }
+});
+commercialAdminRouter.post("/users/:id/points", (req, res) => {
+  const body = parseBody(
+    z.object({
+      points: z.coerce.number().min(-1_000_000_000).max(1_000_000_000),
+      description: z.string().trim().min(1).max(500).optional(),
+    }),
+    req.body,
+    res,
+  );
+  if (!body) return;
+  try {
+    const result = adjustPoints(req.params.id, body.points, body.description || "Admin points adjustment");
+    writeAudit({
+      action: "points.adjust",
+      target_type: "user",
+      target_id: req.params.id,
+      detail: body,
+    });
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof CheckinError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to adjust points",
+    });
+  }
 });
 
 commercialAdminRouter.get("/tiers", (_req, res) => res.json({ items: listUserTiers() }));

@@ -39,7 +39,10 @@ export function serializeProviderKeys(keys: string[]): string {
 /** Round-robin pick for multi-key providers. */
 const keyCursor = new Map<string, number>();
 let providerCache: Provider[] | null = null;
-const providerRuntime = new Map<string, { keys: string[]; models: string[] }>();
+const providerRuntime = new Map<
+  string,
+  { keys: string[]; models: string[]; mappings: Record<string, string> }
+>();
 
 function rebuildProviderRuntime(rows: Provider[]) {
   providerRuntime.clear();
@@ -47,6 +50,7 @@ function rebuildProviderRuntime(rows: Provider[]) {
     providerRuntime.set(row.id, {
       keys: parseProviderKeys(row.api_key),
       models: safeParseModels(row.models),
+      mappings: safeParseMappings(row.model_mappings),
     });
   }
 }
@@ -104,6 +108,7 @@ export function createProvider(input: {
   api_key?: string;
   api_keys?: string[];
   models?: string[];
+  model_mappings?: Record<string, string>;
   enabled?: boolean;
   timeout_ms?: number;
 }): Provider {
@@ -113,16 +118,19 @@ export function createProvider(input: {
     input.api_keys !== undefined
       ? serializeProviderKeys(input.api_keys)
       : serializeProviderKeys(parseProviderKeys(input.api_key ?? ""));
+  const models = normalizeModels(input.models ?? []);
+  const mappings = normalizeMappings(input.model_mappings ?? {}, models);
   db.prepare(
     `INSERT INTO providers (
-      id, name, base_url, api_key, models, enabled, timeout_ms, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, name, base_url, api_key, models, model_mappings, enabled, timeout_ms, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name,
     input.base_url.replace(/\/+$/, ""),
     keys,
-    JSON.stringify(input.models ?? []),
+    JSON.stringify(models),
+    JSON.stringify(mappings),
     input.enabled === false ? 0 : 1,
     input.timeout_ms ?? 60000,
     now,
@@ -140,6 +148,7 @@ export function updateProvider(
     api_key: string;
     api_keys: string[];
     models: string[];
+    model_mappings: Record<string, string>;
     enabled: boolean;
     timeout_ms: number;
   }>,
@@ -161,8 +170,17 @@ export function updateProvider(
 
   const models =
     input.models !== undefined
-      ? JSON.stringify(input.models)
-      : existing.models;
+      ? normalizeModels(input.models)
+      : safeParseModels(existing.models);
+  const mappings =
+    input.model_mappings !== undefined || input.models !== undefined
+      ? normalizeMappings(
+          input.model_mappings !== undefined
+            ? input.model_mappings
+            : safeParseMappings(existing.model_mappings),
+          models,
+        )
+      : safeParseMappings(existing.model_mappings);
   const enabled =
     input.enabled !== undefined
       ? input.enabled
@@ -173,10 +191,20 @@ export function updateProvider(
 
   db.prepare(
     `UPDATE providers SET
-      name = ?, base_url = ?, api_key = ?, models = ?, enabled = ?,
+      name = ?, base_url = ?, api_key = ?, models = ?, model_mappings = ?, enabled = ?,
       timeout_ms = ?, updated_at = ?
      WHERE id = ?`,
-  ).run(name, base_url, api_key, models, enabled, timeout_ms, nowIso(), id);
+  ).run(
+    name,
+    base_url,
+    api_key,
+    JSON.stringify(models),
+    JSON.stringify(mappings),
+    enabled,
+    timeout_ms,
+    nowIso(),
+    id,
+  );
 
   refreshProviderCache();
   return getProvider(id)!;
@@ -208,6 +236,8 @@ export function resolveProviderForModel(model?: string | null): Provider | null 
 export function sanitizeProvider(p: Provider) {
   const runtime = providerRuntime.get(p.id);
   const keys = runtime?.keys ?? parseProviderKeys(p.api_key);
+  const models = runtime?.models ?? safeParseModels(p.models);
+  const model_mappings = runtime?.mappings ?? safeParseMappings(p.model_mappings);
   return {
     id: p.id,
     name: p.name,
@@ -216,7 +246,8 @@ export function sanitizeProvider(p: Provider) {
     api_keys: [],
     key_count: keys.length,
     has_api_key: keys.length > 0,
-    models: runtime?.models ?? safeParseModels(p.models),
+    models,
+    model_mappings,
     enabled: p.enabled === 1,
     timeout_ms: p.timeout_ms,
     created_at: p.created_at,
@@ -224,11 +255,117 @@ export function sanitizeProvider(p: Provider) {
   };
 }
 
+/** Map a public/client model name to the upstream model name for this provider. */
+export function mapProviderModel(provider: Provider, publicModel: string): string {
+  const model = publicModel.trim();
+  if (!model) return model;
+  const mappings =
+    providerRuntime.get(provider.id)?.mappings ?? safeParseMappings(provider.model_mappings);
+  const mapped = mappings[model]?.trim();
+  return mapped || model;
+}
+
+/**
+ * Parse editor lines:
+ *   public-model
+ *   public-model => upstream-model
+ *   public-model -> upstream-model
+ */
+export function parseModelsEditor(raw: string): {
+  models: string[];
+  model_mappings: Record<string, string>;
+} {
+  const models: string[] = [];
+  const model_mappings: Record<string, string> = {};
+  const seen = new Set<string>();
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(.+?)\s*(?:=>|->|=)\s*(.+)$/);
+    const publicName = (match ? match[1] : trimmed).trim();
+    const upstreamName = (match ? match[2] : "").trim();
+    if (!publicName || publicName === "*") {
+      if (publicName === "*" && !seen.has("*")) {
+        models.push("*");
+        seen.add("*");
+      }
+      continue;
+    }
+    if (!seen.has(publicName)) {
+      models.push(publicName);
+      seen.add(publicName);
+    }
+    if (upstreamName && upstreamName !== publicName) {
+      model_mappings[publicName] = upstreamName;
+    }
+  }
+
+  return { models, model_mappings };
+}
+
+export function formatModelsEditor(
+  models: string[],
+  mappings: Record<string, string> = {},
+): string {
+  return models
+    .map((model) => {
+      const upstream = mappings[model]?.trim();
+      return upstream && upstream !== model ? `${model} => ${upstream}` : model;
+    })
+    .join("\n");
+}
+
 function safeParseModels(raw: string): string[] {
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.map(String) : [];
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? parsed.map(String).map((s) => s.trim()).filter(Boolean) : [];
   } catch {
     return [];
   }
+}
+
+function safeParseMappings(raw: string | null | undefined): Record<string, string> {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const publicName = String(key || "").trim();
+      const upstream = String(value ?? "").trim();
+      if (!publicName || publicName === "*" || !upstream || upstream === publicName) continue;
+      out[publicName] = upstream;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function normalizeModels(models: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of models) {
+    const model = String(item || "").trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    out.push(model);
+  }
+  return out;
+}
+
+function normalizeMappings(
+  mappings: Record<string, string>,
+  models: string[],
+): Record<string, string> {
+  const allowed = new Set(models.filter((m) => m && m !== "*"));
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(mappings || {})) {
+    const publicName = String(key || "").trim();
+    const upstream = String(value ?? "").trim();
+    if (!publicName || publicName === "*" || !upstream || upstream === publicName) continue;
+    if (allowed.size > 0 && !allowed.has(publicName)) continue;
+    out[publicName] = upstream;
+  }
+  return out;
 }

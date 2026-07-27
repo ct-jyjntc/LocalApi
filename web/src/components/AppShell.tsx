@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  CalendarCheck2,
   ChartNoAxesCombined,
   CreditCard,
   KeyRound,
@@ -56,6 +57,7 @@ const USER_NAV: NavItem[] = [
   { to: "/plan", label: { zh: "套餐详情", en: "Plan details" }, icon: Package },
   { to: "/usage", label: { zh: "账单与订单", en: "Billing" }, icon: ChartNoAxesCombined },
   { to: "/payments", label: { zh: "账户充值", en: "Top up" }, icon: CreditCard },
+  { to: "/checkin", label: { zh: "每日签到", en: "Check-in" }, icon: CalendarCheck2 },
   { to: "/settings", label: { zh: "个人设置", en: "Settings" }, icon: Settings },
 ];
 

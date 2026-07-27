@@ -33,6 +33,7 @@ export function initDb() {
       base_url TEXT NOT NULL,
       api_key TEXT NOT NULL DEFAULT '',
       models TEXT NOT NULL DEFAULT '[]',
+      model_mappings TEXT NOT NULL DEFAULT '{}',
       enabled INTEGER NOT NULL DEFAULT 1,
       timeout_ms INTEGER NOT NULL DEFAULT 60000,
       created_at TEXT NOT NULL,
@@ -220,6 +221,40 @@ export function initDb() {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user ON wallet_ledger(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS points_accounts (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      balance INTEGER NOT NULL DEFAULT 0,
+      lifetime_earned INTEGER NOT NULL DEFAULT 0,
+      lifetime_spent INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS points_ledger (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      balance_after INTEGER NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      reference_type TEXT,
+      reference_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_points_ledger_user ON points_ledger(user_id, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_points_ledger_reference
+      ON points_ledger(reference_type, reference_id)
+      WHERE reference_type IS NOT NULL AND reference_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS checkin_records (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      checkin_date TEXT NOT NULL,
+      points INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_checkin_user_date ON checkin_records(user_id, checkin_date);
+    CREATE INDEX IF NOT EXISTS idx_checkin_user_created ON checkin_records(user_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS payment_channels (
       id TEXT PRIMARY KEY,
@@ -452,6 +487,14 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at DESC);
   `);
 
+  // Migrate older DBs that lack provider columns
+  const providerCols = (
+    db.prepare("PRAGMA table_info(providers)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!providerCols.includes("model_mappings")) {
+    db.exec("ALTER TABLE providers ADD COLUMN model_mappings TEXT NOT NULL DEFAULT '{}'");
+  }
+
   // Migrate older DBs that lack detail columns
   const keyCols = (
     db.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>
@@ -674,13 +717,30 @@ export function initDb() {
     admin_token: hashAdminSecret(configuredAdmin || generatedAdmin),
     admin_entry_path: "/admin",
     port: "5555",
-    // Upstream request retries (network / 429 / 5xx). 0 = no retry.
+    // Upstream request retries. max_retries = normal class; other_max_retries = all other errors.
     max_retries: "2",
+    other_max_retries: "0",
     retry_delay_ms: "400",
     brand_name: "LocalAPI",
     company_name: "",
     public_base_url: "",
     registration_enabled: "false",
+    // Username/password sign-in for existing users.
+    password_login_enabled: "true",
+    // Allow first-time account creation via LinuxDo OAuth (existing users can still log in when LinuxDo login is on).
+    linuxdo_registration_enabled: "true",
+    checkin_enabled: "true",
+    checkin_points_min: "1.00",
+    checkin_points_max: "10.00",
+    // Max points a user may hold; 0 = unlimited. At/above this value check-in is blocked.
+    points_balance_cap: "0",
+    // Wallet credits (micros) granted per 1 point when exchanging.
+    points_exchange_micros: "10000",
+    linuxdo_login_enabled: "false",
+    linuxdo_client_id: "",
+    linuxdo_client_secret: "",
+    linuxdo_relay_url: "",
+    linuxdo_relay_secret: "",
   };
 
   const insert = db.prepare(
@@ -725,6 +785,7 @@ export type Provider = {
   base_url: string;
   api_key: string;
   models: string;
+  model_mappings: string;
   enabled: number;
   timeout_ms: number;
   created_at: string;

@@ -58,11 +58,17 @@ export function listUsers() {
               COALESCE(w.reserved_micros, 0) AS reserved_micros,
               COALESCE(w.lifetime_spent_micros, 0) AS lifetime_spent_micros,
               COALESCE(w.lifetime_topup_micros, 0) AS lifetime_topup_micros,
-              s.id AS subscription_id, s.plan_id, s.period_end,
-              s.remaining_credits_micros, s.status AS subscription_status,
-              p.name AS plan_name
+              COALESCE(pa.balance, 0) AS points_balance_cents,
+              COALESCE(pa.lifetime_earned, 0) AS points_lifetime_earned_cents,
+              COALESCE(pa.lifetime_spent, 0) AS points_lifetime_spent_cents,
+              s.id AS subscription_id, s.plan_id, s.period_end, s.period_start,
+              s.remaining_credits_micros, s.reserved_micros AS plan_reserved_micros,
+              s.status AS subscription_status,
+              p.name AS plan_name,
+              p.included_credits_micros AS plan_included_credits_micros
        FROM users u
        LEFT JOIN wallet_accounts w ON w.user_id = u.id
+       LEFT JOIN points_accounts pa ON pa.user_id = u.id
        LEFT JOIN subscriptions s ON s.id = (
          SELECT id FROM subscriptions sx
          WHERE sx.user_id = u.id AND sx.status = 'active'
@@ -75,7 +81,21 @@ export function listUsers() {
     .map((row) => {
       const user = publicUser(row as User, Number((row as Record<string, unknown>).lifetime_topup_micros || 0));
       const extra = row as Record<string, unknown>;
-      return { ...user, ...extra, password_hash: undefined, allowed_models: user.allowed_models };
+      const pointsCents = Number(extra.points_balance_cents || 0);
+      const earnedCents = Number(extra.points_lifetime_earned_cents || 0);
+      const spentCents = Number(extra.points_lifetime_spent_cents || 0);
+      return {
+        ...user,
+        ...extra,
+        password_hash: undefined,
+        allowed_models: user.allowed_models,
+        points_balance: pointsCents / 100,
+        points_lifetime_earned: earnedCents / 100,
+        points_lifetime_spent: spentCents / 100,
+        points_balance_cents: undefined,
+        points_lifetime_earned_cents: undefined,
+        points_lifetime_spent_cents: undefined,
+      };
     });
 }
 

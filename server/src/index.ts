@@ -12,8 +12,12 @@ import { createProvider, listProviders } from "./services/providers";
 import { createApiKey, listApiKeys } from "./services/keys";
 import { cleanupStaleReservations } from "./services/billing";
 import { maintainDueSubscriptions } from "./services/plans";
+import { seedLinuxDoOAuthFromEnv } from "./services/linuxdo-oauth";
+import { migratePointsScaleIfNeeded } from "./services/checkin";
 
 initDb();
+seedLinuxDoOAuthFromEnv();
+migratePointsScaleIfNeeded();
 
 // Single-port app
 const SINGLE_PORT = Number(process.env.PORT || 5555);
