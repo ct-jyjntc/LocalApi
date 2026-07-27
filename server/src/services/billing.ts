@@ -616,10 +616,11 @@ export function listDailyUsage(userId: string, days = 30) {
 
 /**
  * Release pending billing holds older than maxAgeMs.
- * Cursor/client disconnects can leave reservations stuck; 10 minutes is the default recovery window.
+ * Client disconnects / hung upstream streams can leave reservations stuck.
+ * Default recovery window is short so concurrency-adjacent credit holds free quickly.
  */
-export function cleanupStaleReservations(maxAgeMs = 10 * 60_000) {
-  const cutoff = new Date(Date.now() - Math.max(30_000, maxAgeMs)).toISOString();
+export function cleanupStaleReservations(maxAgeMs = 2 * 60_000) {
+  const cutoff = new Date(Date.now() - Math.max(15_000, maxAgeMs)).toISOString();
   const rows = db
     .prepare("SELECT * FROM usage_records WHERE status = 'pending' AND created_at < ?")
     .all(cutoff) as Array<{

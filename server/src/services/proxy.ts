@@ -92,6 +92,37 @@ type UpstreamHandle = {
   onBodyChunk: (streaming: boolean) => void;
 };
 
+/** After first stream byte, abort if no further data for this long (upstream stall). */
+const STREAM_IDLE_TIMEOUT_MS = Math.max(
+  15_000,
+  Number(process.env.STREAM_IDLE_TIMEOUT_MS || 3 * 60_000) || 3 * 60_000,
+);
+
+/** Absolute max lifetime for any single proxied request. */
+const REQUEST_MAX_MS = Math.max(
+  60_000,
+  Number(process.env.REQUEST_MAX_MS || 15 * 60_000) || 15 * 60_000,
+);
+
+function bindClientAbort(res: ExpressResponse, onAbort: () => void) {
+  const req = res.req;
+  let fired = false;
+  const fire = () => {
+    if (fired) return;
+    fired = true;
+    onAbort();
+  };
+  // Only treat a response close as abort when we never finished writing.
+  // Do NOT key off req "close"/destroyed — those fire on normal request completion too.
+  res.once("close", () => {
+    if (!res.writableEnded) fire();
+  });
+  req?.once("aborted", fire);
+  return () => {
+    fired = true;
+  };
+}
+
 function pickModel(body: unknown, query: Record<string, unknown>): string | null {
   if (body && typeof body === "object" && "model" in (body as object)) {
     const m = (body as { model?: unknown }).model;
@@ -262,12 +293,20 @@ async function openUpstream(
   provider: Provider,
   ctx: ProxyContext,
   path: string,
+  externalSignal?: AbortSignal,
 ): Promise<UpstreamHandle> {
   const mappedCtx = withMappedModel(provider, ctx);
   const url = buildUpstreamUrl(provider, path, mappedCtx.query);
   const headers = buildUpstreamHeaders(provider, mappedCtx);
   const controller = new AbortController();
   const timeout = createUpstreamTimeout(controller, provider.timeout_ms);
+  const onExternalAbort = () => {
+    timeout.abort();
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) onExternalAbort();
+    else externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
 
   try {
     const init: Parameters<typeof fetch>[1] = {
@@ -294,7 +333,10 @@ async function openUpstream(
     const response = await fetch(url, init);
     return {
       response,
-      abort: timeout.abort,
+      abort: () => {
+        timeout.abort();
+        externalSignal?.removeEventListener?.("abort", onExternalAbort);
+      },
       clearTimeout: timeout.clear,
       didTimeout: timeout.didTimeout,
       onBodyChunk: timeout.onBodyChunk,
@@ -302,7 +344,11 @@ async function openUpstream(
   } catch (error) {
     const timedOut = timeout.didTimeout();
     timeout.abort();
+    externalSignal?.removeEventListener?.("abort", onExternalAbort);
     if (timedOut) throw upstreamTimeoutError(error);
+    if (externalSignal?.aborted) {
+      throw Object.assign(new Error("Client disconnected"), { code: "CLIENT_ABORT" });
+    }
     throw error;
   }
 }
@@ -558,8 +604,9 @@ async function pipeResponseToClient(params: {
   started: number;
   stream: boolean;
   baseIo: ReturnType<typeof extractIO>;
+  clientSignal?: AbortSignal;
 }): Promise<ProxyResult> {
-  const { res, handle, provider, attempts, stream, baseIo } = params;
+  const { res, handle, provider, attempts, stream, baseIo, clientSignal, started } = params;
   const upstream = handle.response;
   const streamingResponse =
     stream || /\btext\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
@@ -599,37 +646,71 @@ async function pipeResponseToClient(params: {
   });
   let responseBytes = 0;
   let streamError: string | null = null;
-  let clientClosed = false;
+  let clientClosed = Boolean(clientSignal?.aborted);
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+  const armIdle = () => {
+    if (!streamingResponse) return;
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      streamError = streamError || "Upstream stream idle timeout";
+      handle.abort();
+      (body as { destroy?: (err?: Error) => void }).destroy?.(new Error("Upstream stream idle timeout"));
+    }, STREAM_IDLE_TIMEOUT_MS);
+  };
+  const forceCloseUpstream = (reason: string) => {
+    clientClosed = true;
+    streamError = streamError || reason;
+    handle.abort();
+    (body as { destroy?: (err?: Error) => void }).destroy?.(new Error(reason));
+  };
   const onClientClose = () => {
     if (res.writableEnded) return;
-    clientClosed = true;
-    streamError = "Client disconnected";
-    handle.abort();
-    (body as { destroy?: () => void }).destroy?.();
+    forceCloseUpstream("Client disconnected");
   };
+  const onClientSignalAbort = () => forceCloseUpstream("Client disconnected");
   res.once("close", onClientClose);
+  if (clientSignal) {
+    if (clientSignal.aborted) onClientSignalAbort();
+    else clientSignal.addEventListener("abort", onClientSignalAbort, { once: true });
+  }
   try {
+    if (clientClosed) throw new Error("Client disconnected");
     for await (const value of body) {
+      if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
+      if (Date.now() - started > REQUEST_MAX_MS) {
+        forceCloseUpstream("Request max duration exceeded");
+        throw new Error("Request max duration exceeded");
+      }
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
       if (responseBytes === 0) {
+        // TTFB timeout ends once the body starts; idle timeout takes over for stalls.
         handle.onBodyChunk(streamingResponse);
         commitHeaders();
+        armIdle();
+      } else {
+        armIdle();
       }
       responseBytes += chunk.length;
       responseCollector.push(chunk);
       if (!res.write(chunk)) {
         await Promise.race([once(res, "drain"), once(res, "close")]);
-        if (clientClosed) throw new Error("Client disconnected");
+        if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
       }
     }
     handle.clearTimeout();
+    clearIdle();
     if (!clientClosed) {
       commitHeaders();
       res.end();
     }
   } catch (error) {
     handle.abort();
-    if (clientClosed) {
+    clearIdle();
+    if (clientClosed || clientSignal?.aborted || (error instanceof Error && /Client disconnected/i.test(error.message))) {
       streamError = "Client disconnected";
     } else if (responseBytes === 0 && !res.headersSent) {
       if (handle.didTimeout() || (error instanceof Error && /timeout|aborted/i.test(error.message))) {
@@ -643,12 +724,19 @@ async function pipeResponseToClient(params: {
       if (!res.writableEnded) res.destroy(error instanceof Error ? error : undefined);
     }
   } finally {
+    clearIdle();
     res.off("close", onClientClose);
+    clientSignal?.removeEventListener?.("abort", onClientSignalAbort);
   }
 
   const io = { ...baseIo, ...responseCollector.finish() };
+  // Client disconnect mid-stream should not look like a successful billable 200.
+  const statusCode =
+    streamError === "Client disconnected" && responseBytes > 0
+      ? 499
+      : upstream.status;
   return {
-    statusCode: upstream.status,
+    statusCode,
     responseBytes,
     io,
     error:
@@ -795,191 +883,233 @@ export async function handleProxyHttp(
 
   let access: RequestAccess | null = null;
   let accessReleased = false;
+  let billing: BillingReservation | null = null;
   const releaseAccess = (tokens: number) => {
     if (accessReleased) return;
     accessReleased = true;
     access?.release(tokens);
   };
-  try {
-    if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body, { billingMode: ctx.billingMode, estimatedTokens });
-  } catch (error) {
-    const accessError = error instanceof AccessError ? error : new AccessError(403, "access_denied", String(error));
-    if (accessError.retryAfterSeconds) res.setHeader("retry-after", String(accessError.retryAfterSeconds));
-    writeLog({
-      method: ctx.method,
-      path: logPath,
-      model,
-      api_key_id: ctx.apiKeyId,
-      api_key_name: ctx.apiKeyName,
-      user_id: ctx.apiKey?.user_id ?? null,
-      status_code: accessError.status,
-      latency_ms: Date.now() - started,
-      error: accessError.message,
-      input_text: baseIo.input_text,
-      stream,
-    });
-    res.status(accessError.status).json({ error: { message: accessError.message, type: accessError.code } });
-    return;
-  }
-
-  let billing: BillingReservation | null = null;
-  try {
-    if (ctx.apiKey?.user_id) {
-      if (!model) throw new BillingError(400, "model_required", "A model is required for billed requests");
-      billing = reserveUsage({
-        requestId: uuid(),
-        userId: ctx.apiKey.user_id,
-        apiKeyId: ctx.apiKey.id,
-        model,
-        body: ctx.body,
-        estimate: estimatedTokens,
-        billingMode: ctx.billingMode,
-      });
-    }
-  } catch (error) {
-    releaseAccess(0);
-    const billingError = error instanceof BillingError
-      ? error
-      : new BillingError(402, "billing_error", error instanceof Error ? error.message : String(error));
-    writeLog({
-      method: ctx.method,
-      path: logPath,
-      model,
-      api_key_id: ctx.apiKeyId,
-      api_key_name: ctx.apiKeyName,
-      user_id: ctx.apiKey?.user_id ?? null,
-      status_code: billingError.status,
-      latency_ms: Date.now() - started,
-      error: billingError.message,
-      input_text: baseIo.input_text,
-      stream,
-    });
-    res.status(billingError.status).json({ error: { message: billingError.message, type: billingError.code } });
-    return;
-  }
-
-  let lastError: string | null = null;
-  let attempts = 0;
-  let normalRetriesUsed = 0;
-  let otherRetriesUsed = 0;
-  let lastProvider: Provider | null = null;
-  const hardCap = 1 + normalMaxRetries + otherMaxRetries;
-
-  while (attempts < hardCap) {
-    attempts += 1;
-    const provider = providerOrder[(attempts - 1) % providerOrder.length];
-    lastProvider = provider;
-    let handle: UpstreamHandle | undefined;
-    try {
-      handle = await openUpstream(provider, ctx, path);
-      const status = handle.response.status;
-      const normalFailure =
-        replayableBody
-        && canRetryNormalStatus(ctx, status)
-        && normalRetriesUsed < normalMaxRetries;
-      const otherFailure =
-        replayableBody
-        && canRetryOtherStatus(ctx, status)
-        && otherRetriesUsed < otherMaxRetries;
-
-      if (normalFailure || otherFailure) {
-        try {
-          await handle.response.buffer();
-        } finally {
-          handle.clearTimeout();
-        }
-        if (normalFailure) normalRetriesUsed += 1;
-        else otherRetriesUsed += 1;
-        forgetProviderAffinity(affinityKey, provider.id);
-        lastError = `Upstream HTTP ${status}`;
-        await sleep(retryDelay * attempts);
-        continue;
+  /** Idempotent: settleUsage no-ops when the row is no longer pending. */
+  const settleBillingSafe = (statusCode: number, error: string | null, tokens = 0) => {
+    if (billing) {
+      try {
+        settleUsage(billing, { statusCode, error });
+      } catch {
+        // Periodic cleanup recovers any residual holds.
       }
-
-      if (isRetryableStatus(status)) forgetProviderAffinity(affinityKey, provider.id);
-      else rememberProviderAffinity(affinityKey, provider.id);
-      const result = await pipeResponseToClient({
-        ctx,
-        res,
-        handle,
-        provider,
-        model,
-        path,
-        attempts,
-        started,
-        stream,
-        baseIo,
-      });
-      if (
-        result.statusCode >= 200 &&
-        result.statusCode < 400 &&
-        result.error &&
-        !result.error.startsWith("ok after")
-      ) {
-        forgetProviderAffinity(affinityKey, provider.id);
-      }
-      writeCompletedRequest({ ctx, path: logPath, model, provider, started, stream, result, billing, access });
-      accessReleased = true;
-      return;
-    } catch (error) {
-      handle?.abort();
-      lastError = error instanceof Error ? error.message : String(error);
-      if (!res.headersSent && replayableBody) {
-        if (isRetryableError(error) && normalRetriesUsed < normalMaxRetries) {
-          normalRetriesUsed += 1;
-          forgetProviderAffinity(affinityKey, provider.id);
-          await sleep(retryDelay * attempts);
-          continue;
-        }
-        if (!isRetryableError(error) && otherRetriesUsed < otherMaxRetries) {
-          otherRetriesUsed += 1;
-          forgetProviderAffinity(affinityKey, provider.id);
-          await sleep(retryDelay * attempts);
-          continue;
-        }
-      }
-      forgetProviderAffinity(affinityKey, provider.id);
-      break;
     }
-  }
+    releaseAccess(tokens);
+  };
 
-  if (billing) {
-    try {
-      settleUsage(billing, { statusCode: 502, error: lastError || "Upstream request failed" });
-    } catch {
-      // Stale reservations are recovered by the startup cleanup.
-    }
-  }
-  releaseAccess(0);
-
-  writeLog({
-    method: ctx.method,
-    path: logPath,
-    model,
-    provider_id: lastProvider?.id,
-    provider_name: lastProvider?.name,
-    api_key_id: ctx.apiKeyId,
-    api_key_name: ctx.apiKeyName,
-    user_id: ctx.apiKey?.user_id ?? null,
-    usage_id: billing?.usageId ?? null,
-    status_code: 502,
-    latency_ms: Date.now() - started,
-    cached: false,
-    error: lastError || "Upstream request failed",
-    input_text: baseIo.input_text,
-    stream,
-    request_bytes: requestBytes(ctx),
+  // Abort upstream as soon as the client goes away (including during TTFB wait).
+  const clientAbort = new AbortController();
+  const unbindClientAbort = bindClientAbort(res, () => {
+    if (!clientAbort.signal.aborted) clientAbort.abort();
   });
+  const hardDeadline = setTimeout(() => {
+    if (!clientAbort.signal.aborted) clientAbort.abort();
+  }, REQUEST_MAX_MS);
 
-  if (!res.headersSent) {
-    const timedOut = /aborted|timeout/i.test(lastError || "");
-    const status = timedOut ? 504 : 502;
-    res.status(status).json({
-      error: {
-        message: `Upstream request failed after ${attempts} attempt(s): ${lastError || "unknown"}`,
-        type: timedOut ? "timeout_error" : "proxy_error",
-        attempts,
-      },
+  try {
+    try {
+      if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body, { billingMode: ctx.billingMode, estimatedTokens });
+    } catch (error) {
+      const accessError = error instanceof AccessError ? error : new AccessError(403, "access_denied", String(error));
+      if (accessError.retryAfterSeconds) res.setHeader("retry-after", String(accessError.retryAfterSeconds));
+      writeLog({
+        method: ctx.method,
+        path: logPath,
+        model,
+        api_key_id: ctx.apiKeyId,
+        api_key_name: ctx.apiKeyName,
+        user_id: ctx.apiKey?.user_id ?? null,
+        status_code: accessError.status,
+        latency_ms: Date.now() - started,
+        error: accessError.message,
+        input_text: baseIo.input_text,
+        stream,
+      });
+      res.status(accessError.status).json({ error: { message: accessError.message, type: accessError.code } });
+      return;
+    }
+
+    try {
+      if (ctx.apiKey?.user_id) {
+        if (!model) throw new BillingError(400, "model_required", "A model is required for billed requests");
+        billing = reserveUsage({
+          requestId: uuid(),
+          userId: ctx.apiKey.user_id,
+          apiKeyId: ctx.apiKey.id,
+          model,
+          body: ctx.body,
+          estimate: estimatedTokens,
+          billingMode: ctx.billingMode,
+        });
+      }
+    } catch (error) {
+      releaseAccess(0);
+      const billingError = error instanceof BillingError
+        ? error
+        : new BillingError(402, "billing_error", error instanceof Error ? error.message : String(error));
+      writeLog({
+        method: ctx.method,
+        path: logPath,
+        model,
+        api_key_id: ctx.apiKeyId,
+        api_key_name: ctx.apiKeyName,
+        user_id: ctx.apiKey?.user_id ?? null,
+        status_code: billingError.status,
+        latency_ms: Date.now() - started,
+        error: billingError.message,
+        input_text: baseIo.input_text,
+        stream,
+      });
+      res.status(billingError.status).json({ error: { message: billingError.message, type: billingError.code } });
+      return;
+    }
+
+    if (clientAbort.signal.aborted) {
+      settleBillingSafe(499, "Client disconnected", 0);
+      if (!res.headersSent) {
+        res.status(499).json({ error: { message: "Client disconnected", type: "client_abort" } });
+      }
+      return;
+    }
+
+    let lastError: string | null = null;
+    let attempts = 0;
+    let normalRetriesUsed = 0;
+    let otherRetriesUsed = 0;
+    let lastProvider: Provider | null = null;
+    const hardCap = 1 + normalMaxRetries + otherMaxRetries;
+
+    while (attempts < hardCap) {
+      if (clientAbort.signal.aborted) {
+        lastError = "Client disconnected";
+        break;
+      }
+      attempts += 1;
+      const provider = providerOrder[(attempts - 1) % providerOrder.length];
+      lastProvider = provider;
+      let handle: UpstreamHandle | undefined;
+      try {
+        handle = await openUpstream(provider, ctx, path, clientAbort.signal);
+        const status = handle.response.status;
+        const normalFailure =
+          replayableBody
+          && canRetryNormalStatus(ctx, status)
+          && normalRetriesUsed < normalMaxRetries;
+        const otherFailure =
+          replayableBody
+          && canRetryOtherStatus(ctx, status)
+          && otherRetriesUsed < otherMaxRetries;
+
+        if (normalFailure || otherFailure) {
+          try {
+            await handle.response.buffer();
+          } finally {
+            handle.clearTimeout();
+          }
+          if (normalFailure) normalRetriesUsed += 1;
+          else otherRetriesUsed += 1;
+          forgetProviderAffinity(affinityKey, provider.id);
+          lastError = `Upstream HTTP ${status}`;
+          await sleep(retryDelay * attempts);
+          continue;
+        }
+
+        if (isRetryableStatus(status)) forgetProviderAffinity(affinityKey, provider.id);
+        else rememberProviderAffinity(affinityKey, provider.id);
+        const result = await pipeResponseToClient({
+          ctx,
+          res,
+          handle,
+          provider,
+          model,
+          path,
+          attempts,
+          started,
+          stream,
+          baseIo,
+          clientSignal: clientAbort.signal,
+        });
+        if (
+          result.statusCode >= 200 &&
+          result.statusCode < 400 &&
+          result.error &&
+          !result.error.startsWith("ok after")
+        ) {
+          forgetProviderAffinity(affinityKey, provider.id);
+        }
+        writeCompletedRequest({ ctx, path: logPath, model, provider, started, stream, result, billing, access });
+        // writeCompletedRequest already settled billing + released access; flags prevent double-work in finally.
+        accessReleased = true;
+        billing = null;
+        return;
+      } catch (error) {
+        handle?.abort();
+        lastError = error instanceof Error ? error.message : String(error);
+        if (clientAbort.signal.aborted || /Client disconnected/i.test(lastError)) {
+          lastError = "Client disconnected";
+          break;
+        }
+        if (!res.headersSent && replayableBody) {
+          if (isRetryableError(error) && normalRetriesUsed < normalMaxRetries) {
+            normalRetriesUsed += 1;
+            forgetProviderAffinity(affinityKey, provider.id);
+            await sleep(retryDelay * attempts);
+            continue;
+          }
+          if (!isRetryableError(error) && otherRetriesUsed < otherMaxRetries) {
+            otherRetriesUsed += 1;
+            forgetProviderAffinity(affinityKey, provider.id);
+            await sleep(retryDelay * attempts);
+            continue;
+          }
+        }
+        forgetProviderAffinity(affinityKey, provider.id);
+        break;
+      }
+    }
+
+    const clientGone = clientAbort.signal.aborted || /Client disconnected/i.test(lastError || "");
+    const failStatus = clientGone ? 499 : /aborted|timeout/i.test(lastError || "") ? 504 : 502;
+    settleBillingSafe(failStatus, lastError || "Upstream request failed", 0);
+
+    writeLog({
+      method: ctx.method,
+      path: logPath,
+      model,
+      provider_id: lastProvider?.id,
+      provider_name: lastProvider?.name,
+      api_key_id: ctx.apiKeyId,
+      api_key_name: ctx.apiKeyName,
+      user_id: ctx.apiKey?.user_id ?? null,
+      usage_id: billing?.usageId ?? null,
+      status_code: failStatus,
+      latency_ms: Date.now() - started,
+      cached: false,
+      error: lastError || "Upstream request failed",
+      input_text: baseIo.input_text,
+      stream,
+      request_bytes: requestBytes(ctx),
     });
+
+    if (!res.headersSent) {
+      res.status(failStatus === 499 ? 400 : failStatus).json({
+        error: {
+          message: clientGone
+            ? "Client disconnected"
+            : `Upstream request failed after ${attempts} attempt(s): ${lastError || "unknown"}`,
+          type: clientGone ? "client_abort" : failStatus === 504 ? "timeout_error" : "proxy_error",
+          attempts,
+        },
+      });
+    }
+  } finally {
+    clearTimeout(hardDeadline);
+    unbindClientAbort();
+    // Absolute safety net: never leave concurrency/billing holds behind.
+    settleBillingSafe(499, "Request ended without settlement", 0);
   }
 }

@@ -47,13 +47,14 @@ seedIfEmpty();
 cleanupStaleReservations();
 maintainDueSubscriptions();
 
+// Recover stuck pending holds quickly (client disconnect / hung stream).
 const reservationCleanupTimer = setInterval(() => {
   try {
     cleanupStaleReservations();
   } catch (error) {
     console.error("[maintenance] Failed to clean stale billing reservations", error);
   }
-}, 10 * 60_000);
+}, 30_000);
 reservationCleanupTimer.unref?.();
 
 const subscriptionMaintenanceTimer = setInterval(() => {

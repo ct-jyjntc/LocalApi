@@ -23,8 +23,19 @@ type TokenWindow = {
   reserved: number;
 };
 
+/** Max time a single request may hold a concurrency slot (self-heal leaks). */
+const CONCURRENCY_HOLD_MAX_MS = Math.max(
+  60_000,
+  Number(process.env.CONCURRENCY_HOLD_MAX_MS || 12 * 60_000) || 12 * 60_000,
+);
+
+type ConcurrencyState = {
+  /** Monotonic acquire timestamps still held. */
+  holds: number[];
+};
+
 const tokenWindows = new Map<string, TokenWindow>();
-const concurrency = new Map<string, number>();
+const concurrency = new Map<string, ConcurrencyState>();
 
 function parseModels(value: string | string[] | undefined): string[] {
   if (Array.isArray(value)) return value;
@@ -67,6 +78,22 @@ function reserveTokenWindow(scope: string, limit: number, estimated: number) {
       state!.used += Math.max(0, actual);
     },
   };
+}
+
+function pruneConcurrencyHolds(state: ConcurrencyState, now = Date.now()) {
+  const cutoff = now - CONCURRENCY_HOLD_MAX_MS;
+  if (state.holds.length === 0) return 0;
+  // Holds are roughly chronological; drop anything older than max lifetime.
+  state.holds = state.holds.filter((startedAt) => startedAt >= cutoff);
+  return state.holds.length;
+}
+
+function activeConcurrency(scope: string, now = Date.now()) {
+  const state = concurrency.get(scope);
+  if (!state) return 0;
+  const count = pruneConcurrencyHolds(state, now);
+  if (count === 0) concurrency.delete(scope);
+  return count;
 }
 
 export type RequestAccess = {
@@ -127,11 +154,18 @@ export function beginRequestAccess(
     ? (billingMode === "coding" ? subscription?.plan.concurrency_limit || 0 : tier?.concurrency_limit || 0)
     : key.concurrency_limit;
   const concurrencyScope = `commercial:concurrency:${accessScope}`;
-  const active = concurrency.get(concurrencyScope) ?? 0;
+  const now = Date.now();
+  const active = activeConcurrency(concurrencyScope, now);
   if (limit > 0 && active >= limit) {
     throw new AccessError(429, "concurrency_limit_exceeded", "Concurrent request limit exceeded", 1);
   }
-  concurrency.set(concurrencyScope, active + 1);
+  let state = concurrency.get(concurrencyScope);
+  if (!state) {
+    state = { holds: [] };
+    concurrency.set(concurrencyScope, state);
+  }
+  const holdStartedAt = now;
+  state.holds.push(holdStartedAt);
 
   const estimated = options.estimatedTokens ?? estimateRequestTokens(body);
   const tpm = user
@@ -145,7 +179,13 @@ export function beginRequestAccess(
       estimated.prompt + estimated.completion,
     );
   } catch (error) {
-    concurrency.set(concurrencyScope, Math.max(0, (concurrency.get(concurrencyScope) ?? 1) - 1));
+    // Roll back the concurrency hold we just took.
+    const current = concurrency.get(concurrencyScope);
+    if (current) {
+      const idx = current.holds.lastIndexOf(holdStartedAt);
+      if (idx >= 0) current.holds.splice(idx, 1);
+      if (current.holds.length === 0) concurrency.delete(concurrencyScope);
+    }
     throw error;
   }
 
@@ -156,9 +196,13 @@ export function beginRequestAccess(
       if (released) return;
       released = true;
       tokenReservation.settle(actualTokens);
-      const next = Math.max(0, (concurrency.get(concurrencyScope) ?? 1) - 1);
-      if (next === 0) concurrency.delete(concurrencyScope);
-      else concurrency.set(concurrencyScope, next);
+      const current = concurrency.get(concurrencyScope);
+      if (current) {
+        const idx = current.holds.lastIndexOf(holdStartedAt);
+        if (idx >= 0) current.holds.splice(idx, 1);
+        else if (current.holds.length > 0) current.holds.shift();
+        if (current.holds.length === 0) concurrency.delete(concurrencyScope);
+      }
     },
   };
 }
@@ -166,4 +210,14 @@ export function beginRequestAccess(
 export function clearAccessState() {
   tokenWindows.clear();
   concurrency.clear();
+}
+
+/** Test/debug helper. */
+export function getConcurrencyDebug() {
+  const now = Date.now();
+  const out: Record<string, number> = {};
+  for (const [scope, state] of concurrency.entries()) {
+    out[scope] = pruneConcurrencyHolds(state, now);
+  }
+  return out;
 }
