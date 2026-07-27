@@ -525,8 +525,12 @@ export function listDailyUsage(userId: string, days = 30) {
   });
 }
 
-export function cleanupStaleReservations() {
-  const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
+/**
+ * Release pending billing holds older than maxAgeMs.
+ * Cursor/client disconnects can leave reservations stuck; 10 minutes is the default recovery window.
+ */
+export function cleanupStaleReservations(maxAgeMs = 10 * 60_000) {
+  const cutoff = new Date(Date.now() - Math.max(30_000, maxAgeMs)).toISOString();
   const rows = db
     .prepare("SELECT * FROM usage_records WHERE status = 'pending' AND created_at < ?")
     .all(cutoff) as Array<{
@@ -536,6 +540,7 @@ export function cleanupStaleReservations() {
       reserved_wallet_micros: number;
       subscription_id: string | null;
     }>;
+  if (rows.length === 0) return 0;
   db.transaction(() => {
     for (const row of rows) {
       db.prepare(
@@ -550,6 +555,78 @@ export function cleanupStaleReservations() {
         "UPDATE usage_records SET status = 'cancelled', completed_at = ?, error = 'stale reservation recovered' WHERE id = ?",
       ).run(nowIso(), row.id);
     }
+    // Reconcile any residual drift on touched subscriptions.
+    const subscriptionIds = [
+      ...new Set(rows.map((row) => row.subscription_id).filter((id): id is string => Boolean(id))),
+    ];
+    for (const subscriptionId of subscriptionIds) {
+      const pending = db
+        .prepare(
+          `SELECT COALESCE(SUM(reserved_plan_micros), 0) AS total
+           FROM usage_records WHERE subscription_id = ? AND status = 'pending'`,
+        )
+        .get(subscriptionId) as { total: number };
+      db.prepare("UPDATE subscriptions SET reserved_micros = ?, updated_at = ? WHERE id = ?").run(
+        Math.max(0, Number(pending.total) || 0),
+        nowIso(),
+        subscriptionId,
+      );
+    }
+  })();
+  return rows.length;
+}
+
+/** Force-release all pending holds for one user (used before plan upgrade/renew). */
+export function releaseUserPendingReservations(userId: string, maxAgeMs = 2 * 60_000) {
+  const cutoff = new Date(Date.now() - Math.max(0, maxAgeMs)).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT * FROM usage_records
+       WHERE user_id = ? AND status = 'pending' AND created_at < ?`,
+    )
+    .all(userId, cutoff) as Array<{
+      id: string;
+      user_id: string;
+      reserved_plan_micros: number;
+      reserved_wallet_micros: number;
+      subscription_id: string | null;
+    }>;
+  if (rows.length === 0) {
+    // Still reconcile subscription reserved to match remaining pending.
+    db.prepare(
+      `UPDATE subscriptions
+       SET reserved_micros = COALESCE((
+         SELECT SUM(reserved_plan_micros) FROM usage_records
+         WHERE subscription_id = subscriptions.id AND status = 'pending'
+       ), 0),
+       updated_at = ?
+       WHERE user_id = ? AND status = 'active'`,
+    ).run(nowIso(), userId);
+    return 0;
+  }
+  db.transaction(() => {
+    for (const row of rows) {
+      db.prepare(
+        "UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ? WHERE user_id = ?",
+      ).run(row.reserved_wallet_micros, nowIso(), row.user_id);
+      if (row.subscription_id) {
+        db.prepare(
+          `UPDATE subscriptions SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ? WHERE id = ?`,
+        ).run(row.reserved_plan_micros, nowIso(), row.subscription_id);
+      }
+      db.prepare(
+        "UPDATE usage_records SET status = 'cancelled', completed_at = ?, error = 'released before plan change' WHERE id = ?",
+      ).run(nowIso(), row.id);
+    }
+    db.prepare(
+      `UPDATE subscriptions
+       SET reserved_micros = COALESCE((
+         SELECT SUM(reserved_plan_micros) FROM usage_records
+         WHERE subscription_id = subscriptions.id AND status = 'pending'
+       ), 0),
+       updated_at = ?
+       WHERE user_id = ? AND status = 'active'`,
+    ).run(nowIso(), userId);
   })();
   return rows.length;
 }

@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { db, Plan, PlanOrder, Subscription } from "../db";
 import { nowIso } from "../utils/time";
+import { cleanupStaleReservations, releaseUserPendingReservations } from "./billing";
 
 export class PlanTransactionError extends Error {
   status: number;
@@ -626,6 +627,9 @@ export function purchasePlan(userId: string, planId: string, requestId = uuid())
 export function upgradePlan(userId: string, targetPlanId: string, requestId = uuid()) {
   const duplicate = existingPlanTransaction(userId, requestId);
   if (duplicate) return duplicate;
+  // Drop holds left by disconnected clients so upgrades are not blocked forever.
+  cleanupStaleReservations();
+  releaseUserPendingReservations(userId, 2 * 60_000);
   const active = maintainActiveSubscription(userId);
   if (!active) throw new PlanTransactionError(404, "active_subscription_not_found", "Active subscription not found");
   const orderId = uuid();
@@ -635,7 +639,11 @@ export function upgradePlan(userId: string, targetPlanId: string, requestId = uu
     ).get(active.id) as Subscription | undefined;
     if (!current) throw new PlanTransactionError(409, "subscription_changed", "Subscription has changed");
     if (current.reserved_micros > 0) {
-      throw new PlanTransactionError(409, "subscription_in_use", "Wait for active Coding Plan requests to finish before upgrading");
+      throw new PlanTransactionError(
+        409,
+        "subscription_in_use",
+        "Wait for active Coding Plan requests to finish before upgrading (or retry in ~2 minutes after disconnect)",
+      );
     }
     if (current.plan_id === targetPlanId) {
       throw new PlanTransactionError(409, "same_plan", "The target plan is already active");
@@ -734,6 +742,8 @@ export function upgradePlan(userId: string, targetPlanId: string, requestId = uu
 export function renewPlan(userId: string, requestId = uuid()) {
   const duplicate = existingPlanTransaction(userId, requestId);
   if (duplicate) return duplicate;
+  cleanupStaleReservations();
+  releaseUserPendingReservations(userId, 2 * 60_000);
   const active = maintainActiveSubscription(userId);
   if (!active) throw new PlanTransactionError(404, "active_subscription_not_found", "Active subscription not found");
   const orderId = uuid();
@@ -743,7 +753,11 @@ export function renewPlan(userId: string, requestId = uuid()) {
     ).get(active.id) as Subscription | undefined;
     if (!current) throw new PlanTransactionError(409, "subscription_changed", "Subscription has changed");
     if (current.reserved_micros > 0) {
-      throw new PlanTransactionError(409, "subscription_in_use", "Wait for active Coding Plan requests to finish before renewing");
+      throw new PlanTransactionError(
+        409,
+        "subscription_in_use",
+        "Wait for active Coding Plan requests to finish before renewing (or retry in ~2 minutes after disconnect)",
+      );
     }
     const plan = getPlan(current.plan_id);
     if (!plan || plan.enabled !== 1) {
