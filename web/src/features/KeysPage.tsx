@@ -6,6 +6,7 @@ import { api, type ApiKeyRow } from "@/lib/api";
 import {
   EmptyState,
   PageHeader,
+  PaginationBar,
   TABLE_HEAD_CLASS,
   TABLE_ROW_CLASS,
 } from "@/components/shared";
@@ -21,11 +22,15 @@ import { useAppDialog } from "@/components/app-dialog-context";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export function KeysPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const zh = locale === "zh";
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({
-    queryKey: ["keys"],
-    queryFn: () => api.keys.list(),
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ["keys", page, pageSize],
+    queryFn: () => api.keys.list({ limit: pageSize, offset: page * pageSize }),
+    placeholderData: (prev) => prev,
   });
   const [name, setName] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -101,6 +106,16 @@ export function KeysPage() {
         ) : (
           data.items.map((k) => <KeyRow key={k.id} row={k} onCopy={copyKey} onToggle={toggle.mutate} onRemove={remove.mutate} />)
         )}
+        {data ? (
+          <PaginationBar
+            page={page}
+            pageSize={pageSize}
+            total={data.total}
+            onPageChange={setPage}
+            loading={isFetching}
+            zh={zh}
+          />
+        ) : null}
       </Card>
     </div>
   );

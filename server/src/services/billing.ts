@@ -520,9 +520,23 @@ export function getPublicWallet(userId: string) {
 }
 
 export function listWalletLedger(userId: string, limit = 200) {
-  return db
-    .prepare("SELECT * FROM wallet_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT ?")
-    .all(userId, limit);
+  return listWalletLedgerPage({ userId, limit, offset: 0 }).items;
+}
+
+export function listWalletLedgerPage(input: { userId: string; limit?: number; offset?: number }) {
+  const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const total = (
+    db.prepare("SELECT COUNT(*) AS c FROM wallet_ledger WHERE user_id = ?").get(input.userId) as {
+      c: number;
+    }
+  ).c;
+  const items = db
+    .prepare(
+      "SELECT * FROM wallet_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+    )
+    .all(input.userId, limit, offset);
+  return { items, total, limit, offset };
 }
 
 function floorTokenCost(tokens: number, priceMicros: number) {
@@ -554,11 +568,58 @@ function addBillingBreakdown(row: Record<string, unknown>) {
   };
 }
 
+function mapUsageRow(row: Record<string, unknown>) {
+  const mapped = addBillingBreakdown(row);
+  const username = typeof row.username === "string" ? row.username : null;
+  const displayName = typeof row.display_name === "string" ? row.display_name : null;
+  return {
+    ...mapped,
+    username,
+    display_name: displayName,
+    user_label: displayName || username || null,
+  };
+}
+
 export function listUsageRecords(userId?: string, limit = 200) {
-  const rows = userId
-    ? db.prepare("SELECT * FROM usage_records WHERE user_id = ? ORDER BY created_at DESC LIMIT ?").all(userId, limit)
-    : db.prepare("SELECT * FROM usage_records ORDER BY created_at DESC LIMIT ?").all(limit);
-  return (rows as Array<Record<string, unknown>>).map(addBillingBreakdown);
+  return listUsageRecordsPage({ userId, limit, offset: 0 }).items;
+}
+
+export function listUsageRecordsPage(input: {
+  userId?: string;
+  limit?: number;
+  offset?: number;
+} = {}) {
+  const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const total = input.userId
+    ? (db.prepare("SELECT COUNT(*) AS c FROM usage_records WHERE user_id = ?").get(input.userId) as {
+        c: number;
+      }).c
+    : (db.prepare("SELECT COUNT(*) AS c FROM usage_records").get() as { c: number }).c;
+  const rows = input.userId
+    ? db
+        .prepare(
+          `SELECT ur.*, u.username AS username, u.display_name AS display_name
+           FROM usage_records ur
+           LEFT JOIN users u ON u.id = ur.user_id
+           WHERE ur.user_id = ?
+           ORDER BY ur.created_at DESC LIMIT ? OFFSET ?`,
+        )
+        .all(input.userId, limit, offset)
+    : db
+        .prepare(
+          `SELECT ur.*, u.username AS username, u.display_name AS display_name
+           FROM usage_records ur
+           LEFT JOIN users u ON u.id = ur.user_id
+           ORDER BY ur.created_at DESC LIMIT ? OFFSET ?`,
+        )
+        .all(limit, offset);
+  return {
+    items: (rows as Array<Record<string, unknown>>).map(mapUsageRow),
+    total,
+    limit,
+    offset,
+  };
 }
 
 export function getUsageTotals(userId: string) {

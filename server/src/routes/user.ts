@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { getSetting, type User } from "../db";
 import { requireUser } from "../middleware/auth";
-import { createApiKey, deleteApiKey, listApiKeys, updateApiKey } from "../services/keys";
+import { createApiKey, deleteApiKey, listApiKeysPage, updateApiKey } from "../services/keys";
 import {
   PlanTransactionError,
   getActiveSubscription,
@@ -20,8 +20,8 @@ import {
   getUsageTotals,
   listDailyUsage,
   listModelPrices,
-  listUsageRecords,
-  listWalletLedger,
+  listUsageRecordsPage,
+  listWalletLedgerPage,
 } from "../services/billing";
 import {
   authenticateUser,
@@ -44,10 +44,10 @@ import {
   getPaymentChannelPublic,
   getPaymentChannelsPublic,
   getPaymentOrder,
-  listPaymentOrders,
+  listPaymentOrdersPage,
   syncPaymentOrder,
 } from "../services/payments";
-import { listCommerceLedger, listCommerceOrders } from "../services/commerce";
+import { listCommerceLedgerPage, listCommerceOrdersPage } from "../services/commerce";
 import { createFeedback, getFeedbackThread, listUserFeedback, replyFeedback } from "../services/feedback";
 import {
   exchangeLinuxDoCode,
@@ -331,7 +331,11 @@ userRouter.get("/dashboard", (req, res) => {
   });
 });
 
-userRouter.get("/keys", (req, res) => res.json({ items: listApiKeys(requestUser(req).id) }));
+userRouter.get("/keys", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listApiKeysPage({ userId: requestUser(req).id, limit, offset }));
+});
 userRouter.post("/keys", (req, res) => {
   const body = parseBody(userKeyCreateSchema, req.body, res);
   if (!body) return;
@@ -351,12 +355,14 @@ userRouter.delete("/keys/:id", (req, res) => {
 });
 
 userRouter.get("/usage", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 500);
-  return res.json({ items: listUsageRecords(requestUser(req).id, limit) });
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listUsageRecordsPage({ userId: requestUser(req).id, limit, offset }));
 });
 userRouter.get("/ledger", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 500);
-  return res.json({ items: listWalletLedger(requestUser(req).id, limit) });
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listWalletLedgerPage({ userId: requestUser(req).id, limit, offset }));
 });
 
 userRouter.get("/checkin", (req, res) => {
@@ -434,12 +440,14 @@ userRouter.get("/plan-orders", (req, res) => {
   return res.json({ items: listPlanOrders(requestUser(req).id, limit) });
 });
 userRouter.get("/commerce/orders", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 500);
-  return res.json({ items: listCommerceOrders(requestUser(req).id, limit) });
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listCommerceOrdersPage({ userId: requestUser(req).id, limit, offset }));
 });
 userRouter.get("/commerce/ledger", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 500);
-  return res.json({ items: listCommerceLedger(requestUser(req).id, limit) });
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listCommerceLedgerPage({ userId: requestUser(req).id, limit, offset }));
 });
 userRouter.post("/plans/:id/purchase", (req, res) => {
   const body = parseBody(z.object({ request_id: z.string().uuid().optional() }), req.body, res);
@@ -482,8 +490,9 @@ userRouter.post("/subscription/renew", (req, res) => {
   }
 });
 userRouter.get("/payments/orders", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 500);
-  return res.json({ items: listPaymentOrders({ userId: requestUser(req).id, limit }) });
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listPaymentOrdersPage({ userId: requestUser(req).id, limit, offset }));
 });
 userRouter.get("/payments/orders/:id", (req, res) => {
   const order = getPaymentOrder(req.params.id, requestUser(req).id);

@@ -764,7 +764,21 @@ export function getPaymentOrder(idOrNo: string, userId?: string) {
   return row ? publicOrder(row) : null;
 }
 
-export function listPaymentOrders(input: { userId?: string; status?: string; limit?: number } = {}) {
+export function listPaymentOrders(input: {
+  userId?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+} = {}) {
+  return listPaymentOrdersPage(input).items;
+}
+
+export function listPaymentOrdersPage(input: {
+  userId?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+} = {}) {
   const conditions: string[] = ["payment_orders.deleted_at IS NULL"];
   const params: unknown[] = [];
   if (input.userId) {
@@ -775,17 +789,31 @@ export function listPaymentOrders(input: { userId?: string; status?: string; lim
     conditions.push("payment_orders.status = ?");
     params.push(input.status);
   }
-  const limit = Math.min(Math.max(1, input.limit ?? 200), 1000);
-  params.push(limit);
-  const rows = db.prepare(
-    `SELECT payment_orders.*, users.username, users.display_name, payment_channels.name AS channel_name
-     FROM payment_orders
-     JOIN users ON users.id = payment_orders.user_id
-     JOIN payment_channels ON payment_channels.id = payment_orders.channel_id
-     ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
-     ORDER BY payment_orders.created_at DESC LIMIT ?`,
-  ).all(...params) as Array<PaymentOrder & Record<string, unknown>>;
-  return rows.map(publicOrder);
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = Math.min(Math.max(1, Math.floor(input.limit ?? 50)), 500);
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const total = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c
+         FROM payment_orders
+         JOIN users ON users.id = payment_orders.user_id
+         JOIN payment_channels ON payment_channels.id = payment_orders.channel_id
+         ${where}`,
+      )
+      .get(...params) as { c: number }
+  ).c;
+  const rows = db
+    .prepare(
+      `SELECT payment_orders.*, users.username, users.display_name, payment_channels.name AS channel_name
+       FROM payment_orders
+       JOIN users ON users.id = payment_orders.user_id
+       JOIN payment_channels ON payment_channels.id = payment_orders.channel_id
+       ${where}
+       ORDER BY payment_orders.created_at DESC LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limit, offset) as Array<PaymentOrder & Record<string, unknown>>;
+  return { items: rows.map(publicOrder), total, limit, offset };
 }
 
 function ensureAmountMatches(order: PaymentOrder, value: string | number | null | undefined) {

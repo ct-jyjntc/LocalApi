@@ -16,7 +16,7 @@ export function UserPaymentsPage() {
   const config = useQuery({ queryKey: ["user-payment-config"], queryFn: userApi.payments.config });
   const orders = useQuery({
     queryKey: ["user-payment-orders"],
-    queryFn: () => userApi.payments.orders(200),
+    queryFn: () => userApi.payments.orders({ limit: 50, offset: 0 }),
     refetchInterval: (query) => query.state.data?.items.some((item) => ["pending", "paid"].includes(item.status)) ? 3_000 : false,
   });
   const me = useQuery({ queryKey: ["user-me"], queryFn: userApi.me });

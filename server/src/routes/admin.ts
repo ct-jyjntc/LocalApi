@@ -10,7 +10,7 @@ import {
 import {
   createApiKey,
   deleteApiKey,
-  listApiKeys,
+  listApiKeysPage,
   updateApiKey,
 } from "../services/keys";
 import { clearLogs, getDashboardStats, getLog, listLogs } from "../services/logs";
@@ -227,8 +227,17 @@ adminRouter.delete("/providers/:id", (req, res) => {
 });
 
 // API Keys
-adminRouter.get("/keys", (_req, res) => {
-  res.json({ items: listApiKeys() });
+adminRouter.get("/keys", (req, res) => {
+  const limit = Number(req.query.limit ?? 50);
+  const offset = Number(req.query.offset ?? 0);
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  res.json(
+    listApiKeysPage({
+      limit: Number.isFinite(limit) ? limit : 50,
+      offset: Number.isFinite(offset) ? offset : 0,
+      q,
+    }),
+  );
 });
 
 adminRouter.post("/keys", (req, res) => {

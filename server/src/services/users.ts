@@ -50,53 +50,131 @@ export function getUserByUsername(username: string): User | null {
   );
 }
 
+function mapUserListRow(row: Record<string, unknown>) {
+  const topup = Number(row.lifetime_topup_micros || 0);
+  const tier = resolveTierForTopup(topup);
+  const pointsCents = Number(row.points_balance_cents || 0);
+  const earnedCents = Number(row.points_lifetime_earned_cents || 0);
+  const spentCents = Number(row.points_lifetime_spent_cents || 0);
+  return {
+    id: String(row.id),
+    username: String(row.username),
+    display_name: String(row.display_name),
+    status: String(row.status),
+    allowed_models: parseModels(String(row.allowed_models || "[]")),
+    rpm_limit: Number(row.rpm_limit || 0),
+    tpm_limit: Number(row.tpm_limit || 0),
+    concurrency_limit: Number(row.concurrency_limit || 0),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    last_login_at: (row.last_login_at as string | null) ?? null,
+    balance_micros: Number(row.balance_micros || 0),
+    reserved_micros: Number(row.reserved_micros || 0),
+    lifetime_spent_micros: Number(row.lifetime_spent_micros || 0),
+    lifetime_topup_micros: topup,
+    subscription_id: (row.subscription_id as string | null) ?? null,
+    plan_id: (row.plan_id as string | null) ?? null,
+    period_end: (row.period_end as string | null) ?? null,
+    period_start: (row.period_start as string | null) ?? null,
+    remaining_credits_micros:
+      row.remaining_credits_micros == null ? null : Number(row.remaining_credits_micros),
+    plan_reserved_micros: row.plan_reserved_micros == null ? null : Number(row.plan_reserved_micros),
+    subscription_status: (row.subscription_status as string | null) ?? null,
+    plan_name: (row.plan_name as string | null) ?? null,
+    plan_included_credits_micros:
+      row.plan_included_credits_micros == null ? null : Number(row.plan_included_credits_micros),
+    points_balance: pointsCents / 100,
+    points_lifetime_earned: earnedCents / 100,
+    points_lifetime_spent: spentCents / 100,
+    // Keep shape expected by the admin UI, but drop bulky nested tier fields.
+    tier: {
+      current: tier.current
+        ? {
+            id: tier.current.id,
+            name: tier.current.name,
+            threshold_micros: tier.current.threshold_micros,
+          }
+        : null,
+      next: tier.next
+        ? {
+            id: tier.next.id,
+            name: tier.next.name,
+            threshold_micros: tier.next.threshold_micros,
+          }
+        : null,
+      lifetime_topup_micros: topup,
+      next_required_micros: tier.next_required_micros,
+    },
+  };
+}
+
+const USER_LIST_SELECT = `
+  SELECT u.id, u.username, u.display_name, u.status, u.allowed_models,
+         u.rpm_limit, u.tpm_limit, u.concurrency_limit,
+         u.created_at, u.updated_at, u.last_login_at,
+         COALESCE(w.balance_micros, 0) AS balance_micros,
+         COALESCE(w.reserved_micros, 0) AS reserved_micros,
+         COALESCE(w.lifetime_spent_micros, 0) AS lifetime_spent_micros,
+         COALESCE(w.lifetime_topup_micros, 0) AS lifetime_topup_micros,
+         COALESCE(pa.balance, 0) AS points_balance_cents,
+         COALESCE(pa.lifetime_earned, 0) AS points_lifetime_earned_cents,
+         COALESCE(pa.lifetime_spent, 0) AS points_lifetime_spent_cents,
+         s.id AS subscription_id, s.plan_id, s.period_end, s.period_start,
+         s.remaining_credits_micros, s.reserved_micros AS plan_reserved_micros,
+         s.status AS subscription_status,
+         p.name AS plan_name,
+         p.included_credits_micros AS plan_included_credits_micros
+  FROM users u
+  LEFT JOIN wallet_accounts w ON w.user_id = u.id
+  LEFT JOIN points_accounts pa ON pa.user_id = u.id
+  LEFT JOIN subscriptions s ON s.id = (
+    SELECT id FROM subscriptions sx
+    WHERE sx.user_id = u.id AND sx.status = 'active'
+    ORDER BY sx.created_at DESC LIMIT 1
+  )
+  LEFT JOIN plans p ON p.id = s.plan_id
+`;
+
+/** Full list (kept for callers that still expect every user). Prefer listUsersPage. */
 export function listUsers() {
   return db
-    .prepare(
-      `SELECT u.*,
-              COALESCE(w.balance_micros, 0) AS balance_micros,
-              COALESCE(w.reserved_micros, 0) AS reserved_micros,
-              COALESCE(w.lifetime_spent_micros, 0) AS lifetime_spent_micros,
-              COALESCE(w.lifetime_topup_micros, 0) AS lifetime_topup_micros,
-              COALESCE(pa.balance, 0) AS points_balance_cents,
-              COALESCE(pa.lifetime_earned, 0) AS points_lifetime_earned_cents,
-              COALESCE(pa.lifetime_spent, 0) AS points_lifetime_spent_cents,
-              s.id AS subscription_id, s.plan_id, s.period_end, s.period_start,
-              s.remaining_credits_micros, s.reserved_micros AS plan_reserved_micros,
-              s.status AS subscription_status,
-              p.name AS plan_name,
-              p.included_credits_micros AS plan_included_credits_micros
-       FROM users u
-       LEFT JOIN wallet_accounts w ON w.user_id = u.id
-       LEFT JOIN points_accounts pa ON pa.user_id = u.id
-       LEFT JOIN subscriptions s ON s.id = (
-         SELECT id FROM subscriptions sx
-         WHERE sx.user_id = u.id AND sx.status = 'active'
-         ORDER BY sx.created_at DESC LIMIT 1
-       )
-       LEFT JOIN plans p ON p.id = s.plan_id
-       ORDER BY u.created_at DESC`,
-    )
+    .prepare(`${USER_LIST_SELECT} ORDER BY u.created_at DESC`)
     .all()
-    .map((row) => {
-      const user = publicUser(row as User, Number((row as Record<string, unknown>).lifetime_topup_micros || 0));
-      const extra = row as Record<string, unknown>;
-      const pointsCents = Number(extra.points_balance_cents || 0);
-      const earnedCents = Number(extra.points_lifetime_earned_cents || 0);
-      const spentCents = Number(extra.points_lifetime_spent_cents || 0);
-      return {
-        ...user,
-        ...extra,
-        password_hash: undefined,
-        allowed_models: user.allowed_models,
-        points_balance: pointsCents / 100,
-        points_lifetime_earned: earnedCents / 100,
-        points_lifetime_spent: spentCents / 100,
-        points_balance_cents: undefined,
-        points_lifetime_earned_cents: undefined,
-        points_lifetime_spent_cents: undefined,
-      };
-    });
+    .map((row) => mapUserListRow(row as Record<string, unknown>));
+}
+
+/** Paginated admin user list with optional search. */
+export function listUsersPage(input: { limit?: number; offset?: number; q?: string } = {}) {
+  const limit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const q = String(input.q || "").trim();
+  const like = q ? `%${q.replace(/[%_]/g, "")}%` : null;
+  const where = like
+    ? `WHERE u.username LIKE ? COLLATE NOCASE
+         OR u.display_name LIKE ? COLLATE NOCASE
+         OR IFNULL(p.name, '') LIKE ? COLLATE NOCASE`
+    : "";
+  const params = like ? [like, like, like] : [];
+  const total = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c
+         FROM users u
+         LEFT JOIN subscriptions s ON s.id = (
+           SELECT id FROM subscriptions sx
+           WHERE sx.user_id = u.id AND sx.status = 'active'
+           ORDER BY sx.created_at DESC LIMIT 1
+         )
+         LEFT JOIN plans p ON p.id = s.plan_id
+         ${where}`,
+      )
+      .get(...params) as { c: number }
+  ).c;
+  const items = db
+    .prepare(`${USER_LIST_SELECT} ${where} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset)
+    .map((row) => mapUserListRow(row as Record<string, unknown>));
+  return { items, total, limit, offset };
 }
 
 export function createUser(input: {

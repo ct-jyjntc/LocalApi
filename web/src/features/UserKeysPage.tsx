@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Copy, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { userApi, type ApiKeyRow } from "@/lib/api";
-import { EmptyState, PageHeader, TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
+import { EmptyState, PageHeader, PaginationBar, TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
 import { useAppDialog } from "@/components/app-dialog-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,13 @@ export function UserKeysPage() {
   const zh = locale === "zh";
   const qc = useQueryClient();
   const dialogs = useAppDialog();
-  const query = useQuery({ queryKey: ["user", "keys"], queryFn: userApi.keys.list });
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const query = useQuery({
+    queryKey: ["user", "keys", page, pageSize],
+    queryFn: () => userApi.keys.list({ limit: pageSize, offset: page * pageSize }),
+    placeholderData: (prev) => prev,
+  });
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [created, setCreated] = useState<ApiKeyRow | null>(null);
@@ -58,6 +64,16 @@ export function UserKeysPage() {
       <Card className="overflow-hidden">
         <div className={`${TABLE_HEAD_CLASS} hidden sm:flex`}><span className="w-36 shrink-0">{zh ? "名称" : "Name"}</span><span className="min-w-0 flex-1">Key</span><span className="hidden w-36 shrink-0 lg:block">{zh ? "最近使用" : "Last used"}</span><span className="w-28 shrink-0 text-right">{zh ? "操作" : "Actions"}</span></div>
         {!query.data?.items.length ? <EmptyState>{query.isLoading ? (zh ? "加载中…" : "Loading…") : (zh ? "暂无 API Key" : "No API keys")}</EmptyState> : query.data.items.map((row) => <KeyRow key={row.id} row={row} zh={zh} onToggle={(enabled) => toggle.mutate({ id: row.id, enabled })} onRemove={() => requestDelete(row)} />)}
+        {query.data ? (
+          <PaginationBar
+            page={page}
+            pageSize={pageSize}
+            total={query.data.total}
+            onPageChange={setPage}
+            loading={query.isFetching}
+            zh={zh}
+          />
+        ) : null}
       </Card>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

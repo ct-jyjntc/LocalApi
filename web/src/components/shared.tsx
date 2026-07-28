@@ -68,6 +68,62 @@ export function EmptyState({ children }: { children: ReactNode }) {
   );
 }
 
+/** Compact footer for server-paginated lists. */
+export function PaginationBar({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  loading,
+  zh = true,
+  className,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  loading?: boolean;
+  zh?: boolean;
+  className?: string;
+}) {
+  const pageCount = Math.max(1, Math.ceil(Math.max(0, total) / Math.max(1, pageSize)));
+  const safePage = Math.min(Math.max(0, page), pageCount - 1);
+  const from = total === 0 ? 0 : safePage * pageSize + 1;
+  const to = Math.min(total, (safePage + 1) * pageSize);
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center justify-between gap-2 border-t border-border/50 px-3 py-2 text-[11px] text-muted-foreground",
+        className,
+      )}
+    >
+      <span>
+        {zh
+          ? `显示 ${from}-${to} / 共 ${total} · 第 ${safePage + 1}/${pageCount} 页`
+          : `Showing ${from}-${to} of ${total} · page ${safePage + 1}/${pageCount}`}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={safePage <= 0 || loading}
+          onClick={() => onPageChange(Math.max(0, safePage - 1))}
+          className="h-7 rounded-md border border-border/60 bg-background px-2.5 text-[11px] text-foreground transition-colors hover:bg-secondary/50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {zh ? "上一页" : "Prev"}
+        </button>
+        <button
+          type="button"
+          disabled={safePage >= pageCount - 1 || loading}
+          onClick={() => onPageChange(Math.min(pageCount - 1, safePage + 1))}
+          className="h-7 rounded-md border border-border/60 bg-background px-2.5 text-[11px] text-foreground transition-colors hover:bg-secondary/50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {zh ? "下一页" : "Next"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function MethodBadge({ method }: { method: string }) {
   const m = method.toUpperCase();
   const color =

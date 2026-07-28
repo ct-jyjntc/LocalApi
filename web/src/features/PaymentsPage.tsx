@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Check, Copy, Pencil, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type PaymentOrder } from "@/lib/api";
-import { PageHeader } from "@/components/shared";
+import { PageHeader, PaginationBar } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -31,10 +31,13 @@ export function PaymentsPage() {
   const dialogs = useAppDialog();
   const channel = useQuery({ queryKey: ["payment-channel"], queryFn: api.commercial.payments.channel });
   const channels = useQuery({ queryKey: ["payment-channels"], queryFn: api.commercial.payments.channels });
+  const [ordersPage, setOrdersPage] = useState(0);
+  const ordersPageSize = 50;
   const orders = useQuery({
-    queryKey: ["payment-orders"],
-    queryFn: () => api.commercial.payments.orders(undefined, 300),
+    queryKey: ["payment-orders", ordersPage, ordersPageSize],
+    queryFn: () => api.commercial.payments.orders({ limit: ordersPageSize, offset: ordersPage * ordersPageSize }),
     refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
   });
   const [enabled, setEnabled] = useState(false);
   const [name, setName] = useState("LINUX DO Credit");
@@ -454,6 +457,16 @@ export function PaymentsPage() {
             </div>
           </>
         )}
+        {orders.data ? (
+          <PaginationBar
+            page={ordersPage}
+            pageSize={ordersPageSize}
+            total={orders.data.total}
+            onPageChange={setOrdersPage}
+            loading={orders.isFetching}
+            zh
+          />
+        ) : null}
       </Card>
     </div>
   );

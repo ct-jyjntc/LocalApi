@@ -50,6 +50,31 @@ export function listApiKeys(userId?: string) {
   return rows.map((row) => publicKey(row));
 }
 
+export function listApiKeysPage(input: { userId?: string; limit?: number; offset?: number; q?: string } = {}) {
+  const limit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const q = String(input.q || "").trim();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (input.userId) {
+    conditions.push("user_id = ?");
+    params.push(input.userId);
+  }
+  if (q) {
+    conditions.push("(name LIKE ? COLLATE NOCASE OR key_prefix LIKE ? COLLATE NOCASE)");
+    const like = `%${q.replace(/[%_]/g, "")}%`;
+    params.push(like, like);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS c FROM api_keys ${where}`).get(...params) as { c: number }
+  ).c;
+  const rows = db
+    .prepare(`SELECT * FROM api_keys ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as ApiKey[];
+  return { items: rows.map((row) => publicKey(row)), total, limit, offset };
+}
+
 export function createApiKey(input: {
   name: string;
   rate_limit?: number;

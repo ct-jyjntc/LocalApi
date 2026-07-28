@@ -23,13 +23,16 @@ export function LogsPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const logs = useInfiniteQuery({
     queryKey: ["admin", "logs"],
-    queryFn: ({ pageParam }) => api.logs.list(200, pageParam),
+    // Smaller pages + slower poll: full 200-row payloads every 4s was heavy on admin sessions.
+    queryFn: ({ pageParam }) => api.logs.list(50, pageParam),
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) => {
       const loaded = pages.reduce((total, page) => total + page.items.length, 0);
       return loaded < lastPage.total ? loaded : undefined;
     },
-    refetchInterval: 4000,
+    refetchInterval: 12_000,
+    refetchIntervalInBackground: false,
+    staleTime: 8_000,
   });
   const items = logs.data?.pages.flatMap((page) => page.items) || [];
   const total = logs.data?.pages[0]?.total || 0;

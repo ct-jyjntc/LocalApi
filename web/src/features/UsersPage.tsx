@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Plus, Settings2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type PlanRow, type UserRow } from "@/lib/api";
-import { EmptyState, PageHeader, TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
+import { EmptyState, PageHeader, PaginationBar, TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
 import { useAppDialog } from "@/components/app-dialog-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,12 +23,37 @@ export function UsersPage() {
   const zh = locale === "zh";
   const qc = useQueryClient();
   const dialogs = useAppDialog();
-  const users = useQuery({ queryKey: ["commercial", "users"], queryFn: api.commercial.users.list });
-  const plans = useQuery({ queryKey: ["commercial", "plans"], queryFn: api.commercial.plans.list });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
   const [form, setForm] = useState({ username: "", display_name: "", password: "" });
-  const selected = useMemo(() => users.data?.items.find((user) => user.id === selectedId) ?? null, [selectedId, users.data?.items]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  const users = useQuery({
+    queryKey: ["commercial", "users", debouncedSearch, page, pageSize],
+    queryFn: () =>
+      api.commercial.users.list({
+        limit: pageSize,
+        offset: page * pageSize,
+        q: debouncedSearch || undefined,
+      }),
+    staleTime: 15_000,
+    placeholderData: (prev) => prev,
+  });
+  const plans = useQuery({ queryKey: ["commercial", "plans"], queryFn: api.commercial.plans.list, staleTime: 60_000 });
+  const total = users.data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageItems = users.data?.items ?? [];
+  const selected = useMemo(
+    () => pageItems.find((user) => user.id === selectedId) ?? null,
+    [selectedId, pageItems],
+  );
   const refresh = () => qc.invalidateQueries({ queryKey: ["commercial", "users"] });
   const create = useMutation({
     mutationFn: () => api.commercial.users.create(form),
@@ -81,12 +106,28 @@ export function UsersPage() {
         }
       />
       <Card className="overflow-hidden">
-        {!users.data?.items.length ? (
+        <div className="flex flex-col gap-2 border-b border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <Input
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setPage(0);
+            }}
+            placeholder={zh ? "搜索用户名 / 显示名 / 套餐" : "Search username / name / plan"}
+            className="sm:max-w-sm"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            {zh
+              ? `共 ${total} 人 · 第 ${safePage + 1}/${pageCount} 页`
+              : `${total} users · page ${safePage + 1}/${pageCount}`}
+          </p>
+        </div>
+        {!pageItems.length ? (
           <EmptyState>{users.isLoading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无用户" : "No users"}</EmptyState>
         ) : (
           <>
             <div className="divide-y divide-border/40 sm:hidden">
-              {users.data.items.map((user) => (
+              {pageItems.map((user) => (
                 <div className="flex flex-col gap-2.5 p-3 text-xs" key={user.id}>
                   <div className="flex items-center justify-between gap-2">
                     <p className="min-w-0 truncate">
@@ -123,7 +164,7 @@ export function UsersPage() {
                 <span className="hidden w-32 shrink-0 lg:block">{zh ? "最近登录" : "Last login"}</span>
                 <span className="w-16 shrink-0 text-right">{zh ? "操作" : "Actions"}</span>
               </div>
-              {users.data.items.map((user) => (
+              {pageItems.map((user) => (
                 <div className={TABLE_ROW_CLASS} key={user.id}>
                   <span className="w-40 shrink-0 truncate">
                     <span className="font-medium">{user.display_name}</span>
@@ -157,6 +198,14 @@ export function UsersPage() {
                 </div>
               ))}
             </div>
+            <PaginationBar
+              page={safePage}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setPage}
+              loading={users.isFetching}
+              zh={zh}
+            />
           </>
         )}
       </Card>

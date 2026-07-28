@@ -11,7 +11,13 @@ type TrendMetric = "cost" | "requests" | "tokens";
 export function UserDashboardPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
-  const query = useQuery({ queryKey: ["user", "dashboard"], queryFn: userApi.dashboard, refetchInterval: 5000 });
+  const query = useQuery({
+    queryKey: ["user", "dashboard"],
+    queryFn: userApi.dashboard,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    staleTime: 10_000,
+  });
   const data = query.data;
   return (
     <div className="flex flex-col gap-6">

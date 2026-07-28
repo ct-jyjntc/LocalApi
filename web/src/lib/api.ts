@@ -449,6 +449,9 @@ export type Wallet = {
 };
 
 export type UsageRow = {
+  username?: string | null;
+  display_name?: string | null;
+  user_label?: string | null;
   id: string;
   request_id: string;
   user_id: string;
@@ -617,7 +620,16 @@ export const api = {
       }),
   },
   keys: {
-    list: () => request<{ items: ApiKeyRow[] }>("/admin/api/keys"),
+    list: (params?: { limit?: number; offset?: number; q?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      if (params?.q) search.set("q", params.q);
+      const qs = search.toString();
+      return request<{ items: ApiKeyRow[]; total: number; limit: number; offset: number }>(
+        `/admin/api/keys${qs ? `?${qs}` : ""}`,
+      );
+    },
     create: (body: { name: string; rate_limit?: number; enabled?: boolean }) =>
       request<ApiKeyRow>("/admin/api/keys", {
         method: "POST",
@@ -686,7 +698,16 @@ export const api = {
       status: (id: string, status: "open" | "resolved") => request<{ ok: boolean }>(`/admin/api/commercial/feedback/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
     },
     users: {
-      list: () => request<{ items: UserRow[] }>("/admin/api/commercial/users"),
+      list: (params?: { limit?: number; offset?: number; q?: string }) => {
+        const search = new URLSearchParams();
+        if (params?.limit != null) search.set("limit", String(params.limit));
+        if (params?.offset != null) search.set("offset", String(params.offset));
+        if (params?.q) search.set("q", params.q);
+        const qs = search.toString();
+        return request<{ items: UserRow[]; total: number; limit: number; offset: number }>(
+          `/admin/api/commercial/users${qs ? `?${qs}` : ""}`,
+        );
+      },
       create: (body: {
         username: string;
         display_name?: string;
@@ -780,7 +801,16 @@ export const api = {
           body: JSON.stringify({ ids }),
         }),
     },
-    usage: (limit = 200) => request<{ items: UsageRow[] }>(`/admin/api/commercial/usage?limit=${limit}`),
+    usage: (params?: { limit?: number; offset?: number; user_id?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      if (params?.user_id) search.set("user_id", params.user_id);
+      const qs = search.toString();
+      return request<{ items: UsageRow[]; total: number; limit: number; offset: number }>(
+        `/admin/api/commercial/usage${qs ? `?${qs}` : ""}`,
+      );
+    },
     payments: {
       channel: () => request<PaymentChannel>("/admin/api/commercial/payments/channel"),
       updateChannel: (body: Partial<PaymentChannel>) =>
@@ -794,10 +824,16 @@ export const api = {
           method: "PUT",
           body: JSON.stringify(body),
         }),
-      orders: (status?: string, limit = 200) =>
-        request<{ items: PaymentOrder[] }>(
-          `/admin/api/commercial/payments/orders?limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}`,
-        ),
+      orders: (params?: { status?: string; limit?: number; offset?: number }) => {
+        const search = new URLSearchParams();
+        if (params?.limit != null) search.set("limit", String(params.limit));
+        if (params?.offset != null) search.set("offset", String(params.offset));
+        if (params?.status) search.set("status", params.status);
+        const qs = search.toString();
+        return request<{ items: PaymentOrder[]; total: number; limit: number; offset: number }>(
+          `/admin/api/commercial/payments/orders${qs ? `?${qs}` : ""}`,
+        );
+      },
       sync: (id: string) =>
         request<PaymentOrder>(`/admin/api/commercial/payments/orders/${id}/sync`, { method: "POST" }),
       refund: (id: string, reason: string) =>
@@ -861,7 +897,17 @@ export const userApi = {
       trend: UsageTrendPoint[];
     }>("/user/api/dashboard", {}, { auth: "user" }),
   keys: {
-    list: () => request<{ items: ApiKeyRow[] }>("/user/api/keys", {}, { auth: "user" }),
+    list: (params?: { limit?: number; offset?: number }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      const qs = search.toString();
+      return request<{ items: ApiKeyRow[]; total: number; limit: number; offset: number }>(
+        `/user/api/keys${qs ? `?${qs}` : ""}`,
+        {},
+        { auth: "user" },
+      );
+    },
     create: (body: Partial<ApiKeyRow> & { name: string }) =>
       request<ApiKeyRow>("/user/api/keys", { method: "POST", body: JSON.stringify(body) }, { auth: "user" }),
     update: (id: string, body: Partial<ApiKeyRow>) =>
@@ -874,7 +920,17 @@ export const userApi = {
       { method: "PATCH", body: JSON.stringify({ current_password, new_password }) },
       { auth: "user" },
     ),
-  usage: (limit = 200) => request<{ items: UsageRow[] }>(`/user/api/usage?limit=${limit}`, {}, { auth: "user" }),
+  usage: (params?: { limit?: number; offset?: number }) => {
+    const search = new URLSearchParams();
+    if (params?.limit != null) search.set("limit", String(params.limit));
+    if (params?.offset != null) search.set("offset", String(params.offset));
+    const qs = search.toString();
+    return request<{ items: UsageRow[]; total: number; limit: number; offset: number }>(
+      `/user/api/usage${qs ? `?${qs}` : ""}`,
+      {},
+      { auth: "user" },
+    );
+  },
   checkin: {
     status: () => request<CheckinStatus>("/user/api/checkin", {}, { auth: "user" }),
     perform: () =>
@@ -893,15 +949,42 @@ export const userApi = {
       }>("/user/api/points/exchange", { method: "POST", body: JSON.stringify({ points }) }, { auth: "user" }),
   },
   commerce: {
-    orders: (limit = 200) =>
-      request<{ items: CommerceOrder[] }>(`/user/api/commerce/orders?limit=${limit}`, {}, { auth: "user" }),
-    ledger: (limit = 200) =>
-      request<{ items: WalletLedgerRow[] }>(`/user/api/commerce/ledger?limit=${limit}`, {}, { auth: "user" }),
+    orders: (params?: { limit?: number; offset?: number }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      const qs = search.toString();
+      return request<{ items: CommerceOrder[]; total: number; limit: number; offset: number }>(
+        `/user/api/commerce/orders${qs ? `?${qs}` : ""}`,
+        {},
+        { auth: "user" },
+      );
+    },
+    ledger: (params?: { limit?: number; offset?: number }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      const qs = search.toString();
+      return request<{ items: WalletLedgerRow[]; total: number; limit: number; offset: number }>(
+        `/user/api/commerce/ledger${qs ? `?${qs}` : ""}`,
+        {},
+        { auth: "user" },
+      );
+    },
   },
   payments: {
     config: () => request<{ channel: PaymentChannel | null; channels: PaymentChannel[] }>("/user/api/payments/config", {}, { auth: "user" }),
-    orders: (limit = 200) =>
-      request<{ items: PaymentOrder[] }>(`/user/api/payments/orders?limit=${limit}`, {}, { auth: "user" }),
+    orders: (params?: { limit?: number; offset?: number }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      const qs = search.toString();
+      return request<{ items: PaymentOrder[]; total: number; limit: number; offset: number }>(
+        `/user/api/payments/orders${qs ? `?${qs}` : ""}`,
+        {},
+        { auth: "user" },
+      );
+    },
     createTopup: (amount: string, channel_id?: string, mode?: "page" | "wap" | "native" | "h5") =>
       request<PaymentOrder>(
         "/user/api/payments/topups",

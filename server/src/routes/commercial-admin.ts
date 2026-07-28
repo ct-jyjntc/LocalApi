@@ -4,8 +4,8 @@ import {
   adjustWallet,
   deleteModelPrice,
   listModelPrices,
-  listUsageRecords,
-  listWalletLedger,
+  listUsageRecordsPage,
+  listWalletLedgerPage,
   upsertModelPrice,
 } from "../services/billing";
 import {
@@ -20,7 +20,7 @@ import {
   updatePlan,
 } from "../services/plans";
 import { adjustPoints, CheckinError } from "../services/checkin";
-import { createUser, deleteUser, listUsers, updateUser } from "../services/users";
+import { createUser, deleteUser, listUsersPage, updateUser } from "../services/users";
 import { listAuditLogs, writeAudit } from "../services/audit";
 import {
   PaymentError,
@@ -28,7 +28,7 @@ import {
   deletePaymentOrder,
   getPaymentChannelAdmin,
   getPaymentChannelsAdmin,
-  listPaymentOrders,
+  listPaymentOrdersPage,
   listPaymentRefunds,
   refundPaymentOrder,
   syncPaymentOrder,
@@ -123,7 +123,21 @@ function paymentFailure(res: Response, error: unknown) {
   return res.status(500).json({ error: error instanceof Error ? error.message : "Payment operation failed" });
 }
 
-commercialAdminRouter.get("/users", (_req, res) => res.json({ items: listUsers() }));
+commercialAdminRouter.get("/users", (req, res) => {
+  const limit = Number(req.query.limit ?? 50);
+  const offset = Number(req.query.offset ?? 0);
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  // Backward compatible: omit limit => paginated default 50.
+  // Pass limit=0 to request a capped large page for lightweight maps (max 200).
+  if (req.query.all === "1") {
+    return res.json(listUsersPage({ limit: 200, offset: 0, q }));
+  }
+  return res.json(listUsersPage({
+    limit: Number.isFinite(limit) ? limit : 50,
+    offset: Number.isFinite(offset) ? offset : 0,
+    q,
+  }));
+});
 commercialAdminRouter.get("/feedback", (_req,res)=>res.json({items:listAllFeedback()}));
 commercialAdminRouter.post("/feedback/:id/replies",(req,res)=>{const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(feedbackAttachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"admin",body.body,body.attachments);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
 commercialAdminRouter.patch("/feedback/:id",(req,res)=>{const body=parseBody(z.object({status:z.enum(["open","resolved"])}),req.body,res);if(!body)return;return setFeedbackStatus(req.params.id,body.status)?res.json({ok:true}):res.status(404).json({error:"Feedback not found"});});
@@ -167,7 +181,9 @@ commercialAdminRouter.post("/users/:id/wallet", (req, res) => {
   return res.json(wallet);
 });
 commercialAdminRouter.get("/users/:id/ledger", (req, res) => {
-  return res.json({ items: listWalletLedger(req.params.id, 500) });
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  return res.json(listWalletLedgerPage({ userId: req.params.id, limit, offset }));
 });
 commercialAdminRouter.post("/users/:id/subscription", (req, res) => {
   const body = parseBody(z.object({ plan_id: z.string().uuid(), auto_renew: z.boolean().optional() }), req.body, res);
@@ -342,9 +358,10 @@ commercialAdminRouter.delete("/plans/:id", (req, res) => {
 });
 
 commercialAdminRouter.get("/usage", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
   const userId = typeof req.query.user_id === "string" ? req.query.user_id : undefined;
-  return res.json({ items: listUsageRecords(userId, limit) });
+  return res.json(listUsageRecordsPage({ userId, limit, offset }));
 });
 commercialAdminRouter.get("/audit", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 1000);
@@ -402,9 +419,10 @@ commercialAdminRouter.put("/payments/channels/:id", (req, res) => {
   }
 });
 commercialAdminRouter.get("/payments/orders", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
   const status = typeof req.query.status === "string" && req.query.status ? req.query.status : undefined;
-  return res.json({ items: listPaymentOrders({ status, limit }) });
+  return res.json(listPaymentOrdersPage({ status, limit, offset }));
 });
 commercialAdminRouter.post("/payments/orders/:id/sync", async (req, res) => {
   try {
