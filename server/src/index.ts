@@ -134,12 +134,15 @@ app.use(
   express.text({ type: ["text/*", "application/x-ndjson"], limit: "20mb" }),
   adminRouter,
 );
+// Module user routes (e.g. LinuxDo OAuth start/callback) must run BEFORE userRouter.
+// userRouter applies requireUser as a catch-all after its public login/register routes,
+// which would otherwise 401 unauthenticated OAuth hits like /user/api/auth/linuxdo.
 app.use(
   "/user/api",
   express.json({ limit: "20mb" }),
   express.urlencoded({ extended: true, limit: "20mb" }),
-  userRouter,
   moduleRegistry.userHost.router,
+  userRouter,
 );
 app.use(paymentsRouter);
 app.use(moduleRegistry.paymentHost.router);

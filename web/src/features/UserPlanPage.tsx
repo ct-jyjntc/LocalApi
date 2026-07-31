@@ -73,7 +73,7 @@ export function UserPlanPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={zh ? "套餐详情" : "Plan details"}
-        description={zh ? "购买、升级或续费 Coding Plan；提前续费只延长有效期，不重置当前额度。" : "Purchase, upgrade or renew a Coding Plan."}
+        description={zh ? "查看额度、续费与升级 Coding Plan。" : "View quota, renew, and upgrade Coding Plan."}
         actions={<div className="rounded-md bg-secondary/45 px-3 py-2 text-xs"><span className="text-muted-foreground">{zh ? "余额" : "Balance"}</span><span className="ml-2 font-mono font-medium tabular-nums" title={formatCredits(me.data?.wallet?.balance_micros || 0)}>{formatCreditsDisplay(me.data?.wallet?.balance_micros || 0)}</span></div>}
       />
 
@@ -166,7 +166,9 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
     if (!enabled && overageOn) {
       const ok = await dialogs.confirm({
         title: zh ? "关闭超额扣余额" : "Disable wallet overage",
-        description: zh ? "关闭后，套餐额度不足时 /coding 请求会直接停止，不会再从余额扣费。" : "When quota is exhausted, /coding requests will stop instead of charging the wallet.",
+        description: zh
+          ? "关闭后，套餐额度不足时 /coding 请求会直接停止，不会再从余额扣费。"
+          : "When quota is exhausted, /coding requests will stop instead of charging the wallet.",
         confirmText: zh ? "确认关闭" : "Disable",
         destructive: true,
       });
@@ -192,26 +194,18 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
 
   return (
     <div className="flex flex-col gap-3">
-      {/* 1. Identity + quota */}
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary/60 text-muted-foreground">
-                <Package className="size-4" strokeWidth={1.8} />
-              </div>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="truncate text-base font-medium">{plan.name}</h2>
-                  <Badge variant="success">{zh ? "生效中" : "Active"}</Badge>
-                </div>
-                {plan.description ? (
-                  <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground line-clamp-2" title={plan.description}>
-                    {plan.description}
-                  </p>
-                ) : null}
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="truncate text-base font-medium">{plan.name}</h2>
+              <Badge variant="success">{zh ? "生效中" : "Active"}</Badge>
             </div>
+            {plan.description ? (
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground line-clamp-2" title={plan.description}>
+                {plan.description}
+              </p>
+            ) : null}
           </div>
           <Button size="sm" disabled={renewing} onClick={onRenew}>
             {renewing ? <RefreshCw className="animate-spin" /> : <WalletCards />}
@@ -220,13 +214,32 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
         </div>
 
         <div className="flex min-w-0 flex-col gap-2 rounded-md bg-secondary/35 px-3 py-2.5">
-          <div className="min-w-0">
-            <p className="text-[11px] text-muted-foreground">{zh ? "可用套餐额度" : "Available plan credits"}</p>
-            <p className="truncate text-xl font-medium tabular-nums tracking-tight" title={formatCredits(available)}>
-              {formatCreditsDisplay(available)}
-              <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                / <span className="font-mono" title={formatCredits(included)}>{formatCreditsDisplay(included)}</span>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[11px] text-muted-foreground">{zh ? "可用 / 周期额度" : "Available / cycle"}</p>
+              <p className="truncate text-xl font-medium tabular-nums tracking-tight" title={formatCredits(available)}>
+                {formatCreditsDisplay(available)}
+                <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                  / <span className="font-mono" title={formatCredits(included)}>{formatCreditsDisplay(included)}</span>
+                </span>
+              </p>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {zh ? "已用" : "Used"}{" "}
+              <span className="font-mono tabular-nums text-foreground/90" title={formatCredits(used)}>
+                {formatCreditsDisplay(used)}
               </span>
+              <span className="mx-1.5 text-border">·</span>
+              {formatUsagePercent(usedPercent)}
+              {subscription.reserved_micros > 0 ? (
+                <>
+                  <span className="mx-1.5 text-border">·</span>
+                  {zh ? "冻结" : "Reserved"}{" "}
+                  <span className="font-mono tabular-nums text-foreground/90" title={formatCredits(subscription.reserved_micros)}>
+                    {formatCreditsDisplay(subscription.reserved_micros)}
+                  </span>
+                </>
+              ) : null}
             </p>
           </div>
           <div
@@ -241,22 +254,6 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
               className={cn("h-full min-w-0 rounded-full transition-[width,background-color]", progressTone)}
               style={{ width: `${barWidth}%` }}
             />
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-            <span>
-              {zh ? "已用" : "Used"}{" "}
-              <span className="font-mono tabular-nums text-foreground/90" title={formatCredits(used)}>{formatCreditsDisplay(used)}</span>
-            </span>
-            <span className="text-border">·</span>
-            <span>
-              {zh ? "冻结" : "Reserved"}{" "}
-              <span className="font-mono tabular-nums text-foreground/90" title={formatCredits(subscription.reserved_micros)}>{formatCreditsDisplay(subscription.reserved_micros)}</span>
-            </span>
-            <span className="text-border">·</span>
-            <span>
-              {zh ? "使用率" : "Usage"}{" "}
-              <span className="font-mono tabular-nums text-foreground/90">{formatUsagePercent(usedPercent)}</span>
-            </span>
           </div>
         </div>
 
@@ -281,7 +278,6 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
       </Card>
 
       <div className="grid gap-3 lg:grid-cols-2">
-        {/* 2. Access limits + models */}
         <Card className="flex flex-col gap-3 p-4 sm:p-5">
           <SectionTitle icon={Layers3} title={zh ? "访问与限速" : "Access & limits"} />
           <div className="grid grid-cols-3 gap-2 text-xs">
@@ -294,19 +290,16 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
               <p className="text-[11px] text-muted-foreground">{zh ? "调用入口" : "Endpoint"}</p>
               <p className="truncate font-mono text-xs">{CODING_ENDPOINT}</p>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Badge variant="secondary">Coding</Badge>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-7 text-muted-foreground"
-                onClick={copyEndpoint}
-                aria-label={zh ? "复制调用入口" : "Copy endpoint"}
-              >
-                {endpointCopied ? <Check className="size-3.5" strokeWidth={1.8} /> : <Copy className="size-3.5" strokeWidth={1.8} />}
-              </Button>
-            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground"
+              onClick={copyEndpoint}
+              aria-label={zh ? "复制调用入口" : "Copy endpoint"}
+            >
+              {endpointCopied ? <Check className="size-3.5" strokeWidth={1.8} /> : <Copy className="size-3.5" strokeWidth={1.8} />}
+            </Button>
           </div>
           <div className="rounded-md bg-secondary/35 px-3 py-2.5">
             <p className="text-[11px] text-muted-foreground">{zh ? "允许模型" : "Allowed models"}</p>
@@ -333,7 +326,6 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
           </div>
         </Card>
 
-        {/* 3. Period + auto renew */}
         <Card className="flex flex-col gap-3 p-4 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <SectionTitle icon={CalendarDays} title={zh ? "周期与续费" : "Period & renewal"} />
@@ -382,7 +374,7 @@ function PlanDetails({ subscription, zh, onAutoRenew, onOverage, updating, updat
               <p className="mt-1 text-[10px] text-muted-foreground">
                 {autoRenewOn
                   ? (zh
-                    ? `开启：有效期结束时扣 ${cyclePriceDisplay}，不重复扣款。`
+                    ? `开启：有效期结束时扣 ${cyclePriceDisplay}。`
                     : `On: charge ${cyclePriceDisplay} when entitlement ends.`)
                   : (zh
                     ? "关闭：到期后不会自动扣款。"
