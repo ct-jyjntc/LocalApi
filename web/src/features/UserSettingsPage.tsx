@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn, formatCredits } from "@/lib/utils";
+import { formatCredits } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
 function formatLimit(value: number | null | undefined) {
@@ -56,7 +56,7 @@ export function UserSettingsPage() {
           Math.max(0, ((tier!.lifetime_topup_micros - rangeStart) / (rangeEnd - rangeStart)) * 100),
         )
       : 100;
-
+  const initials = (user?.display_name || user?.username || "?").trim().slice(0, 1).toUpperCase();
   const canSubmitPassword =
     password.current.length >= 8 &&
     password.next.length >= 8 &&
@@ -67,20 +67,28 @@ export function UserSettingsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={zh ? "个人设置" : "Personal settings"}
-        description={zh ? "账户信息、层级权益与登录密码。" : "Profile, tier benefits, and password."}
+        description={zh ? "账户资料、余额层级与登录安全。" : "Profile, wallet tier, and sign-in security."}
       />
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <Card className="flex flex-col gap-4 p-4 sm:p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+      <div className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
+        {/* Account */}
+        <Card className="flex flex-col gap-5 p-4 sm:p-5">
+          <div className="flex items-center gap-3">
+            <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-medium">
+              {initials}
+            </div>
+            <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-medium">{user?.display_name || "—"}</h2>
+                <h2 className="truncate text-base font-medium tracking-tight">
+                  {user?.display_name || "—"}
+                </h2>
                 <Badge variant={user?.status === "active" ? "success" : "secondary"}>
                   {user?.status || "—"}
                 </Badge>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">@{user?.username || "—"}</p>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                @{user?.username || "—"}
+              </p>
             </div>
             <Button size="sm" variant="secondary" onClick={() => setPasswordOpen(true)}>
               <KeyRound data-icon="inline-start" />
@@ -89,61 +97,65 @@ export function UserSettingsPage() {
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <Stat label={zh ? "账户余额" : "Balance"} value={formatCredits(wallet?.balance_micros)} />
-            <Stat
-              label={zh ? "累计净充值" : "Lifetime top-up"}
-              value={formatCredits(tier?.lifetime_topup_micros)}
-            />
+            <div className="rounded-lg bg-secondary/45 px-3 py-3">
+              <p className="text-[11px] text-muted-foreground">{zh ? "账户余额" : "Balance"}</p>
+              <p className="mt-1.5 font-mono text-lg font-medium tabular-nums tracking-tight">
+                {formatCredits(wallet?.balance_micros)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-secondary/45 px-3 py-3">
+              <p className="text-[11px] text-muted-foreground">
+                {zh ? "累计净充值" : "Lifetime top-up"}
+              </p>
+              <p className="mt-1.5 font-mono text-lg font-medium tabular-nums tracking-tight">
+                {formatCredits(tier?.lifetime_topup_micros)}
+              </p>
+            </div>
           </div>
         </Card>
 
+        {/* Tier */}
         <Card className="flex flex-col gap-4 p-4 sm:p-5">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="truncate text-base font-medium">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] text-muted-foreground">{zh ? "余额调用层级" : "Wallet tier"}</p>
+              <h2 className="mt-1 truncate text-base font-medium tracking-tight">
                 {current?.name || (zh ? "未匹配层级" : "No tier")}
               </h2>
-              <Badge variant="secondary">{zh ? "余额调用" : "Wallet"}</Badge>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {current?.description || (zh ? "余额模式调用权益" : "Wallet usage benefits")}
-            </p>
           </div>
 
           <div className="grid grid-cols-3 gap-2">
-            <Stat label="RPM" value={formatLimit(current?.rpm_limit)} />
-            <Stat label="TPM" value={formatLimit(current?.tpm_limit)} />
-            <Stat label={zh ? "并发" : "Concurrency"} value={formatLimit(current?.concurrency_limit)} />
+            <SoftStat label="RPM" value={formatLimit(current?.rpm_limit)} />
+            <SoftStat label="TPM" value={formatLimit(current?.tpm_limit)} />
+            <SoftStat
+              label={zh ? "并发" : "Concurrency"}
+              value={formatLimit(current?.concurrency_limit)}
+            />
           </div>
 
           {next ? (
-            <div className="rounded-md bg-secondary/45 px-3 py-2.5">
+            <div className="mt-auto">
               <div className="flex items-center justify-between gap-3 text-[11px]">
                 <span className="text-muted-foreground">
-                  {zh ? `距离 ${next.name}` : `Until ${next.name}`}
+                  {zh ? `下一档 ${next.name}` : `Next: ${next.name}`}
                 </span>
                 <span className="font-mono tabular-nums">
                   {formatCredits(tier?.next_required_micros)}
                 </span>
               </div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-background">
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
                 <div
-                  className="h-full rounded-full bg-foreground/70 transition-[width]"
+                  className="h-full rounded-full bg-foreground/75 transition-[width]"
                   style={{ width: `${progress}%` }}
                 />
               </div>
             </div>
           ) : (
-            <p className="rounded-md bg-secondary/45 px-3 py-2 text-[11px] text-muted-foreground">
-              {zh ? "已达到当前最高用户层级。" : "You have reached the highest tier."}
+            <p className="mt-auto text-[11px] text-muted-foreground">
+              {zh ? "已是最高层级" : "Highest tier reached"}
             </p>
           )}
-
-          <p className="text-[11px] leading-5 text-muted-foreground">
-            {zh
-              ? "层级仅影响余额调用；/coding 使用 Coding Plan 独立限制。"
-              : "Tiers only affect wallet calls. /coding uses Coding Plan limits."}
-          </p>
         </Card>
       </div>
 
@@ -158,7 +170,9 @@ export function UserSettingsPage() {
           <DialogHeader>
             <DialogTitle>{zh ? "修改密码" : "Change password"}</DialogTitle>
             <DialogDescription>
-              {zh ? "需要验证当前密码，新密码至少 8 位。" : "Verify current password. New password needs 8+ characters."}
+              {zh
+                ? "需要验证当前密码，新密码至少 8 位。"
+                : "Verify current password. New password needs 8+ characters."}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -229,11 +243,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function SoftStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-md bg-secondary/45 p-2.5">
+    <div className="min-w-0 rounded-lg bg-secondary/45 px-3 py-2.5 text-center">
       <p className="text-[10px] text-muted-foreground">{label}</p>
-      <p className="mt-1 truncate font-mono text-xs tabular-nums">{value}</p>
+      <p className="mt-1 font-mono text-sm font-medium tabular-nums">{value}</p>
     </div>
   );
 }
