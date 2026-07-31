@@ -81,6 +81,9 @@ const UserSettingsPage = lazy(() =>
 const UserCheckinPage = lazy(() =>
   import("@/features/UserCheckinPage").then((m) => ({ default: m.UserCheckinPage })),
 );
+const ModulesPage = lazy(() =>
+  import("@/features/ModulesPage").then((m) => ({ default: m.ModulesPage })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -117,6 +120,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="tiers" element={<TiersPage />} />
               <Route path="billing" element={<CommercialUsagePage />} />
               <Route path="payments" element={<PaymentsPage />} />
+              <Route path="modules" element={<ModulesPage />} />
               <Route path="logs" element={<LogsPage />} />
               <Route path="feedback" element={<FeedbackPage />} />
               <Route path="settings" element={<SettingsPage onLogout={onLogout} />} />

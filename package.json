@@ -12,7 +12,8 @@
     "dev": "npm run build --prefix web && npm run dev --prefix server",
     "dev:server": "npm run dev --prefix server",
     "start": "npm run build --prefix web && npm run build --prefix server && npm run start --prefix server",
-    "mock": "npm run mock --prefix server"
+    "mock": "npm run mock --prefix server",
+    "package:linuxdo": "node scripts/package-module.mjs linuxdo"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

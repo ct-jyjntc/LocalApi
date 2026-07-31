@@ -261,24 +261,75 @@ export function changeUserPassword(userId: string, currentPassword: string, newP
 export function deleteUser(id: string) {
   let deleted = false;
   db.transaction(() => {
-    deleteApiKeysForUser(id, false);
-    db.prepare("DELETE FROM payment_refunds WHERE order_id IN (SELECT id FROM payment_orders WHERE user_id = ?)").run(id);
-    // These historical/commercial tables intentionally retain a restrictive
-    // user foreign key, so remove their user-scoped records explicitly.
-    for (const table of ["payment_orders", "coupon_redemptions", "invoices", "renewal_jobs", "plan_orders"]) {
-      db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(id);
-    }
-    const active = db
-      .prepare("SELECT plan_id FROM subscriptions WHERE user_id = ? AND status = 'active'")
-      .get(id) as { plan_id: string } | undefined;
-    deleted = db.prepare("DELETE FROM users WHERE id = ?").run(id).changes > 0;
-    if (deleted && active) {
-      db.prepare("UPDATE plans SET stock_used = MAX(0, stock_used - 1), updated_at = ? WHERE id = ?")
-        .run(nowIso(), active.plan_id);
-    }
+    deleted = deleteUserInTransaction(id);
   })();
   if (deleted) refreshApiKeyCache();
   return deleted;
+}
+
+function uniqueUserIds(ids: string[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of ids) {
+    const id = String(raw || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/** Soft-disable/suspend/activate many users; non-active statuses revoke sessions. */
+export function setUsersStatus(ids: string[], status: "active" | "suspended" | "disabled") {
+  const userIds = uniqueUserIds(ids).slice(0, 500);
+  if (!userIds.length) return { updated: 0, ids: [] as string[] };
+  const now = nowIso();
+  const updatedIds: string[] = [];
+  db.transaction(() => {
+    const update = db.prepare("UPDATE users SET status = ?, updated_at = ? WHERE id = ?");
+    const clearSessions = db.prepare("DELETE FROM user_sessions WHERE user_id = ?");
+    for (const id of userIds) {
+      if (!getUser(id)) continue;
+      if (update.run(status, now, id).changes > 0) {
+        updatedIds.push(id);
+        if (status !== "active") clearSessions.run(id);
+      }
+    }
+  })();
+  return { updated: updatedIds.length, ids: updatedIds, status };
+}
+
+function deleteUserInTransaction(id: string) {
+  deleteApiKeysForUser(id, false);
+  db.prepare("DELETE FROM payment_refunds WHERE order_id IN (SELECT id FROM payment_orders WHERE user_id = ?)").run(id);
+  // These historical/commercial tables intentionally retain a restrictive
+  // user foreign key, so remove their user-scoped records explicitly.
+  for (const table of ["payment_orders", "coupon_redemptions", "invoices", "renewal_jobs", "plan_orders"]) {
+    db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(id);
+  }
+  const active = db
+    .prepare("SELECT plan_id FROM subscriptions WHERE user_id = ? AND status = 'active'")
+    .get(id) as { plan_id: string } | undefined;
+  const deleted = db.prepare("DELETE FROM users WHERE id = ?").run(id).changes > 0;
+  if (deleted && active) {
+    db.prepare("UPDATE plans SET stock_used = MAX(0, stock_used - 1), updated_at = ? WHERE id = ?")
+      .run(nowIso(), active.plan_id);
+  }
+  return deleted;
+}
+
+/** Hard-delete many users; reuses single-user cascade rules. */
+export function deleteUsers(ids: string[]) {
+  const userIds = uniqueUserIds(ids).slice(0, 500);
+  if (!userIds.length) return { deleted: 0, ids: [] as string[] };
+  const deletedIds: string[] = [];
+  db.transaction(() => {
+    for (const id of userIds) {
+      if (deleteUserInTransaction(id)) deletedIds.push(id);
+    }
+  })();
+  if (deletedIds.length) refreshApiKeyCache();
+  return { deleted: deletedIds.length, ids: deletedIds };
 }
 
 export function authenticateUser(username: string, password: string): User | null {

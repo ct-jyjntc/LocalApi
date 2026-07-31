@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Navigate } from "react-router-dom";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { CalendarCheck2, Coins, Gift } from "lucide-react";
@@ -69,6 +70,11 @@ export function UserCheckinPage() {
     Boolean(settings && settings.exchange_rate > 0)
     && exchangePreview.points > 0
     && (points?.balance || 0) >= exchangePreview.points;
+
+  // Feature off: hide deep-links by redirecting home (sidebar item is also filtered).
+  if (status.isSuccess && settings && settings.enabled === false) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <div className="flex flex-col gap-6">

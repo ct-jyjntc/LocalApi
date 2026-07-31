@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Check, Copy, Pencil, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type PaymentOrder } from "@/lib/api";
+import { hasModuleFeature, usePublicModules } from "@/lib/modules";
 import { PageHeader, PaginationBar } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,8 +30,10 @@ const STATUS_LABEL: Record<string, string> = {
 export function PaymentsPage() {
   const qc = useQueryClient();
   const dialogs = useAppDialog();
-  const channel = useQuery({ queryKey: ["payment-channel"], queryFn: api.commercial.payments.channel });
+  const publicModules = usePublicModules();
+  const linuxdoModuleActive = hasModuleFeature(publicModules.data?.items, "payment.linuxdo_credit");
   const channels = useQuery({ queryKey: ["payment-channels"], queryFn: api.commercial.payments.channels });
+  const linuxdoChannel = channels.data?.items.find((item) => item.id === "linuxdo-credit");
   const [ordersPage, setOrdersPage] = useState(0);
   const ordersPageSize = 50;
   const orders = useQuery({
@@ -105,16 +108,16 @@ export function PaymentsPage() {
   };
 
   useEffect(() => {
-    if (!channel.data) return;
-    setEnabled(channel.data.enabled);
-    setName(channel.data.name);
-    setClientId(channel.data.client_id || "");
-    setClientSecret(channel.data.client_secret || "");
-    setGatewayUrl(channel.data.gateway_url || "https://credit.linux.do/epay");
-    setExchangeRate(String(channel.data.exchange_rate_micros / 1_000_000));
-    setMinAmount((channel.data.min_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
-    setMaxAmount((channel.data.max_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
-  }, [channel.data]);
+    if (!linuxdoChannel) return;
+    setEnabled(linuxdoChannel.enabled);
+    setName(linuxdoChannel.name);
+    setClientId(linuxdoChannel.client_id || "");
+    setClientSecret(linuxdoChannel.client_secret || "");
+    setGatewayUrl(linuxdoChannel.gateway_url || "https://credit.linux.do/epay");
+    setExchangeRate(String(linuxdoChannel.exchange_rate_micros / 1_000_000));
+    setMinAmount((linuxdoChannel.min_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
+    setMaxAmount((linuxdoChannel.max_amount_minor / 100).toFixed(2).replace(/\.00$/, ""));
+  }, [linuxdoChannel]);
 
   useEffect(() => {
     const alipay = channels.data?.items.find((item) => item.id === "alipay");
@@ -140,7 +143,7 @@ export function PaymentsPage() {
   }, [channels.data]);
 
   const save = useMutation({
-    mutationFn: () => api.commercial.payments.updateChannel({
+    mutationFn: () => api.commercial.payments.updateChannelById("linuxdo-credit", {
       enabled,
       name: name.trim(),
       client_id: clientId.trim(),
@@ -258,11 +261,14 @@ export function PaymentsPage() {
       <PageHeader title="支付与订单" description="配置收款渠道、核对充值订单并处理全额退款。" />
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        <ChannelSummary name={name} description="EasyPay · LDC" enabled={enabled} rate={`1 LDC = ${exchangeRate} 额度`} range={`${minAmount}–${maxAmount} LDC`} onEdit={() => setLinuxDoOpen(true)} />
+        {linuxdoModuleActive ? (
+          <ChannelSummary name={name} description="EasyPay · LDC" enabled={enabled} rate={`1 LDC = ${exchangeRate} 额度`} range={`${minAmount}–${maxAmount} LDC`} onEdit={() => setLinuxDoOpen(true)} />
+        ) : null}
         <ChannelSummary name={alipayName} description="电脑网站支付 + 手机网站支付" enabled={alipayEnabled} rate={`1 CNY = ${alipayExchangeRate} 额度`} range={`${alipayMinAmount}–${alipayMaxAmount} CNY`} onEdit={() => setAlipayOpen(true)} />
         <ChannelSummary name={wechatName} description="Native 扫码 + H5 手机支付" enabled={wechatEnabled} rate={`1 CNY = ${wechatExchangeRate} 额度`} range={`${wechatMinAmount}–${wechatMaxAmount} CNY`} onEdit={() => setWechatOpen(true)} />
       </div>
 
+      {linuxdoModuleActive ? (
       <Dialog open={linuxDoOpen} onOpenChange={setLinuxDoOpen}><DialogContent className="max-w-[680px]"><DialogHeader><DialogTitle>编辑 LINUX DO Credit</DialogTitle><DialogDescription>配置商户凭据、兑换比例和充值范围。</DialogDescription></DialogHeader><div className="mt-4 space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -291,8 +297,8 @@ export function PaymentsPage() {
         </div>
 
         <div className="grid gap-2 rounded-md bg-secondary/40 p-3 text-[11px] sm:grid-cols-2">
-          <CallbackRow label="异步通知" value={channel.data?.notify_url || "请先在设置中填写公开域名"} onCopy={copy} />
-          <CallbackRow label="支付返回" value={channel.data?.return_url || "请先在设置中填写公开域名"} onCopy={copy} />
+          <CallbackRow label="异步通知" value={linuxdoChannel?.notify_url || "请先在设置中填写公开域名"} onCopy={copy} />
+          <CallbackRow label="支付返回" value={linuxdoChannel?.return_url || "请先在设置中填写公开域名"} onCopy={copy} />
         </div>
         <DialogFooter>
           <Button variant="secondary" onClick={() => setLinuxDoOpen(false)}>取消</Button>
@@ -301,6 +307,7 @@ export function PaymentsPage() {
           </Button>
         </DialogFooter>
       </div></DialogContent></Dialog>
+      ) : null}
 
       <Dialog open={alipayOpen} onOpenChange={setAlipayOpen}><DialogContent className="max-w-[760px]"><DialogHeader><DialogTitle>编辑支付宝</DialogTitle><DialogDescription>配置 RSA2 凭据、支付模式、兑换比例和充值范围。</DialogDescription></DialogHeader><div className="mt-4 flex flex-col gap-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

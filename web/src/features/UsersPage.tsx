@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Settings2, Trash2 } from "lucide-react";
+import { Ban, Plus, Settings2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type PlanRow, type UserRow } from "@/lib/api";
 import { EmptyState, PageHeader, PaginationBar, TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
@@ -29,6 +29,7 @@ export function UsersPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
   const pageSize = 50;
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [form, setForm] = useState({ username: "", display_name: "", password: "" });
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
@@ -74,6 +75,85 @@ export function UsersPage() {
     },
     onError: (error: Error) => toast.error(error.message),
   });
+  const pageIdSet = useMemo(() => new Set(pageItems.map((user) => user.id)), [pageItems]);
+  const selectedOnPage = useMemo(
+    () => selectedIds.filter((id) => pageIdSet.has(id)),
+    [selectedIds, pageIdSet],
+  );
+  const allPageSelected = pageItems.length > 0 && selectedOnPage.length === pageItems.length;
+  const somePageSelected = selectedOnPage.length > 0 && !allPageSelected;
+  const toggleOne = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      if (checked) return prev.includes(id) ? prev : [...prev, id];
+      return prev.filter((value) => value !== id);
+    });
+  };
+  const togglePage = (checked: boolean) => {
+    setSelectedIds((prev) => {
+      if (checked) {
+        const next = new Set(prev);
+        for (const user of pageItems) next.add(user.id);
+        return Array.from(next);
+      }
+      return prev.filter((id) => !pageIdSet.has(id));
+    });
+  };
+  const clearSelection = () => setSelectedIds([]);
+  const batchStatus = useMutation({
+    mutationFn: (status: "active" | "suspended" | "disabled") =>
+      api.commercial.users.batchStatus(selectedIds, status),
+    onSuccess: (result) => {
+      toast.success(
+        zh
+          ? `已更新 ${result.updated} 个用户状态为 ${result.status}`
+          : `Updated ${result.updated} users to ${result.status}`,
+      );
+      clearSelection();
+      setSelectedId(null);
+      refresh();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const batchDelete = useMutation({
+    mutationFn: () => api.commercial.users.batchDelete(selectedIds),
+    onSuccess: (result) => {
+      toast.success(zh ? `已删除 ${result.deleted} 个用户` : `Deleted ${result.deleted} users`);
+      clearSelection();
+      setSelectedId(null);
+      refresh();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const requestBatchDisable = async () => {
+    if (!selectedIds.length) return;
+    if (
+      await dialogs.confirm({
+        title: zh ? "批量禁用用户" : "Disable selected users",
+        description: zh
+          ? `确认将选中的 ${selectedIds.length} 个用户设为 disabled？他们将无法登录，已有会话会被踢下线。`
+          : `Disable ${selectedIds.length} selected users? They will be signed out immediately.`,
+        confirmText: zh ? "禁用" : "Disable",
+        destructive: true,
+      })
+    ) {
+      batchStatus.mutate("disabled");
+    }
+  };
+  const requestBatchDelete = async () => {
+    if (!selectedIds.length) return;
+    if (
+      await dialogs.confirm({
+        title: zh ? "批量删除用户" : "Delete selected users",
+        description: zh
+          ? `确认永久删除选中的 ${selectedIds.length} 个用户？API Key、余额与关联订单等数据会一并清理，且不可恢复。`
+          : `Permanently delete ${selectedIds.length} selected users? This cannot be undone.`,
+        confirmText: zh ? "删除" : "Delete",
+        destructive: true,
+      })
+    ) {
+      batchDelete.mutate();
+    }
+  };
   const requestDelete = async (user: UserRow) => {
     if (
       await dialogs.confirm({
@@ -99,10 +179,40 @@ export function UsersPage() {
             : "View and adjust wallet balance, plan remaining credits, and points."
         }
         actions={
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus data-icon="inline-start" />
-            {zh ? "创建用户" : "Create user"}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedIds.length ? (
+              <>
+                <span className="text-[11px] text-muted-foreground">
+                  {zh ? `已选 ${selectedIds.length}` : `${selectedIds.length} selected`}
+                </span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={batchStatus.isPending || batchDelete.isPending}
+                  onClick={requestBatchDisable}
+                >
+                  <Ban data-icon="inline-start" />
+                  {zh ? "批量禁用" : "Disable"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={batchStatus.isPending || batchDelete.isPending}
+                  onClick={requestBatchDelete}
+                >
+                  <Trash2 data-icon="inline-start" />
+                  {zh ? "批量删除" : "Delete"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={clearSelection}>
+                  {zh ? "取消选择" : "Clear"}
+                </Button>
+              </>
+            ) : null}
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus data-icon="inline-start" />
+              {zh ? "创建用户" : "Create user"}
+            </Button>
+          </div>
         }
       />
       <Card className="overflow-hidden">
@@ -130,10 +240,18 @@ export function UsersPage() {
               {pageItems.map((user) => (
                 <div className="flex flex-col gap-2.5 p-3 text-xs" key={user.id}>
                   <div className="flex items-center justify-between gap-2">
-                    <p className="min-w-0 truncate">
-                      <span className="font-medium">{user.display_name}</span>
-                      <span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span>
-                    </p>
+                    <label className="flex min-w-0 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="size-3.5 shrink-0 accent-foreground"
+                        checked={selectedIds.includes(user.id)}
+                        onChange={(event) => toggleOne(user.id, event.target.checked)}
+                      />
+                      <p className="min-w-0 truncate">
+                        <span className="font-medium">{user.display_name}</span>
+                        <span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span>
+                      </p>
+                    </label>
                     <Badge variant={user.status === "active" ? "success" : "destructive"}>{user.status}</Badge>
                   </div>
                   <div className="grid grid-cols-2 gap-2 rounded-md bg-secondary/35 p-2.5 text-[11px]">
@@ -157,6 +275,18 @@ export function UsersPage() {
             </div>
             <div className="hidden sm:block">
               <div className={TABLE_HEAD_CLASS}>
+                <span className="flex w-8 shrink-0 items-center">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 accent-foreground"
+                    checked={allPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = somePageSelected;
+                    }}
+                    onChange={(event) => togglePage(event.target.checked)}
+                    aria-label={zh ? "全选本页" : "Select page"}
+                  />
+                </span>
                 <span className="w-40 shrink-0">{zh ? "用户" : "User"}</span>
                 <span className="w-24 shrink-0">{zh ? "余额" : "Balance"}</span>
                 <span className="w-20 shrink-0">{zh ? "积分" : "Points"}</span>
@@ -166,6 +296,15 @@ export function UsersPage() {
               </div>
               {pageItems.map((user) => (
                 <div className={TABLE_ROW_CLASS} key={user.id}>
+                  <span className="flex w-8 shrink-0 items-center">
+                    <input
+                      type="checkbox"
+                      className="size-3.5 accent-foreground"
+                      checked={selectedIds.includes(user.id)}
+                      onChange={(event) => toggleOne(user.id, event.target.checked)}
+                      aria-label={zh ? `选择 ${user.username}` : `Select ${user.username}`}
+                    />
+                  </span>
                   <span className="w-40 shrink-0 truncate">
                     <span className="font-medium">{user.display_name}</span>
                     <span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span>

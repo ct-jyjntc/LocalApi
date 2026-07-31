@@ -10,6 +10,10 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
+export function getDataDir() {
+  return dataDir;
+}
+
 const dbPath = path.join(dataDir, "localapi.db");
 export const db: Database.Database = new Database(dbPath);
 
@@ -702,6 +706,16 @@ export function initDb() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS modules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      installed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      manifest_json TEXT NOT NULL DEFAULT '{}'
+    );
   `);
 
   const configuredAdmin = process.env.ADMIN_TOKEN?.trim();
@@ -1018,6 +1032,11 @@ export function setSetting(key: string, value: string) {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run(key, value);
   settingsCache.set(key, value);
+}
+
+export function deleteSetting(key: string) {
+  db.prepare("DELETE FROM settings WHERE key = ?").run(key);
+  settingsCache.delete(key);
 }
 
 export function getAllSettings(): Record<string, string> {

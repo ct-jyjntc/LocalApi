@@ -1,5 +1,4 @@
 import crypto from "crypto";
-import fetch, { type RequestInit, type Response } from "node-fetch";
 
 export type LinuxDoCredentials = {
   clientId: string;
@@ -19,18 +18,29 @@ export type LinuxDoNotify = {
   sign_type?: string;
 };
 
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-const relayUrl = process.env.LINUXDO_RELAY_URL?.trim().replace(/\/$/, "") || "";
-const relaySecret = process.env.LINUXDO_RELAY_SECRET?.trim() || "";
-
-async function relayRequest(path: string, body: Record<string, string>) {
-  const response = await fetch(`${relayUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-relay-secret": relaySecret }, body: JSON.stringify(body) });
-  if (!response.ok) throw new Error(`LINUX DO relay failed (${response.status})`);
-  return responseJson(response);
-}
-
 function normalizedGateway(value?: string) {
   return (value?.trim() || "https://credit.linux.do/epay").replace(/\/+$/, "");
+}
+
+function relayConfig() {
+  return {
+    relayUrl: process.env.LINUXDO_RELAY_URL?.trim().replace(/\/$/, "") || "",
+    relaySecret: process.env.LINUXDO_RELAY_SECRET?.trim() || "",
+  };
+}
+
+async function relayRequest(path: string, body: Record<string, string>) {
+  const { relayUrl, relaySecret } = relayConfig();
+  const response = await fetch(`${relayUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-relay-secret": relaySecret,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`LINUX DO relay failed (${response.status})`);
+  return responseJson(response);
 }
 
 export function linuxDoSignSource(
@@ -104,48 +114,20 @@ async function responseJson(response: Response) {
   }
 }
 
-export async function createLinuxDoPayment(
-  credentials: LinuxDoCredentials,
-  input: {
-    orderNo: string;
-    name: string;
-    money: string;
-    notifyUrl: string;
-    returnUrl: string;
-  },
-  fetcher: FetchLike = fetch,
-) {
-  const submission = buildLinuxDoPaymentSubmission(credentials, input);
-  const timeout = withTimeout();
-  try {
-    const response = await fetcher(submission.action, {
-      method: "POST",
-      body: new URLSearchParams(submission.params).toString(),
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      redirect: "manual",
-      signal: timeout.signal,
-    });
-    const location = response.headers.get("location");
-    if (location && response.status >= 300 && response.status < 400) {
-      return { payUrl: new URL(location, normalizedGateway(credentials.gatewayUrl)).toString() };
-    }
-    const body = await response.text();
-    throw new Error(
-      `LINUX DO Credit rejected the order (${response.status})${body ? `: ${body.slice(0, 300)}` : ""}`,
-    );
-  } finally {
-    timeout.clear();
-  }
-}
-
 export async function queryLinuxDoOrder(
   credentials: LinuxDoCredentials,
   orderNo: string,
-  fetcher: FetchLike = fetch,
 ) {
+  const { relayUrl, relaySecret } = relayConfig();
   if (relayUrl && relaySecret) {
     const body = await relayRequest("/credit/query", { order_no: orderNo });
-    return { found: Number(body.code) === 1, paid: Number(body.code) === 1 && Number(body.status) === 1, tradeNo: typeof body.trade_no === "string" ? body.trade_no : null, money: typeof body.money === "string" || typeof body.money === "number" ? String(body.money) : null, raw: body };
+    return {
+      found: Number(body.code) === 1,
+      paid: Number(body.code) === 1 && Number(body.status) === 1,
+      tradeNo: typeof body.trade_no === "string" ? body.trade_no : null,
+      money: typeof body.money === "string" || typeof body.money === "number" ? String(body.money) : null,
+      raw: body,
+    };
   }
   const url = new URL(`${normalizedGateway(credentials.gatewayUrl)}/api.php`);
   url.searchParams.set("act", "order");
@@ -154,7 +136,7 @@ export async function queryLinuxDoOrder(
   url.searchParams.set("out_trade_no", orderNo);
   const timeout = withTimeout();
   try {
-    const response = await fetcher(url.toString(), { signal: timeout.signal });
+    const response = await fetch(url.toString(), { signal: timeout.signal });
     const body = await responseJson(response);
     return {
       found: Number(body.code) === 1,
@@ -171,16 +153,22 @@ export async function queryLinuxDoOrder(
 export async function refundLinuxDoOrder(
   credentials: LinuxDoCredentials,
   input: { tradeNo: string; orderNo: string; money: string },
-  fetcher: FetchLike = fetch,
 ) {
+  const { relayUrl, relaySecret } = relayConfig();
   if (relayUrl && relaySecret) {
-    const body = await relayRequest("/credit/refund", { trade_no: input.tradeNo, order_no: input.orderNo, money: input.money });
-    if (Number(body.code) !== 1) throw new Error(typeof body.msg === "string" ? body.msg : "LINUX DO Credit refund failed");
+    const body = await relayRequest("/credit/refund", {
+      trade_no: input.tradeNo,
+      order_no: input.orderNo,
+      money: input.money,
+    });
+    if (Number(body.code) !== 1) {
+      throw new Error(typeof body.msg === "string" ? body.msg : "LINUX DO Credit refund failed");
+    }
     return body;
   }
   const timeout = withTimeout();
   try {
-    const response = await fetcher(`${normalizedGateway(credentials.gatewayUrl)}/api.php`, {
+    const response = await fetch(`${normalizedGateway(credentials.gatewayUrl)}/api.php`, {
       method: "POST",
       body: new URLSearchParams({
         pid: credentials.clientId,

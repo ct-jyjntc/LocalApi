@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Blocks,
   CalendarCheck2,
   ChartNoAxesCombined,
   CreditCard,
@@ -24,7 +25,8 @@ import {
 import { Suspense, useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api, userApi } from "@/lib/api";
+import { AnnouncementHost } from "@/components/AnnouncementHost";
 import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
 
 type NavItem = {
@@ -45,6 +47,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/tiers", label: { zh: "用户层级", en: "User tiers" }, icon: ShieldCheck },
   { to: "/billing", label: { zh: "计费用量", en: "Billing" }, icon: ChartNoAxesCombined },
   { to: "/payments", label: { zh: "支付订单", en: "Payments" }, icon: CreditCard },
+  { to: "/modules", label: { zh: "模块", en: "Modules" }, icon: Blocks },
   { to: "/logs", labelKey: "nav.logs", icon: ScrollText },
   { to: "/feedback", label: { zh: "用户反馈", en: "Feedback" }, icon: MessageSquareText },
   { to: "/settings", labelKey: "nav.settings", icon: Settings },
@@ -68,9 +71,20 @@ const COMPANY_CACHE_KEY = "localapi_company_name";
 export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"; onLogout?: () => void }) {
   const { t, locale } = useI18n();
   const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
+  // User-console feature flags (check-in, etc.) — keep in sync with admin settings.
+  const userConfig = useQuery({
+    queryKey: ["user-config"],
+    queryFn: userApi.config,
+    staleTime: 30_000,
+    enabled: mode === "user",
+  });
   const brandName = branding.data?.brand_name || localStorage.getItem(BRAND_CACHE_KEY) || t("shell.brand");
   const companyName = branding.data?.company_name?.trim() || localStorage.getItem(COMPANY_CACHE_KEY) || "";
-  const nav = mode === "admin" ? ADMIN_NAV : USER_NAV;
+  const checkinEnabled = userConfig.data?.checkin_enabled !== false;
+  const nav =
+    mode === "admin"
+      ? ADMIN_NAV
+      : USER_NAV.filter((item) => (item.to === "/checkin" ? checkinEnabled : true));
   const [collapsed, setCollapsed] = useState(() => {
     return localStorage.getItem(COLLAPSE_KEY) === "1";
   });
@@ -202,6 +216,8 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           </Button>
           <span className="truncate text-base font-semibold tracking-tight">{brandName}</span>
         </header>
+
+        <AnnouncementHost />
 
         <main className="mx-auto w-full max-w-[1280px] flex-1 min-w-0 px-3 py-5 pb-10 sm:px-8 sm:py-8">
           <Suspense

@@ -13,7 +13,7 @@ import {
   listApiKeysPage,
   updateApiKey,
 } from "../services/keys";
-import { clearLogs, getDashboardStats, getLog, listLogs } from "../services/logs";
+import { clearLogs, getDashboardStats, getLog, listLogsFiltered } from "../services/logs";
 import {
   createProvider,
   deleteProvider,
@@ -28,11 +28,9 @@ import { hashAdminSecret } from "../utils/admin-secret";
 import { DEFAULT_ADMIN_ENTRY_PATH, isValidAdminEntryPath, normalizeAdminEntryPath } from "../utils/admin-entry";
 import { commercialAdminRouter } from "./commercial-admin";
 import { testProviderConnection } from "../services/proxy";
-import {
-  getLinuxDoOAuthPublicConfig,
-  updateLinuxDoOAuthConfig,
-} from "../services/linuxdo-oauth";
 import { getCheckinSettings, updateCheckinSettings } from "../services/checkin";
+import { moduleRegistry } from "../modules/registry";
+import { modulesAdminRouter } from "./modules-admin";
 
 export const adminRouter = Router();
 
@@ -94,6 +92,11 @@ const settingsSchema = z.object({
   cache_paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
   brand_name: z.string().trim().min(1).max(80).optional(),
   company_name: z.string().trim().max(160).optional(),
+  announcement_enabled: z.boolean().optional(),
+  announcement_title: z.string().trim().max(120).optional(),
+  announcement_content: z.string().trim().max(4000).optional(),
+  announcement_banner: z.boolean().optional(),
+  announcement_popup: z.boolean().optional(),
   public_base_url: z.string().trim().max(255).refine(isValidPublicBaseUrl, {
     message: "public_base_url must be an http(s) URL or domain without a path",
   }).optional(),
@@ -298,9 +301,22 @@ adminRouter.delete("/cache", (_req, res) => {
 
 // Logs
 adminRouter.get("/logs", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 100, 500);
-  const offset = Number(req.query.offset) || 0;
-  res.json(listLogs(limit, offset));
+  const limit = Math.min(Number(req.query.limit) || 50, 500);
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const str = (key: string) => (typeof req.query[key] === "string" ? String(req.query[key]) : "");
+  res.json(
+    listLogsFiltered({
+      limit,
+      offset,
+      q: str("q"),
+      status: str("status") || "all",
+      method: str("method"),
+      stream: str("stream") || "all",
+      provider: str("provider"),
+      model: str("model"),
+      userId: str("user_id") || undefined,
+    }),
+  );
 });
 
 adminRouter.get("/logs/:id", (req, res) => {
@@ -315,8 +331,8 @@ adminRouter.delete("/logs", (_req, res) => {
 
 function serializeSettings() {
   const all = getAllSettings();
-  const linuxdo = getLinuxDoOAuthPublicConfig();
   const checkin = getCheckinSettings();
+  const moduleSettings = moduleRegistry.collectAdminSettings();
   return {
     admin_password_set: Boolean(all.admin_token),
     admin_password_hint: all.admin_token ? "••••••••" : "",
@@ -331,6 +347,12 @@ function serializeSettings() {
     cache_paths: JSON.parse(all.cache_paths || "[]"),
     brand_name: all.brand_name || "LocalAPI",
     company_name: all.company_name || "",
+    announcement_enabled: (all.announcement_enabled ?? "false") === "true",
+    announcement_title: all.announcement_title || "",
+    announcement_content: all.announcement_content || "",
+    announcement_banner: (all.announcement_banner ?? "true") === "true",
+    announcement_popup: (all.announcement_popup ?? "true") === "true",
+    announcement_updated_at: all.announcement_updated_at || "",
     public_base_url: all.public_base_url || "",
     admin_entry_path: all.admin_entry_path || DEFAULT_ADMIN_ENTRY_PATH,
     registration_enabled: all.registration_enabled === "true",
@@ -341,14 +363,16 @@ function serializeSettings() {
     checkin_points_max: checkin.points_max,
     points_balance_cap: checkin.balance_cap,
     points_exchange_rate: checkin.exchange_rate,
-    linuxdo_login_enabled: linuxdo.enabled,
-    linuxdo_client_id: linuxdo.client_id,
-    linuxdo_client_secret_set: linuxdo.client_secret_set,
-    linuxdo_relay_url: linuxdo.relay_url,
-    linuxdo_relay_secret_set: linuxdo.relay_secret_set,
-    linuxdo_configured: linuxdo.configured,
-    linuxdo_callback_url: linuxdo.callback_url,
-    linuxdo_authorize_ready: linuxdo.authorize_ready,
+    // Defaults when LinuxDo module is not active; module serialize overwrites these.
+    linuxdo_login_enabled: false,
+    linuxdo_client_id: "",
+    linuxdo_client_secret_set: false,
+    linuxdo_relay_url: "",
+    linuxdo_relay_secret_set: false,
+    linuxdo_configured: false,
+    linuxdo_callback_url: "",
+    linuxdo_authorize_ready: false,
+    ...moduleSettings,
   };
 }
 
@@ -395,6 +419,31 @@ adminRouter.patch("/settings", (req, res) => {
   }
   if (body.brand_name !== undefined) setSetting("brand_name", body.brand_name);
   if (body.company_name !== undefined) setSetting("company_name", body.company_name);
+  if (
+    body.announcement_enabled !== undefined ||
+    body.announcement_title !== undefined ||
+    body.announcement_content !== undefined ||
+    body.announcement_banner !== undefined ||
+    body.announcement_popup !== undefined
+  ) {
+    if (body.announcement_enabled !== undefined) {
+      setSetting("announcement_enabled", body.announcement_enabled ? "true" : "false");
+    }
+    if (body.announcement_title !== undefined) {
+      setSetting("announcement_title", body.announcement_title);
+    }
+    if (body.announcement_content !== undefined) {
+      setSetting("announcement_content", body.announcement_content);
+    }
+    if (body.announcement_banner !== undefined) {
+      setSetting("announcement_banner", body.announcement_banner ? "true" : "false");
+    }
+    if (body.announcement_popup !== undefined) {
+      setSetting("announcement_popup", body.announcement_popup ? "true" : "false");
+    }
+    // Bump version so clients re-show popup after content/mode changes.
+    setSetting("announcement_updated_at", new Date().toISOString());
+  }
   if (body.public_base_url !== undefined) {
     setSetting("public_base_url", normalizePublicBaseUrl(body.public_base_url));
   }
@@ -436,30 +485,22 @@ adminRouter.patch("/settings", (req, res) => {
     }
   }
 
-  if (
-    body.linuxdo_login_enabled !== undefined
-    || body.linuxdo_client_id !== undefined
-    || body.linuxdo_client_secret !== undefined
-    || body.linuxdo_relay_url !== undefined
-    || body.linuxdo_relay_secret !== undefined
-  ) {
-    try {
-      updateLinuxDoOAuthConfig({
-        enabled: body.linuxdo_login_enabled,
-        client_id: body.linuxdo_client_id,
-        client_secret: body.linuxdo_client_secret,
-        relay_url: body.linuxdo_relay_url,
-        relay_secret: body.linuxdo_relay_secret,
-      });
-    } catch (error) {
-      return res.status(400).json({
-        error: error instanceof Error ? error.message : "Invalid LinuxDo login settings",
-      });
-    }
+  try {
+    // Module settings (e.g. LinuxDo OAuth) apply against the raw body so optional secrets pass through.
+    moduleRegistry.applyAdminSettings(
+      req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {},
+    );
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "Invalid module settings",
+    });
   }
 
   res.json(serializeSettings());
 });
+
+adminRouter.use(modulesAdminRouter);
+adminRouter.use(moduleRegistry.adminHost.router);
 
 adminRouter.get("/meta", (_req, res) => {
   res.json({

@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 
 test("LINUX DO EasyPay signature follows ASCII ordering and excludes signature fields", async () => {
   const { linuxDoSignSource, signLinuxDoEasyPay, verifyLinuxDoEasyPaySignature } = await import(
-    "../src/services/linuxdo-credit"
+    "../../modules/linuxdo/src/credit"
   );
   const params = {
     pid: "client-1",
@@ -48,18 +48,28 @@ test("payment notifications credit the wallet exactly once and full refunds debi
     refundPaymentOrder,
     updatePaymentChannel,
   } = await import("../src/services/payments");
-  const { signLinuxDoEasyPay, verifyLinuxDoEasyPaySignature } = await import("../src/services/linuxdo-credit");
+  const { signLinuxDoEasyPay, verifyLinuxDoEasyPaySignature } = await import("../../modules/linuxdo/src/credit");
+  const { moduleRegistry } = await import("../src/modules/registry");
 
   let refundServer: http.Server | null = null;
   try {
     initDb();
+    const bundledCandidates = [
+      path.resolve(__dirname, "../bundled-modules/linuxdo"),
+      path.resolve(__dirname, "../../server/bundled-modules/linuxdo"),
+      path.resolve(process.cwd(), "bundled-modules/linuxdo"),
+      path.resolve(process.cwd(), "server/bundled-modules/linuxdo"),
+    ];
+    const bundled = bundledCandidates.find((dir) => fs.existsSync(path.join(dir, "module.json")));
+    assert.ok(bundled, "bundled linuxdo module missing — run npm run package:linuxdo");
+    moduleRegistry.installFromDirectory(bundled, { activate: true });
     const user = createUser({ username: "payer", password: "password-123" });
     updatePaymentChannel({
       enabled: true,
       client_id: "pid-1",
       client_secret: "secret-1",
       exchange_rate_micros: 1_000_000,
-    });
+    }, "linuxdo-credit");
     setSetting("public_base_url", "https://api.example.com");
     const storedChannel = db.prepare("SELECT client_secret FROM payment_channels WHERE id = 'linuxdo-credit'").get() as {
       client_secret: string;
@@ -155,7 +165,7 @@ test("payment notifications credit the wallet exactly once and full refunds debi
     });
     await new Promise<void>((resolve) => refundServer!.listen(0, "127.0.0.1", resolve));
     const address = refundServer.address() as AddressInfo;
-    updatePaymentChannel({ gateway_url: `http://127.0.0.1:${address.port}` });
+    updatePaymentChannel({ gateway_url: `http://127.0.0.1:${address.port}` }, "linuxdo-credit");
 
     const refunded = await refundPaymentOrder("payment-order-1", "customer request");
     const refundedWallet = db.prepare("SELECT balance_micros, reserved_micros, lifetime_topup_micros FROM wallet_accounts WHERE user_id = ?")

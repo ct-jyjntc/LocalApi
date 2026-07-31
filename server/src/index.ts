@@ -12,12 +12,12 @@ import { createProvider, listProviders } from "./services/providers";
 import { createApiKey, listApiKeys } from "./services/keys";
 import { cleanupStaleReservations } from "./services/billing";
 import { maintainDueSubscriptions } from "./services/plans";
-import { seedLinuxDoOAuthFromEnv } from "./services/linuxdo-oauth";
 import { migratePointsScaleIfNeeded } from "./services/checkin";
+import { moduleRegistry } from "./modules/registry";
 
 initDb();
-seedLinuxDoOAuthFromEnv();
 migratePointsScaleIfNeeded();
+moduleRegistry.migrateLegacyAndBoot();
 
 // Single-port app
 const SINGLE_PORT = Number(process.env.PORT || 5555);
@@ -95,11 +95,34 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/branding", (_req, res) => {
+  const announcementEnabled = (getSetting("announcement_enabled") ?? "false") === "true";
+  const announcementContent = (getSetting("announcement_content") || "").trim();
   res.json({
     brand_name: getSetting("brand_name") || "LocalAPI",
     company_name: getSetting("company_name") || "",
     public_base_url: getSetting("public_base_url") || "",
+    announcement: announcementEnabled && announcementContent
+      ? {
+          enabled: true,
+          title: (getSetting("announcement_title") || "").trim() || "公告",
+          content: announcementContent,
+          banner: (getSetting("announcement_banner") ?? "true") === "true",
+          popup: (getSetting("announcement_popup") ?? "true") === "true",
+          updated_at: getSetting("announcement_updated_at") || "",
+        }
+      : {
+          enabled: false,
+          title: "",
+          content: "",
+          banner: false,
+          popup: false,
+          updated_at: "",
+        },
   });
+});
+
+app.get("/modules/public", (_req, res) => {
+  res.json({ items: moduleRegistry.listPublic() });
 });
 
 // Parse bodies only for the admin API. Proxy requests are parsed selectively in
@@ -116,8 +139,10 @@ app.use(
   express.json({ limit: "20mb" }),
   express.urlencoded({ extended: true, limit: "20mb" }),
   userRouter,
+  moduleRegistry.userHost.router,
 );
 app.use(paymentsRouter);
+app.use(moduleRegistry.paymentHost.router);
 app.use(proxyRouter);
 
 // Frontend static + SPA fallback on the same port
@@ -158,7 +183,8 @@ if (webDist) {
       req.path.startsWith("/v1") ||
       req.path.startsWith("/coding") ||
       req.path.startsWith("/payment/") ||
-      req.path === "/health"
+      req.path === "/health" ||
+      req.path === "/modules/public"
     ) {
       return next();
     }

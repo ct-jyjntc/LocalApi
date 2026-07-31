@@ -15,8 +15,10 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useI18n, type Locale } from "@/lib/i18n";
+import { hasModuleFeature, usePublicModules } from "@/lib/modules";
 
 export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const { theme, setTheme } = useTheme();
@@ -26,6 +28,8 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     queryKey: ["settings"],
     queryFn: () => api.settings.get(),
   });
+  const publicModules = usePublicModules();
+  const linuxdoModuleActive = hasModuleFeature(publicModules.data?.items, "auth.linuxdo");
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -35,6 +39,11 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [retryDelayMs, setRetryDelayMs] = useState(400);
   const [brandName, setBrandName] = useState("LocalAPI");
   const [companyName, setCompanyName] = useState("");
+  const [announcementEnabled, setAnnouncementEnabled] = useState(false);
+  const [announcementTitle, setAnnouncementTitle] = useState("");
+  const [announcementContent, setAnnouncementContent] = useState("");
+  const [announcementBanner, setAnnouncementBanner] = useState(true);
+  const [announcementPopup, setAnnouncementPopup] = useState(true);
   const [publicBaseUrl, setPublicBaseUrl] = useState("");
   const [adminEntryPath, setAdminEntryPathState] = useState("/admin");
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
@@ -63,6 +72,11 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setRetryDelayMs(Number(data.retry_delay_ms ?? 400));
     setBrandName(data.brand_name || "LocalAPI");
     setCompanyName(data.company_name || "");
+    setAnnouncementEnabled(Boolean(data.announcement_enabled));
+    setAnnouncementTitle(data.announcement_title || "");
+    setAnnouncementContent(data.announcement_content || "");
+    setAnnouncementBanner(data.announcement_banner !== false);
+    setAnnouncementPopup(data.announcement_popup !== false);
     setPublicBaseUrl(data.public_base_url || "");
     setAdminEntryPathState(data.admin_entry_path || "/admin");
     setRegistrationEnabled(Boolean(data.registration_enabled));
@@ -134,6 +148,23 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
       if (result.company_name?.trim()) localStorage.setItem("localapi_company_name", result.company_name.trim());
       else localStorage.removeItem("localapi_company_name");
       toast.success(t("settings.brandingSaved"));
+      qc.invalidateQueries({ queryKey: ["settings"] });
+      qc.invalidateQueries({ queryKey: ["branding"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveAnnouncement = useMutation({
+    mutationFn: async () =>
+      api.settings.update({
+        announcement_enabled: announcementEnabled,
+        announcement_title: announcementTitle.trim(),
+        announcement_content: announcementContent.trim(),
+        announcement_banner: announcementBanner,
+        announcement_popup: announcementPopup,
+      }),
+    onSuccess: () => {
+      toast.success(locale === "zh" ? "公告已保存" : "Announcement saved");
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["branding"] });
     },
@@ -294,22 +325,24 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
           </div>
           <Switch checked={passwordLoginEnabled} onCheckedChange={setPasswordLoginEnabled} />
         </div>
-        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
-          <div>
-            <p className="text-xs font-medium">{t("settings.loginLinuxdo")}</p>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {linuxdoEnabled
-                ? data?.linuxdo_authorize_ready
-                  ? t("settings.loginLinuxdoOn")
-                  : t("settings.linuxdoIncompleteHint")
-                : t("settings.loginLinuxdoOff")}
-            </p>
-            {!data?.linuxdo_authorize_ready ? (
-              <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t("settings.registrationLinuxdoNeedConfig")}</p>
-            ) : null}
+        {linuxdoModuleActive ? (
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
+            <div>
+              <p className="text-xs font-medium">{t("settings.loginLinuxdo")}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {linuxdoEnabled
+                  ? data?.linuxdo_authorize_ready
+                    ? t("settings.loginLinuxdoOn")
+                    : t("settings.linuxdoIncompleteHint")
+                  : t("settings.loginLinuxdoOff")}
+              </p>
+              {!data?.linuxdo_authorize_ready ? (
+                <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t("settings.registrationLinuxdoNeedConfig")}</p>
+              ) : null}
+            </div>
+            <Switch checked={linuxdoEnabled} onCheckedChange={setLinuxdoEnabled} />
           </div>
-          <Switch checked={linuxdoEnabled} onCheckedChange={setLinuxdoEnabled} />
-        </div>
+        ) : null}
         <div className="flex justify-end">
           <Button size="sm" disabled={saveLoginMethods.isPending} onClick={() => saveLoginMethods.mutate()}>
             {saveLoginMethods.isPending ? t("common.loading") : t("settings.saveLoginMethods")}
@@ -331,18 +364,20 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
           </div>
           <Switch checked={registrationEnabled} onCheckedChange={setRegistrationEnabled} />
         </div>
-        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
-          <div>
-            <p className="text-xs font-medium">{t("settings.registrationLinuxdo")}</p>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {linuxdoRegistrationEnabled ? t("settings.registrationLinuxdoOn") : t("settings.registrationLinuxdoOff")}
-            </p>
-            {!data?.linuxdo_authorize_ready ? (
-              <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t("settings.registrationLinuxdoNeedConfig")}</p>
-            ) : null}
+        {linuxdoModuleActive ? (
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
+            <div>
+              <p className="text-xs font-medium">{t("settings.registrationLinuxdo")}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {linuxdoRegistrationEnabled ? t("settings.registrationLinuxdoOn") : t("settings.registrationLinuxdoOff")}
+              </p>
+              {!data?.linuxdo_authorize_ready ? (
+                <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t("settings.registrationLinuxdoNeedConfig")}</p>
+              ) : null}
+            </div>
+            <Switch checked={linuxdoRegistrationEnabled} onCheckedChange={setLinuxdoRegistrationEnabled} />
           </div>
-          <Switch checked={linuxdoRegistrationEnabled} onCheckedChange={setLinuxdoRegistrationEnabled} />
-        </div>
+        ) : null}
         <div className="flex justify-end">
           <Button size="sm" disabled={saveRegistration.isPending} onClick={() => saveRegistration.mutate()}>
             {saveRegistration.isPending ? t("common.loading") : t("settings.saveRegistration")}
@@ -418,94 +453,179 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
         </div>
       </Card>
 
-      <Card className="space-y-4 p-4 sm:p-5">
-        <div>
-          <h2 className="text-sm font-medium">{t("settings.linuxdo")}</h2>
-          <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.linuxdoHint")}</p>
-        </div>
-        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
+      {linuxdoModuleActive ? (
+        <Card className="space-y-4 p-4 sm:p-5">
           <div>
-            <p className="text-xs font-medium">{t("settings.linuxdoEnable")}</p>
+            <h2 className="text-sm font-medium">{t("settings.linuxdo")}</h2>
+            <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.linuxdoHint")}</p>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2.5">
+            <div>
+              <p className="text-xs font-medium">{t("settings.linuxdoEnable")}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {linuxdoEnabled
+                  ? data?.linuxdo_authorize_ready
+                    ? t("settings.linuxdoReadyHint")
+                    : t("settings.linuxdoIncompleteHint")
+                  : t("settings.linuxdoDisabledHint")}
+              </p>
+            </div>
+            <Switch checked={linuxdoEnabled} onCheckedChange={setLinuxdoEnabled} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>{t("settings.linuxdoClientId")}</Label>
+              <Input
+                className="font-mono text-xs"
+                value={linuxdoClientId}
+                maxLength={256}
+                spellCheck={false}
+                placeholder="LinuxDo OAuth Client ID"
+                onChange={(event) => setLinuxdoClientId(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t("settings.linuxdoClientSecret")}</Label>
+              <Input
+                className="font-mono text-xs"
+                type="password"
+                value={linuxdoClientSecret}
+                maxLength={4096}
+                spellCheck={false}
+                placeholder={
+                  data?.linuxdo_client_secret_set
+                    ? t("settings.secretKeepPlaceholder")
+                    : t("settings.linuxdoClientSecretPh")
+                }
+                onChange={(event) => setLinuxdoClientSecret(event.target.value)}
+              />
+              <p className="text-[11px] text-muted-foreground">{t("settings.linuxdoClientSecretHint")}</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t("settings.linuxdoRelayUrl")}</Label>
+              <Input
+                className="font-mono text-xs"
+                value={linuxdoRelayUrl}
+                maxLength={512}
+                spellCheck={false}
+                placeholder="https://relay.example.com"
+                onChange={(event) => setLinuxdoRelayUrl(event.target.value)}
+              />
+              <p className="text-[11px] text-muted-foreground">{t("settings.linuxdoRelayUrlHint")}</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t("settings.linuxdoRelaySecret")}</Label>
+              <Input
+                className="font-mono text-xs"
+                type="password"
+                value={linuxdoRelaySecret}
+                maxLength={4096}
+                spellCheck={false}
+                placeholder={
+                  data?.linuxdo_relay_secret_set
+                    ? t("settings.secretKeepPlaceholder")
+                    : t("settings.linuxdoRelaySecretPh")
+                }
+                onChange={(event) => setLinuxdoRelaySecret(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>{t("settings.linuxdoCallback")}</Label>
+              <Input
+                className="font-mono text-xs"
+                value={data?.linuxdo_callback_url || t("settings.linuxdoCallbackMissing")}
+                readOnly
+              />
+              <p className="text-[11px] text-muted-foreground">{t("settings.linuxdoCallbackHint")}</p>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" disabled={saveLinuxDo.isPending} onClick={() => saveLinuxDo.mutate()}>
+              {saveLinuxDo.isPending ? t("common.loading") : t("settings.saveLinuxdo")}
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium">{locale === "zh" ? "站点公告" : "Announcement"}</h2>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {linuxdoEnabled
-                ? data?.linuxdo_authorize_ready
-                  ? t("settings.linuxdoReadyHint")
-                  : t("settings.linuxdoIncompleteHint")
-                : t("settings.linuxdoDisabledHint")}
+              {locale === "zh"
+                ? "开启后顶部显示公告（内容超出宽度才滚动）。启用弹窗时，用户每次打开站点都会弹出；点「关闭」仅本次，点「今日关闭」当天不再弹。"
+                : "Top bar always shows when enabled (scrolls only if content overflows). With popup on, it appears every visit; Close is this visit only, Hide today lasts until tomorrow."}
             </p>
           </div>
-          <Switch checked={linuxdoEnabled} onCheckedChange={setLinuxdoEnabled} />
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{locale === "zh" ? "启用" : "Enabled"}</span>
+            <Switch checked={announcementEnabled} onCheckedChange={setAnnouncementEnabled} />
+          </div>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label>{t("settings.linuxdoClientId")}</Label>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label>{locale === "zh" ? "标题" : "Title"}</Label>
             <Input
-              className="font-mono text-xs"
-              value={linuxdoClientId}
-              maxLength={256}
-              spellCheck={false}
-              placeholder="LinuxDo OAuth Client ID"
-              onChange={(event) => setLinuxdoClientId(event.target.value)}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label>{t("settings.linuxdoClientSecret")}</Label>
-            <Input
-              className="font-mono text-xs"
-              type="password"
-              value={linuxdoClientSecret}
-              maxLength={4096}
-              spellCheck={false}
-              placeholder={
-                data?.linuxdo_client_secret_set
-                  ? t("settings.secretKeepPlaceholder")
-                  : t("settings.linuxdoClientSecretPh")
-              }
-              onChange={(event) => setLinuxdoClientSecret(event.target.value)}
-            />
-            <p className="text-[11px] text-muted-foreground">{t("settings.linuxdoClientSecretHint")}</p>
-          </div>
-          <div className="space-y-1.5">
-            <Label>{t("settings.linuxdoRelayUrl")}</Label>
-            <Input
-              className="font-mono text-xs"
-              value={linuxdoRelayUrl}
-              maxLength={512}
-              spellCheck={false}
-              placeholder="https://relay.example.com"
-              onChange={(event) => setLinuxdoRelayUrl(event.target.value)}
-            />
-            <p className="text-[11px] text-muted-foreground">{t("settings.linuxdoRelayUrlHint")}</p>
-          </div>
-          <div className="space-y-1.5">
-            <Label>{t("settings.linuxdoRelaySecret")}</Label>
-            <Input
-              className="font-mono text-xs"
-              type="password"
-              value={linuxdoRelaySecret}
-              maxLength={4096}
-              spellCheck={false}
-              placeholder={
-                data?.linuxdo_relay_secret_set
-                  ? t("settings.secretKeepPlaceholder")
-                  : t("settings.linuxdoRelaySecretPh")
-              }
-              onChange={(event) => setLinuxdoRelaySecret(event.target.value)}
+              value={announcementTitle}
+              maxLength={120}
+              placeholder={locale === "zh" ? "例如：维护通知" : "e.g. Maintenance notice"}
+              onChange={(e) => setAnnouncementTitle(e.target.value)}
+              disabled={!announcementEnabled}
             />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
-            <Label>{t("settings.linuxdoCallback")}</Label>
-            <Input
-              className="font-mono text-xs"
-              value={data?.linuxdo_callback_url || t("settings.linuxdoCallbackMissing")}
-              readOnly
+            <Label>{locale === "zh" ? "内容" : "Content"}</Label>
+            <Textarea
+              value={announcementContent}
+              maxLength={4000}
+              rows={5}
+              placeholder={locale === "zh" ? "公告正文，支持换行" : "Announcement body"}
+              onChange={(e) => setAnnouncementContent(e.target.value)}
+              disabled={!announcementEnabled}
             />
-            <p className="text-[11px] text-muted-foreground">{t("settings.linuxdoCallbackHint")}</p>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/45 px-3 py-2 sm:col-span-2">
+            <div className="min-w-0">
+              <p className="text-xs">{locale === "zh" ? "顶部显示" : "Top banner"}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {locale === "zh"
+                  ? "关闭后不显示顶部公告条（弹窗可单独开启）。"
+                  : "Turn off to hide the top ticker; popup can still be enabled."}
+              </p>
+            </div>
+            <Switch
+              checked={announcementBanner}
+              onCheckedChange={setAnnouncementBanner}
+              disabled={!announcementEnabled}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/45 px-3 py-2 sm:col-span-2">
+            <div className="min-w-0">
+              <p className="text-xs">{locale === "zh" ? "打开站点时弹出" : "Popup on open"}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {locale === "zh"
+                  ? "关闭后不弹窗；可与顶部显示独立开关。"
+                  : "Turn off to disable popup; independent from the top banner."}
+              </p>
+            </div>
+            <Switch
+              checked={announcementPopup}
+              onCheckedChange={setAnnouncementPopup}
+              disabled={!announcementEnabled}
+            />
           </div>
         </div>
         <div className="flex justify-end">
-          <Button size="sm" disabled={saveLinuxDo.isPending} onClick={() => saveLinuxDo.mutate()}>
-            {saveLinuxDo.isPending ? t("common.loading") : t("settings.saveLinuxdo")}
+          <Button
+            size="sm"
+            disabled={saveAnnouncement.isPending || (announcementEnabled && !announcementContent.trim())}
+            onClick={() => saveAnnouncement.mutate()}
+          >
+            {saveAnnouncement.isPending
+              ? t("common.loading")
+              : locale === "zh"
+                ? "保存公告"
+                : "Save announcement"}
           </Button>
         </div>
       </Card>

@@ -20,7 +20,7 @@ import {
   updatePlan,
 } from "../services/plans";
 import { adjustPoints, CheckinError } from "../services/checkin";
-import { createUser, deleteUser, listUsersPage, updateUser } from "../services/users";
+import { createUser, deleteUser, deleteUsers, listUsersPage, setUsersStatus, updateUser } from "../services/users";
 import { listAuditLogs, writeAudit } from "../services/audit";
 import {
   PaymentError,
@@ -165,6 +165,43 @@ commercialAdminRouter.delete("/users/:id", (req, res) => {
   if (!ok) return res.status(404).json({ error: "User not found" });
   writeAudit({ action: "user.delete", target_type: "user", target_id: req.params.id });
   return res.json({ ok: true });
+});
+commercialAdminRouter.post("/users/batch/status", (req, res) => {
+  const body = parseBody(
+    z.object({
+      ids: z.array(z.string().trim().min(1).max(80)).min(1).max(500),
+      status: z.enum(["active", "suspended", "disabled"]),
+    }),
+    req.body,
+    res,
+  );
+  if (!body) return;
+  const result = setUsersStatus(body.ids, body.status);
+  writeAudit({
+    action: "user.batch_status",
+    target_type: "user",
+    target_id: result.ids[0] || null,
+    detail: { status: body.status, count: result.updated, ids: result.ids },
+  });
+  return res.json({ ok: true, ...result });
+});
+commercialAdminRouter.post("/users/batch/delete", (req, res) => {
+  const body = parseBody(
+    z.object({
+      ids: z.array(z.string().trim().min(1).max(80)).min(1).max(500),
+    }),
+    req.body,
+    res,
+  );
+  if (!body) return;
+  const result = deleteUsers(body.ids);
+  writeAudit({
+    action: "user.batch_delete",
+    target_type: "user",
+    target_id: result.ids[0] || null,
+    detail: { count: result.deleted, ids: result.ids },
+  });
+  return res.json({ ok: true, ...result });
 });
 commercialAdminRouter.post("/users/:id/wallet", (req, res) => {
   const body = parseBody(
@@ -368,18 +405,26 @@ commercialAdminRouter.get("/audit", (req, res) => {
   return res.json({ items: listAuditLogs(limit) });
 });
 
+function defaultPaymentChannelId() {
+  const channels = getPaymentChannelsAdmin() as Array<{ id?: string } | null>;
+  return channels.find((item) => item?.id === "linuxdo-credit")?.id
+    || channels[0]?.id
+    || "linuxdo-credit";
+}
+
 commercialAdminRouter.get("/payments/channel", (_req, res) => {
-  return res.json(getPaymentChannelAdmin());
+  return res.json(getPaymentChannelAdmin(defaultPaymentChannelId()));
 });
 commercialAdminRouter.put("/payments/channel", (req, res) => {
   const body = parseBody(paymentChannelSchema, req.body, res);
   if (!body) return;
   try {
-    const channel = updatePaymentChannel(body);
+    const channelId = defaultPaymentChannelId();
+    const channel = updatePaymentChannel(body, channelId);
     writeAudit({
       action: "payment.channel.update",
       target_type: "payment_channel",
-      target_id: "linuxdo-credit",
+      target_id: channelId,
       detail: {
         ...body,
         client_secret: body.client_secret === undefined ? undefined : "[updated]",

@@ -20,6 +20,7 @@ Local OpenAI-compatible API relay with a Quiet Console admin UI.
 - **Streaming** — Transparent SSE passthrough (`stream: true`)
 - **Request logs** — Input / output / upstream cache / reasoning tokens
 - **Admin console** — Dashboard, providers, keys, logs, settings
+- **Modules** — Zip-installable features (LinuxDo OAuth + Credit payments)
 
 ## Quick start
 
@@ -115,11 +116,36 @@ https://你的域名/payment/wechatpay/notify
 
 电脑浏览器默认使用 Native 扫码支付，手机浏览器默认使用 H5 支付。H5 支付还需要在微信商户平台配置 H5 支付域名；如果只做电脑扫码，可以关闭“手机端 H5 支付”。生产环境请设置 `SECRETS_KEY`，商户私钥、API v3 密钥和验签公钥/证书会加密保存。建议先用小额订单验证“下单 → 回调 → 入账 → 查单 → 退款”完整链路。
 
+## Modules
+
+LocalAPI supports zip-installable feature modules. LinuxDo OAuth login and Credit payments ship as the first module.
+
+```bash
+# Build the installable zip + bundled copy used for legacy migrations
+npm run package:linuxdo
+# → artifacts/linuxdo.zip
+# → server/bundled-modules/linuxdo/
+```
+
+Install / uninstall from the admin console **模块** page, or via API:
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/admin/api/modules` | List installed modules |
+| `POST` | `/admin/api/modules/install` | multipart `file` zip; optional `activate=true` |
+| `POST` | `/admin/api/modules/:id/activate` | Mount routes + register providers |
+| `POST` | `/admin/api/modules/:id/deactivate` | Unmount routes + disable channel |
+| `DELETE` | `/admin/api/modules/:id?purgeSettings=1` | Uninstall (optional settings purge) |
+| `GET` | `/modules/public` | Enabled module features (no auth) |
+
+Installed modules live under `{LOCALAPI_DATA_DIR}/modules/`. Existing deployments that already configured LinuxDo are auto-migrated from `server/bundled-modules/linuxdo` on first boot. Fresh installs do not enable LinuxDo until the zip is installed.
+
 ## Project layout
 
 ```
 server/   Express relay + admin API + static UI
 web/      React admin (built into web/dist, served by server)
+modules/  Source for installable feature modules (e.g. linuxdo)
 ```
 
 Optional mock upstream (only if you need a local echo provider) still runs separately:

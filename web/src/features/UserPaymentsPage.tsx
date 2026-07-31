@@ -42,15 +42,31 @@ export function UserPaymentsPage() {
         : channel?.provider === "wechatpay"
           ? (mobile && modes.includes("h5") ? "h5" : modes.includes("native") ? "native" : "h5")
         : undefined;
-      return userApi.payments.createTopup(amount, channel?.id, mode);
+      // One-shot idempotency key for this click; retries with the same key reuse the order.
+      const clientRequestId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `topup-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      return userApi.payments.createTopup(amount, channel?.id, mode, clientRequestId);
     },
     onSuccess: (order) => {
       qc.invalidateQueries({ queryKey: ["user-payment-orders"] });
       qc.invalidateQueries({ queryKey: ["user", "commerce-orders"] });
-      if (order.pay_url) window.location.assign(order.pay_url);
-      else toast.error("支付地址未生成，请稍后在订单中重新查询");
+      if (order.pay_url) {
+        // Prevent double navigation if mutation settles twice.
+        if ((window as Window & { __topupNavigating?: boolean }).__topupNavigating) return;
+        (window as Window & { __topupNavigating?: boolean }).__topupNavigating = true;
+        window.location.assign(order.pay_url);
+      } else toast.error("支付地址未生成，请稍后在订单中重新查询");
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      const msg = error.message || "";
+      if (/duplicate key|idx_orders_client_merchant_order|23505/i.test(msg)) {
+        toast.error("支付渠道提示订单重复提交。请返回订单列表继续支付，或稍后再发起新充值。");
+        return;
+      }
+      toast.error(msg || "创建充值订单失败");
+    },
   });
   useEffect(() => {
     const orderNo = new URLSearchParams(window.location.search).get("order_no");
@@ -124,7 +140,14 @@ export function UserPaymentsPage() {
             {channel ? <p className="mt-1 text-[10px] text-muted-foreground">兑换比例：1 {channel.asset} = {(channel.exchange_rate_micros / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 账户额度</p> : null}
           </div>
 
-          <Button className="w-full" disabled={!validAmount || create.isPending} onClick={() => create.mutate()}>
+          <Button
+            className="w-full"
+            disabled={!validAmount || create.isPending}
+            onClick={() => {
+              if (create.isPending) return;
+              create.mutate();
+            }}
+          >
             {create.isPending ? <RefreshCw className="animate-spin" /> : <WalletCards />}{create.isPending ? "正在准备支付，请稍候" : `前往${channel?.name || "支付渠道"}支付`}<ArrowUpRight />
           </Button>
           {create.error ? <p className="rounded-md bg-destructive/8 px-3 py-2 text-center text-[11px] text-destructive">{create.error.message}</p> : null}

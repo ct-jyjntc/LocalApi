@@ -53,7 +53,8 @@ async function request<T>(
   opts?: { auth?: "admin" | "user" | false },
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type") && init.body) {
+  // FormData must keep the browser-generated multipart boundary.
+  if (!headers.has("Content-Type") && init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   if (opts?.auth === "user") {
@@ -511,30 +512,68 @@ export type Settings = {
   cache_paths: string[];
   brand_name: string;
   company_name: string;
+  announcement_enabled?: boolean;
+  announcement_title?: string;
+  announcement_content?: string;
+  announcement_banner?: boolean;
+  announcement_popup?: boolean;
+  announcement_updated_at?: string;
   public_base_url: string;
   admin_entry_path: string;
   registration_enabled: boolean;
   password_login_enabled: boolean;
-  linuxdo_registration_enabled: boolean;
+  linuxdo_registration_enabled?: boolean;
   checkin_enabled: boolean;
   checkin_points_min: number;
   checkin_points_max: number;
   points_balance_cap: number;
   points_exchange_rate: number;
-  linuxdo_login_enabled: boolean;
-  linuxdo_client_id: string;
-  linuxdo_client_secret_set: boolean;
-  linuxdo_relay_url: string;
-  linuxdo_relay_secret_set: boolean;
-  linuxdo_configured: boolean;
-  linuxdo_callback_url: string;
-  linuxdo_authorize_ready: boolean;
+  linuxdo_login_enabled?: boolean;
+  linuxdo_client_id?: string;
+  linuxdo_client_secret_set?: boolean;
+  linuxdo_relay_url?: string;
+  linuxdo_relay_secret_set?: boolean;
+  linuxdo_configured?: boolean;
+  linuxdo_callback_url?: string;
+  linuxdo_authorize_ready?: boolean;
+};
+
+export type InstalledModule = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  active: boolean;
+  features: string[];
+  installed_at: string;
+  updated_at: string;
+};
+
+export type PublicModule = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  features: string[];
+};
+
+export type Announcement = {
+  enabled: boolean;
+  title: string;
+  content: string;
+  /** Top sticky ticker bar. */
+  banner: boolean;
+  popup: boolean;
+  updated_at: string;
 };
 
 export type Branding = {
   brand_name: string;
   company_name: string;
   public_base_url: string;
+  announcement?: Announcement;
 };
 
 export type CheckinStatus = {
@@ -647,10 +686,32 @@ export const api = {
       request<{ ok: boolean }>(`/admin/api/keys/${id}`, { method: "DELETE" }),
   },
   logs: {
-    list: (limit = 100, offset = 0) =>
-      request<{ items: LogRow[]; total: number }>(
-        `/admin/api/logs?limit=${limit}&offset=${offset}`,
-      ),
+    list: (params?: {
+      limit?: number;
+      offset?: number;
+      q?: string;
+      status?: string;
+      method?: string;
+      stream?: string;
+      provider?: string;
+      model?: string;
+      user_id?: string;
+    }) => {
+      const search = new URLSearchParams();
+      if (params?.limit != null) search.set("limit", String(params.limit));
+      if (params?.offset != null) search.set("offset", String(params.offset));
+      if (params?.q) search.set("q", params.q);
+      if (params?.status) search.set("status", params.status);
+      if (params?.method) search.set("method", params.method);
+      if (params?.stream) search.set("stream", params.stream);
+      if (params?.provider) search.set("provider", params.provider);
+      if (params?.model) search.set("model", params.model);
+      if (params?.user_id) search.set("user_id", params.user_id);
+      const qs = search.toString();
+      return request<{ items: LogRow[]; total: number; limit: number; offset: number }>(
+        `/admin/api/logs${qs ? `?${qs}` : ""}`,
+      );
+    },
     get: (id: string) => request<LogRow>(`/admin/api/logs/${id}`),
     clear: () =>
       request<{ ok: boolean; removed: number }>("/admin/api/logs", {
@@ -670,6 +731,11 @@ export const api = {
       retry_delay_ms?: number;
       brand_name?: string;
       company_name?: string;
+      announcement_enabled?: boolean;
+      announcement_title?: string;
+      announcement_content?: string;
+      announcement_banner?: boolean;
+      announcement_popup?: boolean;
       public_base_url?: string;
       admin_entry_path?: string;
       registration_enabled?: boolean;
@@ -690,6 +756,34 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify(body),
       }),
+  },
+  modules: {
+    public: () => request<{ items: PublicModule[] }>("/modules/public", {}, { auth: false }),
+    list: () => request<{ items: InstalledModule[] }>("/admin/api/modules"),
+    install: async (file: File, activate = true) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("activate", activate ? "true" : "false");
+      // Do not set Content-Type — browser must add multipart boundary.
+      return request<InstalledModule>("/admin/api/modules/install", {
+        method: "POST",
+        body: form,
+        headers: {},
+      });
+    },
+    activate: (id: string) =>
+      request<InstalledModule>(`/admin/api/modules/${encodeURIComponent(id)}/activate`, {
+        method: "POST",
+      }),
+    deactivate: (id: string) =>
+      request<InstalledModule>(`/admin/api/modules/${encodeURIComponent(id)}/deactivate`, {
+        method: "POST",
+      }),
+    uninstall: (id: string, purgeSettings = false) =>
+      request<{ ok: boolean }>(
+        `/admin/api/modules/${encodeURIComponent(id)}?purgeSettings=${purgeSettings ? "1" : "0"}`,
+        { method: "DELETE" },
+      ),
   },
   commercial: {
     feedback: {
@@ -721,6 +815,16 @@ export const api = {
       update: (id: string, body: Partial<UserRow> & { password?: string }) =>
         request<UserRow>(`/admin/api/commercial/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
       remove: (id: string) => request<{ ok: boolean }>(`/admin/api/commercial/users/${id}`, { method: "DELETE" }),
+      batchStatus: (ids: string[], status: "active" | "suspended" | "disabled") =>
+        request<{ ok: boolean; updated: number; ids: string[]; status: string }>(
+          "/admin/api/commercial/users/batch/status",
+          { method: "POST", body: JSON.stringify({ ids, status }) },
+        ),
+      batchDelete: (ids: string[]) =>
+        request<{ ok: boolean; deleted: number; ids: string[] }>(
+          "/admin/api/commercial/users/batch/delete",
+          { method: "POST", body: JSON.stringify({ ids }) },
+        ),
       adjustWallet: (id: string, amount_micros: number, description: string) =>
         request<Wallet>(`/admin/api/commercial/users/${id}/wallet`, {
           method: "POST",
@@ -866,6 +970,7 @@ export const userApi = {
       linuxdo_login_enabled?: boolean;
       linuxdo_registration_enabled?: boolean;
       captcha_enabled: boolean;
+      checkin_enabled?: boolean;
     }>("/user/api/config", {}, { auth: false }),
   captcha: () =>
     request<{ captcha_id: string; image: string; expires_in: number }>("/user/api/captcha", {}, { auth: false }),
@@ -985,10 +1090,18 @@ export const userApi = {
         { auth: "user" },
       );
     },
-    createTopup: (amount: string, channel_id?: string, mode?: "page" | "wap" | "native" | "h5") =>
+    createTopup: (
+      amount: string,
+      channel_id?: string,
+      mode?: "page" | "wap" | "native" | "h5",
+      client_request_id?: string,
+    ) =>
       request<PaymentOrder>(
         "/user/api/payments/topups",
-        { method: "POST", body: JSON.stringify({ amount, channel_id, mode }) },
+        {
+          method: "POST",
+          body: JSON.stringify({ amount, channel_id, mode, client_request_id }),
+        },
         { auth: "user" },
       ),
     sync: (id: string) =>

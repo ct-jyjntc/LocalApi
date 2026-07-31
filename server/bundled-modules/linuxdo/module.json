@@ -1,0 +1,9 @@
+{
+  "id": "linuxdo",
+  "name": "LinuxDo",
+  "version": "1.0.0",
+  "description": "LinuxDo OAuth login and Credit (EasyPay) top-up",
+  "main": "index.js",
+  "minCoreVersion": "1.0.0",
+  "features": ["auth.linuxdo", "payment.linuxdo_credit"]
+}

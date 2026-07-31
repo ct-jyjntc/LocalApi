@@ -1,5 +1,4 @@
 import { Router, Request, Response } from "express";
-import crypto from "crypto";
 import { z } from "zod";
 import { getSetting, type User } from "../db";
 import { requireUser } from "../middleware/auth";
@@ -50,94 +49,15 @@ import {
 import { listCommerceLedgerPage, listCommerceOrdersPage } from "../services/commerce";
 import { createFeedback, getFeedbackThread, listUserFeedback, replyFeedback } from "../services/feedback";
 import {
-  exchangeLinuxDoCode,
-  getLinuxDoCallbackUrl,
-  getLinuxDoOAuthConfig,
-  getPublicBaseUrl,
-  isLinuxDoOAuthEnabled,
-} from "../services/linuxdo-oauth";
-import {
   CheckinError,
   exchangePoints,
+  getCheckinSettings,
   getCheckinStatus,
   performCheckin,
 } from "../services/checkin";
+import { mergeAuthProviderPublicStatus } from "../services/auth-providers";
 
 export const userRouter = Router();
-
-const linuxdoStates = new Map<string, number>();
-const linuxdoStateCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [state, expiresAt] of linuxdoStates) {
-    if (expiresAt <= now) linuxdoStates.delete(state);
-  }
-}, 60_000);
-linuxdoStateCleanupTimer.unref?.();
-
-userRouter.get("/auth/linuxdo", (req, res) => {
-  const config = getLinuxDoOAuthConfig();
-  const publicBase = getPublicBaseUrl();
-  if (!isLinuxDoOAuthEnabled(config) || !publicBase) {
-    return res.status(503).send("LinuxDo login is not configured");
-  }
-  const limiterKey = `linuxdo-oauth:${req.ip || req.socket.remoteAddress || "unknown"}`;
-  const rate = consumeRateLimit(limiterKey, 30, 5 * 60_000);
-  if (!rate.allowed) {
-    res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
-    return res.status(429).send("Too many OAuth requests");
-  }
-  const state = crypto.randomBytes(24).toString("hex");
-  linuxdoStates.set(state, Date.now() + 10 * 60_000);
-  const url = new URL(`${config.base_url}/oauth2/authorize`);
-  url.search = new URLSearchParams({
-    client_id: config.client_id,
-    redirect_uri: getLinuxDoCallbackUrl(publicBase),
-    response_type: "code",
-    scope: "openid profile",
-    state,
-  }).toString();
-  return res.redirect(url.toString());
-});
-
-userRouter.get("/auth/linuxdo/callback", async (req, res) => {
-  const state = String(req.query.state || "");
-  const expires = linuxdoStates.get(state);
-  linuxdoStates.delete(state);
-  const code = String(req.query.code || "");
-  if (!expires || expires < Date.now() || !code) {
-    return res.status(400).send("Invalid or expired OAuth request");
-  }
-  const publicBase = getPublicBaseUrl();
-  if (!publicBase || !isLinuxDoOAuthEnabled()) {
-    return res.status(503).send("LinuxDo login is not configured");
-  }
-  try {
-    const profile = await exchangeLinuxDoCode(code, getLinuxDoCallbackUrl(publicBase));
-    const username = (profile.username || `linuxdo_${profile.id || crypto.randomBytes(6).toString("hex")}`).trim();
-    let user = getUserByUsername(username);
-    if (!user) {
-      const linuxdoRegistrationEnabled =
-        (getSetting("linuxdo_registration_enabled") ?? "true") === "true";
-      if (!linuxdoRegistrationEnabled) {
-        return res
-          .status(403)
-          .send("LinuxDo registration is closed. Please sign in with an existing account or contact the administrator.");
-      }
-      user = getUserByUsername(
-        createUser({
-          username,
-          display_name: profile.name || username,
-          password: crypto.randomBytes(32).toString("base64url"),
-        }).username,
-      );
-    }
-    if (!user) throw new Error("Unable to create user");
-    const session = createUserSession(user.id);
-    return res.redirect(`${publicBase}/?linuxdo_token=${encodeURIComponent(session.token)}`);
-  } catch (error) {
-    return res.status(502).send(error instanceof Error ? error.message : "LinuxDo login failed");
-  }
-});
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | null {
   const parsed = schema.safeParse(body);
@@ -168,6 +88,7 @@ const topupSchema = z.object({
   ]),
   channel_id: z.string().trim().min(1).max(120).optional(),
   mode: z.enum(["page", "wap", "native", "h5"]).optional(),
+  client_request_id: z.string().trim().min(8).max(80).optional(),
 });
 
 function paymentFailure(res: Response, error: unknown) {
@@ -209,7 +130,8 @@ userRouter.post("/login", (req, res) => {
 userRouter.get("/config", (_req, res) => {
   const passwordRegistration = getSetting("registration_enabled") === "true";
   const passwordLogin = (getSetting("password_login_enabled") ?? "true") === "true";
-  const linuxdoLogin = isLinuxDoOAuthEnabled();
+  const authStatus = mergeAuthProviderPublicStatus();
+  const linuxdoLogin = Boolean(authStatus.linuxdo_enabled);
   // Default true for backward compatibility when setting is missing.
   const linuxdoRegistration = (getSetting("linuxdo_registration_enabled") ?? "true") === "true";
   return res.json({
@@ -220,6 +142,9 @@ userRouter.get("/config", (_req, res) => {
     linuxdo_login_enabled: linuxdoLogin,
     linuxdo_registration_enabled: linuxdoLogin && linuxdoRegistration,
     captcha_enabled: true,
+    // Drive user-console feature flags (e.g. sidebar "Check-in").
+    checkin_enabled: getCheckinSettings().enabled,
+    ...authStatus,
   });
 });
 
@@ -513,6 +438,7 @@ userRouter.post("/payments/topups", async (req, res) => {
       channelId: body.channel_id,
       mode: body.mode,
       clientIp: req.ip || req.socket.remoteAddress || undefined,
+      clientRequestId: body.client_request_id,
     });
     return res.status(201).json(order);
   } catch (error) {

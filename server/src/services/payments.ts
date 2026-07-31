@@ -7,13 +7,11 @@ import {
 } from "../db";
 import { decryptSecret, encryptSecret } from "../utils/secrets";
 import { nowIso } from "../utils/time";
+import type { PaymentChannelSeed } from "../modules/types";
 import {
-  buildLinuxDoPaymentSubmission,
-  queryLinuxDoOrder,
-  refundLinuxDoOrder,
-  verifyLinuxDoEasyPaySignature,
-  type LinuxDoNotify,
-} from "./linuxdo-credit";
+  getPaymentProvider,
+  getPaymentProviderByChannelId,
+} from "./payment-providers";
 import {
   buildAlipayPaymentSubmission,
   queryAlipayOrder,
@@ -128,13 +126,22 @@ function wechatPayCredentials(channel: PaymentChannel): WechatPayCredentials {
 }
 
 function channelProviderPath(provider: string) {
+  const adapter = getPaymentProvider(provider);
+  if (adapter) return adapter.pathSegment;
   if (provider === "alipay") return "alipay";
   if (provider === "wechatpay") return "wechatpay";
-  return "linuxdo";
+  if (provider === "linuxdo_credit") return "linuxdo";
+  return provider.replace(/_/g, "-");
 }
 
 function channelAsset(provider: string) {
+  const adapter = getPaymentProvider(provider);
+  if (adapter) return adapter.asset;
   return provider === "alipay" || provider === "wechatpay" ? "CNY" : "LDC";
+}
+
+function resolvePaymentAdapter(channel: PaymentChannel) {
+  return getPaymentProviderByChannelId(channel.id) || getPaymentProvider(channel.provider);
 }
 
 function secretConfigValue(current: string | undefined, incoming: string | undefined) {
@@ -161,12 +168,16 @@ function requireConfiguredChannel(id: string, options: { allowDisabled?: boolean
   if (!channel || (!options.allowDisabled && channel.enabled !== 1)) {
     throw new PaymentError(503, "payment_channel_unavailable", "Payment channel is not enabled");
   }
-  if (channel.provider === "linuxdo_credit") {
-    const credentials = channelCredentials(channel);
-    if (!credentials.clientId || !credentials.clientSecret) {
-      throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
+  const adapter = resolvePaymentAdapter(channel);
+  if (adapter) {
+    if (!adapter.isConfigured(channel)) {
+      throw new PaymentError(503, "payment_channel_incomplete", `${channel.name} credentials are incomplete`);
     }
-    return { channel, linuxDoCredentials: credentials };
+    return {
+      channel,
+      paymentAdapter: adapter,
+      pluginCredentials: adapter.getCredentials(channel),
+    };
   }
   if (channel.provider === "alipay") {
     const credentials = alipayCredentials(channel);
@@ -344,11 +355,32 @@ export function getPaymentChannelPublic(id = LINUXDO_CHANNEL_ID) {
   const channel = getPaymentChannel(id);
   if (!channel) return null;
   const config = parseChannelConfig(channel);
+  const adapter = resolvePaymentAdapter(channel);
+  const isCoreProvider = channel.provider === "alipay" || channel.provider === "wechatpay";
+  // Plugin providers (e.g. linuxdo_credit) require an active module adapter.
+  if (!isCoreProvider && !adapter) {
+    return {
+      id: channel.id,
+      provider: channel.provider,
+      name: channel.name,
+      enabled: false,
+      asset: channelAsset(channel.provider),
+      payment_modes: ["redirect"],
+      exchange_rate_micros: channel.exchange_rate_micros,
+      min_amount_minor: channel.min_amount_minor,
+      max_amount_minor: channel.max_amount_minor,
+      fee_bps: channel.fee_bps,
+      fee_fixed_minor: channel.fee_fixed_minor,
+    };
+  }
   let configured = Boolean(
     channel.client_id.trim()
     && channel.client_secret
     && configuredPublicBaseUrl(),
   );
+  if (adapter) {
+    configured = adapter.isConfigured(channel) && Boolean(configuredPublicBaseUrl());
+  }
   if (configured && channel.provider === "alipay") configured = Boolean(config.alipay_public_key?.trim());
   if (configured && channel.provider === "wechatpay") {
     try {
@@ -520,10 +552,19 @@ export function updatePaymentChannel(input: {
 export async function createTopupOrder(
   userId: string,
   amount: string | number,
-  options: { channelId?: string; mode?: AlipayPayMode | WechatPayMode; clientIp?: string } = {},
+  options: {
+    channelId?: string;
+    mode?: AlipayPayMode | WechatPayMode;
+    clientIp?: string;
+    /** Client-generated idempotency key to absorb double-clicks / retries. */
+    clientRequestId?: string;
+  } = {},
 ) {
   const fallback = getPaymentChannelsPublic()[0];
-  const channelId = options.channelId || fallback?.id || LINUXDO_CHANNEL_ID;
+  const channelId = options.channelId || fallback?.id;
+  if (!channelId) {
+    throw new PaymentError(503, "payment_channel_unavailable", "No payment channel is available");
+  }
   const { channel } = requireConfiguredChannel(channelId);
   const publicBaseUrl = configuredPublicBaseUrl();
   if (!publicBaseUrl) {
@@ -551,12 +592,37 @@ export async function createTopupOrder(
     if (mode === "native" && config.wechat_native_enabled === false) throw new PaymentError(400, "payment_mode_disabled", "WeChat Pay Native QR payment is disabled");
     if (mode === "h5" && config.wechat_h5_enabled === false) throw new PaymentError(400, "payment_mode_disabled", "WeChat Pay H5 payment is disabled");
   }
+  const clientRequestId = String(options.clientRequestId || "").trim().slice(0, 80);
+  if (clientRequestId) {
+    // Return the same pending order for repeated clicks within 10 minutes.
+    const recent = db
+      .prepare(
+        `SELECT * FROM payment_orders
+         WHERE user_id = ? AND channel_id = ? AND status = 'pending' AND deleted_at IS NULL
+           AND created_at >= ?
+           AND metadata LIKE ?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(
+        userId,
+        channel.id,
+        new Date(Date.now() - 10 * 60_000).toISOString(),
+        `%"client_request_id":"${clientRequestId.replace(/["%_]/g, "")}"%`,
+      ) as PaymentOrder | undefined;
+    if (recent) return getPaymentOrder(recent.id, userId);
+  }
   const feeMinor = calculateFeeMinor(channel, amountMinor);
   const creditedMicros = calculateCreditedMicros(amountMinor, feeMinor, channel.exchange_rate_micros);
   if (creditedMicros <= 0) {
     throw new PaymentError(400, "amount_too_small", "The credited amount must be greater than zero");
   }
   const now = nowIso();
+  const metadata: Record<string, unknown> = {};
+  if (channel.provider === "alipay" || channel.provider === "wechatpay") {
+    metadata.pay_mode = mode;
+    if (channel.provider === "wechatpay") metadata.payer_client_ip = normalizeClientIp(options.clientIp);
+  }
+  if (clientRequestId) metadata.client_request_id = clientRequestId;
   const order: PaymentOrder = {
     id: uuid(),
     order_no: newOrderNo(),
@@ -573,14 +639,7 @@ export async function createTopupOrder(
     title: `${getSetting("brand_name") || "LocalAPI"} 账户充值`,
     pay_url: null,
     error: null,
-    metadata: JSON.stringify(
-      channel.provider === "alipay" || channel.provider === "wechatpay"
-        ? {
-          pay_mode: mode,
-          ...(channel.provider === "wechatpay" ? { payer_client_ip: normalizeClientIp(options.clientIp) } : {}),
-        }
-        : {},
-    ),
+    metadata: JSON.stringify(metadata),
     created_at: now,
     updated_at: now,
     expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
@@ -628,26 +687,11 @@ export async function createTopupOrder(
 }
 
 export function getLinuxDoCheckout(orderNo: string) {
-  const { channel, linuxDoCredentials: credentials } = requireConfiguredChannel(LINUXDO_CHANNEL_ID, { allowDisabled: true });
-  if (!credentials) throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
-  const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(orderNo) as PaymentOrder | undefined;
-  if (!order || order.channel_id !== channel.id || order.deleted_at) {
-    throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
+  const provider = getPaymentProvider("linuxdo_credit") || getPaymentProviderByChannelId(LINUXDO_CHANNEL_ID);
+  if (!provider?.getCheckout) {
+    throw new PaymentError(503, "payment_module_unavailable", "LinuxDo payment module is not active");
   }
-  if (order.status !== "pending") {
-    throw new PaymentError(409, "payment_order_not_pending", "Payment order is no longer pending");
-  }
-  const publicBaseUrl = configuredPublicBaseUrl();
-  if (!publicBaseUrl) {
-    throw new PaymentError(503, "public_base_url_required", "Set a public domain before accepting payments");
-  }
-  return buildLinuxDoPaymentSubmission(credentials, {
-    orderNo: order.order_no,
-    name: order.title,
-    money: formatAssetAmount(order.amount_minor),
-    notifyUrl: `${publicBaseUrl}/payment/linuxdo/notify`,
-    returnUrl: `${publicBaseUrl}/payments?order_no=${encodeURIComponent(order.order_no)}`,
-  });
+  return provider.getCheckout(orderNo);
 }
 
 export function getAlipayCheckout(orderNo: string) {
@@ -996,13 +1040,18 @@ export async function syncPaymentOrder(idOrNo: string, userId?: string) {
   }
   if (["credited", "refunding", "refunded"].includes(order.status)) return visible;
   const configured = requireConfiguredChannel(order.channel_id, { allowDisabled: true });
-  const result = order.channel_id === ALIPAY_CHANNEL_ID
-    ? await queryAlipayOrder(configured.alipayCredentials!, order.order_no)
-    : order.channel_id === WECHATPAY_CHANNEL_ID
-      ? await queryWechatPayOrder(configured.wechatPayCredentials!, order.order_no)
-      : await queryLinuxDoOrder(configured.linuxDoCredentials!, order.order_no);
+  let result: { paid: boolean; tradeNo: string | null; money?: string | null; totalAmount?: string | null; closed?: boolean };
+  if (order.channel_id === ALIPAY_CHANNEL_ID) {
+    result = await queryAlipayOrder(configured.alipayCredentials!, order.order_no);
+  } else if (order.channel_id === WECHATPAY_CHANNEL_ID) {
+    result = await queryWechatPayOrder(configured.wechatPayCredentials!, order.order_no);
+  } else if (configured.paymentAdapter && configured.pluginCredentials) {
+    result = await configured.paymentAdapter.queryOrder(configured.pluginCredentials, order.order_no);
+  } else {
+    throw new PaymentError(503, "payment_channel_unsupported", "Payment channel provider is not supported");
+  }
   if (result.paid) {
-    ensureAmountMatches(order, "totalAmount" in result ? result.totalAmount : result.money);
+    ensureAmountMatches(order, "totalAmount" in result && result.totalAmount != null ? result.totalAmount : result.money);
     db.transaction(() => creditOrderInTransaction(order.id, result.tradeNo))();
   } else if ("closed" in result && result.closed && order.status === "pending") {
     db.prepare("UPDATE payment_orders SET status = 'expired', pay_url = NULL, updated_at = ? WHERE id = ?")
@@ -1012,50 +1061,96 @@ export async function syncPaymentOrder(idOrNo: string, userId?: string) {
 }
 
 export function handleLinuxDoNotification(query: Record<string, unknown>) {
-  const { channel, linuxDoCredentials: credentials } = requireConfiguredChannel(LINUXDO_CHANNEL_ID, { allowDisabled: true });
-  if (!credentials) throw new PaymentError(503, "payment_channel_incomplete", "LINUX DO Credit credentials are incomplete");
-  const notify = Object.fromEntries(
-    Object.entries(query).map(([key, value]) => [key, Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "")]),
-  ) as LinuxDoNotify;
-  const required = ["pid", "trade_no", "out_trade_no", "type", "name", "money", "trade_status", "sign"] as const;
-  if (required.some((key) => !notify[key])) {
-    throw new PaymentError(400, "invalid_notification", "Missing notification fields");
+  const provider = getPaymentProvider("linuxdo_credit") || getPaymentProviderByChannelId(LINUXDO_CHANNEL_ID);
+  if (!provider?.handleNotify) {
+    throw new PaymentError(503, "payment_module_unavailable", "LinuxDo payment module is not active");
   }
-  if (notify.pid !== credentials.clientId || notify.type !== "epay" || notify.trade_status !== "TRADE_SUCCESS") {
-    throw new PaymentError(400, "invalid_notification", "Unexpected notification values");
-  }
-  if (!verifyLinuxDoEasyPaySignature(notify, credentials.clientSecret, notify.sign)) {
-    throw new PaymentError(400, "invalid_signature", "Invalid payment notification signature");
-  }
-  const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(notify.out_trade_no) as PaymentOrder | undefined;
-  if (!order || order.channel_id !== channel.id) {
+  return provider.handleNotify(query);
+}
+
+/** Idempotent credit path used by payment modules after signature verification. */
+export function creditNotifiedOrder(input: {
+  channelId: string;
+  orderNo: string;
+  tradeNo: string;
+  money: string;
+  payload: unknown;
+  externalId: string;
+}) {
+  const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(input.orderNo) as PaymentOrder | undefined;
+  if (!order || order.channel_id !== input.channelId) {
     throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
   }
-  ensureAmountMatches(order, notify.money);
-  const externalId = `${notify.trade_no}:${notify.out_trade_no}`;
+  ensureAmountMatches(order, input.money);
   db.transaction(() => {
     const eventId = uuid();
     const insert = db.prepare(
       `INSERT OR IGNORE INTO payment_events (
         id, order_id, channel_id, event_type, external_id, payload, verified, processed, created_at
       ) VALUES (?, ?, ?, 'payment.notify', ?, ?, 1, 0, ?)`,
-    ).run(eventId, order.id, channel.id, externalId, JSON.stringify(notify), nowIso());
+    ).run(eventId, order.id, input.channelId, input.externalId, JSON.stringify(input.payload), nowIso());
     if (insert.changes === 0) {
       const existing = db.prepare(
         `SELECT id, processed FROM payment_events
          WHERE channel_id = ? AND event_type = 'payment.notify' AND external_id = ?`,
-      ).get(channel.id, externalId) as { id: string; processed: number } | undefined;
+      ).get(input.channelId, input.externalId) as { id: string; processed: number } | undefined;
       if (!existing || existing.processed === 1) return;
-      creditOrderInTransaction(order.id, notify.trade_no);
+      creditOrderInTransaction(order.id, input.tradeNo);
       db.prepare("UPDATE payment_events SET processed = 1, error = NULL, processed_at = ? WHERE id = ?")
         .run(nowIso(), existing.id);
       return;
     }
-    creditOrderInTransaction(order.id, notify.trade_no);
+    creditOrderInTransaction(order.id, input.tradeNo);
     db.prepare("UPDATE payment_events SET processed = 1, processed_at = ? WHERE id = ?")
       .run(nowIso(), eventId);
   })();
   return getPaymentOrder(order.id);
+}
+
+export function requirePendingPaymentOrder(channelId: string, orderNo: string) {
+  const order = db.prepare("SELECT * FROM payment_orders WHERE order_no = ?").get(orderNo) as PaymentOrder | undefined;
+  if (!order || order.channel_id !== channelId || order.deleted_at) {
+    throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
+  }
+  if (order.status !== "pending") {
+    throw new PaymentError(409, "payment_order_not_pending", "Payment order is no longer pending");
+  }
+  return {
+    id: order.id,
+    order_no: order.order_no,
+    title: order.title,
+    amount_minor: order.amount_minor,
+    status: order.status,
+    channel_id: order.channel_id,
+  };
+}
+
+export function ensurePaymentChannel(seed: PaymentChannelSeed) {
+  const now = nowIso();
+  db.prepare(
+    `INSERT OR IGNORE INTO payment_channels (
+      id, provider, name, enabled, client_id, client_secret, gateway_url,
+      exchange_rate_micros, min_amount_minor, max_amount_minor,
+      fee_bps, fee_fixed_minor, config_json, created_at, updated_at
+    ) VALUES (?, ?, ?, 0, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    seed.id,
+    seed.provider,
+    seed.name,
+    seed.gateway_url || "",
+    seed.exchange_rate_micros ?? 1_000_000,
+    seed.min_amount_minor ?? 100,
+    seed.max_amount_minor ?? 100_000,
+    seed.fee_bps ?? 0,
+    seed.fee_fixed_minor ?? 0,
+    seed.config_json || "{}",
+    now,
+    now,
+  );
+}
+
+export function disablePaymentChannel(id: string) {
+  db.prepare("UPDATE payment_channels SET enabled = 0, updated_at = ? WHERE id = ?").run(nowIso(), id);
 }
 
 export function handleAlipayNotification(form: Record<string, unknown>) {
@@ -1253,28 +1348,33 @@ export async function refundPaymentOrder(idOrNo: string, reason: string) {
   })();
 
   try {
-    const response = order.channel_id === ALIPAY_CHANNEL_ID
-      ? await refundAlipayOrder(configured.alipayCredentials!, {
+    let response: Record<string, unknown>;
+    if (order.channel_id === ALIPAY_CHANNEL_ID) {
+      response = await refundAlipayOrder(configured.alipayCredentials!, {
         tradeNo: order.channel_trade_no,
         orderNo: order.order_no,
         refundNo,
         amount: formatAssetAmount(order.amount_minor),
         reason,
-      })
-      : order.channel_id === WECHATPAY_CHANNEL_ID
-        ? await refundWechatPayOrder(configured.wechatPayCredentials!, {
-          tradeNo: order.channel_trade_no || undefined,
-          orderNo: order.order_no,
-          refundNo,
-          amountMinor: order.amount_minor,
-          reason,
-          notifyUrl: `${configuredPublicBaseUrl()}/payment/wechatpay/notify`,
-        })
-        : await refundLinuxDoOrder(configured.linuxDoCredentials!, {
-          tradeNo: order.channel_trade_no,
-          orderNo: order.order_no,
-          money: formatAssetAmount(order.amount_minor),
-        });
+      }) as Record<string, unknown>;
+    } else if (order.channel_id === WECHATPAY_CHANNEL_ID) {
+      response = await refundWechatPayOrder(configured.wechatPayCredentials!, {
+        tradeNo: order.channel_trade_no || undefined,
+        orderNo: order.order_no,
+        refundNo,
+        amountMinor: order.amount_minor,
+        reason,
+        notifyUrl: `${configuredPublicBaseUrl()}/payment/wechatpay/notify`,
+      }) as Record<string, unknown>;
+    } else if (configured.paymentAdapter && configured.pluginCredentials) {
+      response = await configured.paymentAdapter.refund(configured.pluginCredentials, {
+        tradeNo: order.channel_trade_no,
+        orderNo: order.order_no,
+        money: formatAssetAmount(order.amount_minor),
+      }) as Record<string, unknown>;
+    } else {
+      throw new PaymentError(503, "payment_channel_unsupported", "Payment channel provider is not supported");
+    }
     const status = order.channel_id === WECHATPAY_CHANNEL_ID && "status" in response
       ? String(response.status || "")
       : "SUCCESS";

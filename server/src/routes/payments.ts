@@ -3,25 +3,12 @@ import { Router, raw, urlencoded, type Response } from "express";
 import {
   PaymentError,
   getAlipayCheckout,
-  getLinuxDoCheckout,
   getWechatCheckout,
   handleAlipayNotification,
-  handleLinuxDoNotification,
   handleWechatPayNotification,
 } from "../services/payments";
 
 export const paymentsRouter = Router();
-
-paymentsRouter.get("/payment/linuxdo/notify", (req, res) => {
-  try {
-    handleLinuxDoNotification(req.query);
-    res.type("text/plain").status(200).send("success");
-  } catch (error) {
-    const status = error instanceof PaymentError ? error.status : 500;
-    const message = error instanceof Error ? error.message : "Payment notification failed";
-    res.type("text/plain").status(status).send(message);
-  }
-});
 
 paymentsRouter.post("/payment/alipay/notify", urlencoded({ extended: false, limit: "1mb" }), (req, res) => {
   try {
@@ -61,11 +48,28 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#39;");
 }
 
-function checkoutPage(
+function checkoutOrderNo(params: Record<string, string>) {
+  if (params.out_trade_no) return params.out_trade_no;
+  // Alipay keeps the merchant order no inside biz_content JSON, not as a top-level form field.
+  const raw = params.biz_content;
+  if (!raw) return "";
+  try {
+    const biz = JSON.parse(raw) as { out_trade_no?: unknown };
+    return typeof biz.out_trade_no === "string" ? biz.out_trade_no : "";
+  } catch {
+    return "";
+  }
+}
+
+export function renderPaymentCheckoutPage(
   res: Response,
   submission: { action: string; params: Record<string, string> },
   providerName: string,
+  options: { allowRetry?: boolean } = {},
 ) {
+  const orderNo = checkoutOrderNo(submission.params);
+  const allowRetry = options.allowRetry === true;
+  // GET fallback URL: some browsers/extensions block automatic form POST navigation.
   const directUrl = new URL(submission.action);
   for (const [name, value] of Object.entries(submission.params)) {
     directUrl.searchParams.set(name, value);
@@ -75,6 +79,10 @@ function checkoutPage(
     .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
     .join("");
   const formAction = new URL(submission.action).origin;
+  // LinuxDo rejects duplicate merchant order submissions, so keep a hard lock there.
+  // Alipay can be reopened; always keep a direct-open / timeout fallback so the UI
+  // never sticks on "正在跳转…".
+  const script = `(()=>{const form=document.getElementById('payment-form');const button=document.getElementById('submit-payment');const tip=document.getElementById('pay-tip');const direct=${JSON.stringify(directPaymentUrl)};const key=${JSON.stringify(`pay_submit:${orderNo || "unknown"}`)};const allowRetry=${allowRetry ? "true" : "false"};let submitted=false;const goDirect=()=>{try{window.location.replace(direct)}catch(_){window.location.href=direct}};const mark=()=>{if(submitted)return false;submitted=true;if(!allowRetry){try{sessionStorage.setItem(key,'1')}catch(_){}}button.disabled=true;button.textContent='正在跳转…';return true};try{if(!allowRetry&&sessionStorage.getItem(key)){submitted=true;button.disabled=true;button.textContent='已提交';if(tip)tip.textContent='该订单已提交到支付渠道，请勿刷新或重复打开。可返回充值页查看订单状态，或关闭后重新发起充值。';const dot=document.querySelector('.dot');if(dot)dot.style.display='none';return}}catch(_){}form.addEventListener('submit',(e)=>{if(submitted){e.preventDefault();return}mark()});try{if(form.requestSubmit)form.requestSubmit();else{if(mark())form.submit()}}catch(_){if(tip)tip.textContent='自动跳转失败，正在尝试备用打开方式…';goDirect()}setTimeout(()=>{if(document.visibilityState==='visible'){if(tip)tip.textContent='仍未离开本页，正在使用备用方式打开支付…';goDirect()}},1500)})()`;
   res
     .status(200)
     .set({
@@ -83,23 +91,13 @@ function checkoutPage(
       "referrer-policy": "no-referrer",
     })
     .type("html")
-    .send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在前往 ${escapeHtml(providerName)}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fafafa;color:#18181b;font:14px system-ui,sans-serif}.box{width:min(360px,calc(100vw - 40px));padding:28px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.dot{width:24px;height:24px;margin:0 auto 16px;border:2px solid #d4d4d8;border-top-color:#18181b;border-radius:50%;animation:spin .8s linear infinite}p{color:#71717a;line-height:1.6}button,.direct{display:inline-block;margin-top:12px;padding:9px 16px;border:0;border-radius:999px;background:#18181b;color:#fff;cursor:pointer;font:inherit;text-decoration:none}.direct{margin-left:8px;background:#fff;color:#18181b;border:1px solid #d4d4d8}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="dot"></div><strong>正在前往 ${escapeHtml(providerName)}</strong><p>如果没有自动跳转，请点击下方按钮。</p><form id="payment-form" method="post" target="_top" accept-charset="UTF-8" action="${escapeHtml(submission.action)}">${fields}<button id="submit-payment" type="submit">继续支付</button><a class="direct" href="${escapeHtml(directPaymentUrl)}" target="_top" rel="noopener">直接打开</a></form></div><script>(()=>{const form=document.getElementById('payment-form');const button=document.getElementById('submit-payment');let submitted=false;form.addEventListener('submit',()=>{submitted=true;button.disabled=true;button.textContent='正在跳转…'});try{if(form.requestSubmit)form.requestSubmit();else form.submit()}catch(_){window.location.href=${JSON.stringify(directPaymentUrl)}}setTimeout(()=>{if(!submitted||document.visibilityState==='visible')window.location.href=${JSON.stringify(directPaymentUrl)}},1200)})()</script></body></html>`);
+    .send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>正在前往 ${escapeHtml(providerName)}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fafafa;color:#18181b;font:14px system-ui,sans-serif}.box{width:min(360px,calc(100vw - 40px));padding:28px;border:1px solid #e4e4e7;border-radius:12px;background:#fff;text-align:center}.dot{width:24px;height:24px;margin:0 auto 16px;border:2px solid #d4d4d8;border-top-color:#18181b;border-radius:50%;animation:spin .8s linear infinite}p{color:#71717a;line-height:1.6}button,.direct{display:inline-block;margin-top:12px;padding:9px 16px;border:0;border-radius:999px;background:#18181b;color:#fff;cursor:pointer;font:inherit;text-decoration:none}button:disabled{opacity:.6;cursor:not-allowed}.direct{margin-left:8px;background:#fff;color:#18181b;border:1px solid #d4d4d8}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="dot"></div><strong>正在前往 ${escapeHtml(providerName)}</strong><p id="pay-tip">如果没有自动跳转，请点击下方按钮一次即可，请勿刷新页面。</p><form id="payment-form" method="post" target="_top" accept-charset="UTF-8" action="${escapeHtml(submission.action)}">${fields}<button id="submit-payment" type="submit">继续支付</button><a class="direct" href="${escapeHtml(directPaymentUrl)}" target="_top" rel="noopener">直接打开</a></form></div><script>${script}</script></body></html>`);
 }
-
-paymentsRouter.get("/payment/linuxdo/checkout/:orderNo", (req, res) => {
-  try {
-    const submission = getLinuxDoCheckout(req.params.orderNo);
-    checkoutPage(res, submission, "LINUX DO Credit");
-  } catch (error) {
-    const status = error instanceof PaymentError ? error.status : 500;
-    const message = error instanceof Error ? error.message : "Unable to prepare payment";
-    res.status(status).type("text/plain").send(message);
-  }
-});
 
 paymentsRouter.get("/payment/alipay/checkout/:orderNo", (req, res) => {
   try {
-    checkoutPage(res, getAlipayCheckout(req.params.orderNo), "支付宝");
+    // Alipay page/WAP can be reopened; keep retry + direct fallback.
+    renderPaymentCheckoutPage(res, getAlipayCheckout(req.params.orderNo), "支付宝", { allowRetry: true });
   } catch (error) {
     const status = error instanceof PaymentError ? error.status : 500;
     const message = error instanceof Error ? error.message : "Unable to prepare payment";

@@ -160,8 +160,95 @@ function mapLog(l: RequestLogWithUser) {
   };
 }
 
+export type ListLogsFilter = {
+  limit?: number;
+  offset?: number;
+  userId?: string;
+  /** Free-text search across path/model/user/provider/error/key. */
+  q?: string;
+  /** all | success | error */
+  status?: string;
+  method?: string;
+  /** all | stream | nonstream */
+  stream?: string;
+  provider?: string;
+  model?: string;
+};
+
 export function listLogs(limit = 100, offset = 0, userId?: string) {
+  return listLogsFiltered({ limit, offset, userId });
+}
+
+export function listLogsFiltered(input: ListLogsFilter = {}) {
   flushLogs(Number.MAX_SAFE_INTEGER);
+  const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (input.userId) {
+    conditions.push("l.user_id = ?");
+    params.push(input.userId);
+  }
+
+  const q = String(input.q || "").trim();
+  if (q) {
+    const like = `%${q.replace(/[%_]/g, "")}%`;
+    conditions.push(
+      `(l.path LIKE ? COLLATE NOCASE
+        OR IFNULL(l.model, '') LIKE ? COLLATE NOCASE
+        OR IFNULL(l.provider_name, '') LIKE ? COLLATE NOCASE
+        OR IFNULL(l.api_key_name, '') LIKE ? COLLATE NOCASE
+        OR IFNULL(l.error, '') LIKE ? COLLATE NOCASE
+        OR IFNULL(u.username, '') LIKE ? COLLATE NOCASE
+        OR IFNULL(u.display_name, '') LIKE ? COLLATE NOCASE)`,
+    );
+    params.push(like, like, like, like, like, like, like);
+  }
+
+  const status = String(input.status || "all").toLowerCase();
+  if (status === "success" || status === "ok") {
+    conditions.push("l.status_code < 400");
+  } else if (status === "error" || status === "fail" || status === "failed") {
+    conditions.push("l.status_code >= 400");
+  }
+
+  const method = String(input.method || "").trim().toUpperCase();
+  if (method && method !== "ALL") {
+    conditions.push("UPPER(l.method) = ?");
+    params.push(method);
+  }
+
+  const stream = String(input.stream || "all").toLowerCase();
+  if (stream === "stream" || stream === "1" || stream === "yes") {
+    conditions.push("l.stream = 1");
+  } else if (stream === "nonstream" || stream === "0" || stream === "no") {
+    conditions.push("l.stream = 0");
+  }
+
+  const provider = String(input.provider || "").trim();
+  if (provider) {
+    conditions.push("(l.provider_name LIKE ? COLLATE NOCASE OR IFNULL(l.provider_id, '') = ?)");
+    params.push(`%${provider.replace(/[%_]/g, "")}%`, provider);
+  }
+
+  const model = String(input.model || "").trim();
+  if (model) {
+    conditions.push("IFNULL(l.model, '') LIKE ? COLLATE NOCASE");
+    params.push(`%${model.replace(/[%_]/g, "")}%`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const fromSql = `
+    FROM request_logs l
+    LEFT JOIN users u ON u.id = l.user_id
+    ${where}
+  `;
+
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS c ${fromSql}`).get(...params) as { c: number }
+  ).c;
+
   const items = db
     .prepare(
       `SELECT
@@ -172,19 +259,16 @@ export function listLogs(limit = 100, offset = 0, userId?: string) {
          l.user_id, l.usage_id, l.cost_micros,
          u.username AS username,
          u.display_name AS display_name
-       FROM request_logs l
-       LEFT JOIN users u ON u.id = l.user_id
-       ${userId ? "WHERE l.user_id = ?" : ""}
+       ${fromSql}
        ORDER BY l.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...(userId ? [userId, limit, offset] : [limit, offset])) as RequestLogWithUser[];
-  const total = (
-    db.prepare(`SELECT COUNT(*) as c FROM request_logs ${userId ? "WHERE user_id = ?" : ""}`)
-      .get(...(userId ? [userId] : [])) as { c: number }
-  ).c;
+    .all(...params, limit, offset) as RequestLogWithUser[];
+
   return {
     items: items.map(mapLog),
     total,
+    limit,
+    offset,
   };
 }
 
