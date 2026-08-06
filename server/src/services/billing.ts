@@ -126,6 +126,16 @@ function estimateTokenizableChars(value: unknown, depth = 0): number {
   }, 0);
 }
 
+/**
+ * Cap for the completion-token reservation. Clients may request
+ * max_tokens up to 1,000,000; reserving the full amount would make every
+ * such request fail with 429 (TPM window) or 402 (wallet hold) even though
+ * the actual generation is usually far smaller. SettleUsage charges the
+ * real token count afterwards and suspends on uncovered cost, so a capped
+ * reservation never loses money — it only stops over-reserving.
+ */
+export const RESERVATION_COMPLETION_CAP = 4096;
+
 export function estimateRequestTokens(body: unknown, _requestBytes = 0) {
   const chars = estimateTokenizableChars(body);
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -134,7 +144,9 @@ export function estimateRequestTokens(body: unknown, _requestBytes = 0) {
   );
   return {
     prompt: Math.max(1, Math.ceil(chars / 4)),
-    completion: Number.isFinite(requested) ? Math.max(1, Math.min(1_000_000, Math.floor(requested))) : 4096,
+    completion: Number.isFinite(requested)
+      ? Math.max(1, Math.min(RESERVATION_COMPLETION_CAP, Math.floor(requested)))
+      : RESERVATION_COMPLETION_CAP,
   };
 }
 
@@ -310,12 +322,24 @@ export function settleUsage(
     const existing = db.prepare("SELECT status FROM usage_records WHERE id = ?").get(reservation.usageId) as
       | { status: string }
       | undefined;
-    if (!existing || existing.status !== "pending") return;
+    // Idempotency guard: completed/failed rows are never re-settled.
+    // A row auto-cancelled by cleanupStaleReservations (or released by
+    // releaseUserPendingReservations) while its request was still in flight
+    // must still be settled when the request completed successfully —
+    // otherwise any request running longer than the cleanup window (2 min)
+    // is served for free. Its hold was already released by the cleanup, so
+    // reserved amounts are NOT deducted a second time below.
+    if (!existing) return;
+    if (existing.status === "completed" || existing.status === "failed") return;
+    if (existing.status === "cancelled" && !billable) return;
+    const holdAlreadyReleased = existing.status === "cancelled";
 
     if (reservation.subscriptionId) {
-      db.prepare(
-        `UPDATE subscriptions SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ? WHERE id = ?`,
-      ).run(reservation.reservedPlan, nowIso(), reservation.subscriptionId);
+      if (!holdAlreadyReleased) {
+        db.prepare(
+          `UPDATE subscriptions SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ? WHERE id = ?`,
+        ).run(reservation.reservedPlan, nowIso(), reservation.subscriptionId);
+      }
       const subscription = db
         .prepare("SELECT remaining_credits_micros, reserved_micros FROM subscriptions WHERE id = ?")
         .get(reservation.subscriptionId) as
@@ -338,10 +362,11 @@ export function settleUsage(
       const wallet = db.prepare(
         "SELECT balance_micros, reserved_micros FROM wallet_accounts WHERE user_id = ?",
       ).get(reservation.userId) as { balance_micros: number; reserved_micros: number } | undefined;
-      const otherReserved = Math.max(
-        0,
-        (wallet?.reserved_micros ?? 0) - reservation.reservedWallet,
-      );
+      // When the hold was already released (cancelled row), the current
+      // reserved_micros belongs entirely to other in-flight requests.
+      const otherReserved = holdAlreadyReleased
+        ? (wallet?.reserved_micros ?? 0)
+        : Math.max(0, (wallet?.reserved_micros ?? 0) - reservation.reservedWallet);
       const availableWallet = Math.max(0, (wallet?.balance_micros ?? 0) - otherReserved);
       walletCost = Math.min(remainder, availableWallet);
     }
@@ -352,10 +377,12 @@ export function settleUsage(
         reservation.userId,
       );
     }
-    db.prepare(
-      `UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ?
-       WHERE user_id = ?`,
-    ).run(reservation.reservedWallet, nowIso(), reservation.userId);
+    if (!holdAlreadyReleased) {
+      db.prepare(
+        `UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ?
+         WHERE user_id = ?`,
+      ).run(reservation.reservedWallet, nowIso(), reservation.userId);
+    }
     if (walletCost > 0) {
       spendWalletMicros(reservation.userId, walletCost);
     }
@@ -533,7 +560,8 @@ export function listWalletLedgerPage(input: { userId: string; limit?: number; of
   ).c;
   const items = db
     .prepare(
-      "SELECT * FROM wallet_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+      // L9: tie-break on id so equal timestamps don't reshuffle across pages.
+      "SELECT * FROM wallet_ledger WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
     )
     .all(input.userId, limit, offset);
   return { items, total, limit, offset };
@@ -603,7 +631,7 @@ export function listUsageRecordsPage(input: {
            FROM usage_records ur
            LEFT JOIN users u ON u.id = ur.user_id
            WHERE ur.user_id = ?
-           ORDER BY ur.created_at DESC LIMIT ? OFFSET ?`,
+           ORDER BY ur.created_at DESC, ur.id DESC LIMIT ? OFFSET ?`,
         )
         .all(input.userId, limit, offset)
     : db
@@ -611,7 +639,7 @@ export function listUsageRecordsPage(input: {
           `SELECT ur.*, u.username AS username, u.display_name AS display_name
            FROM usage_records ur
            LEFT JOIN users u ON u.id = ur.user_id
-           ORDER BY ur.created_at DESC LIMIT ? OFFSET ?`,
+           ORDER BY ur.created_at DESC, ur.id DESC LIMIT ? OFFSET ?`,
         )
         .all(limit, offset);
   return {
@@ -679,6 +707,9 @@ export function listDailyUsage(userId: string, days = 30) {
  * Release pending billing holds older than maxAgeMs.
  * Client disconnects / hung upstream streams can leave reservations stuck.
  * Default recovery window is short so concurrency-adjacent credit holds free quickly.
+ * Rows cancelled here are still settled (billed) by settleUsage when the owning
+ * request completes successfully — cancellation only releases the hold, it never
+ * forgives usage. Only rows whose request actually aborted stay uncharged.
  */
 export function cleanupStaleReservations(maxAgeMs = 2 * 60_000) {
   const cutoff = new Date(Date.now() - Math.max(15_000, maxAgeMs)).toISOString();

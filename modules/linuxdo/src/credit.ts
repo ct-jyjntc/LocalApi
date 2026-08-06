@@ -31,16 +31,24 @@ function relayConfig() {
 
 async function relayRequest(path: string, body: Record<string, string>) {
   const { relayUrl, relaySecret } = relayConfig();
-  const response = await fetch(`${relayUrl}${path}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-relay-secret": relaySecret,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`LINUX DO relay failed (${response.status})`);
-  return responseJson(response);
+  // L26: refund/query through the relay must not hang forever if the relay
+  // is unreachable — share the 15s timeout used by the direct gateway path.
+  const timeout = withTimeout();
+  try {
+    const response = await fetch(`${relayUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-relay-secret": relaySecret,
+      },
+      body: JSON.stringify(body),
+      signal: timeout.signal,
+    });
+    if (!response.ok) throw new Error(`LINUX DO relay failed (${response.status})`);
+    return await responseJson(response);
+  } finally {
+    timeout.clear();
+  }
 }
 
 export function linuxDoSignSource(

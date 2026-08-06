@@ -2,7 +2,7 @@ import { v4 as uuid } from "uuid";
 import { ApiKey, db } from "../db";
 import { generateApiKey, hashApiKey } from "../utils/hash";
 import { nowIso } from "../utils/time";
-import { decryptSecret, encryptSecret } from "../utils/secrets";
+import { encryptSecret, tryDecryptSecret } from "../utils/secrets";
 
 const keyByHash = new Map<string, ApiKey>();
 const pendingLastUsed = new Map<string, string>();
@@ -70,7 +70,7 @@ export function listApiKeysPage(input: { userId?: string; limit?: number; offset
     db.prepare(`SELECT COUNT(*) AS c FROM api_keys ${where}`).get(...params) as { c: number }
   ).c;
   const rows = db
-    .prepare(`SELECT * FROM api_keys ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT * FROM api_keys ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, offset) as ApiKey[];
   return { items: rows.map((row) => publicKey(row)), total, limit, offset };
 }
@@ -195,7 +195,9 @@ export function authenticateApiKey(raw: string | undefined | null) {
 }
 
 function publicKey(row: ApiKey, oneTimeSecret?: string) {
-  const storedSecret = row.key_plain ? decryptSecret(row.key_plain) : null;
+  // A stored secret that cannot be decrypted (wrong/missing SECRETS_KEY) is
+  // shown as unavailable rather than crashing the admin listing.
+  const storedSecret = row.key_plain ? tryDecryptSecret(row.key_plain) : null;
   return {
     id: row.id,
     name: row.name,

@@ -31,12 +31,14 @@ export function createUpstreamTimeout(
     abort,
     clear,
     didTimeout: () => timedOut,
-    // For SSE and other streaming responses, timeout_ms protects connection
-    // setup and time-to-first-byte. Once data is flowing, the client owns the
-    // lifetime of the stream and may cancel it by disconnecting.
-    onBodyChunk: (streaming) => {
-      if (streaming) clear();
-    },
+    // timeout_ms protects connection setup and time-to-first-byte only.
+    // Once the body starts (streaming or not), the provider timeout must be
+    // released: keeping it armed mid-download would truncate large buffered
+    // responses (a partial body with the full content-length already
+    // forwarded) even though the upstream is healthy. The proxy's idle timer
+    // takes over as the stall detector; REQUEST_MAX_MS still bounds total
+    // lifetime.
+    onBodyChunk: () => clear(),
   };
 }
 

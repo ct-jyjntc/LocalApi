@@ -116,14 +116,30 @@ const logTimer = setInterval(flushLogs, 200);
 logTimer.unref?.();
 process.once("beforeExit", () => flushLogs(Number.MAX_SAFE_INTEGER));
 
+// L17: strip CR/LF (and other C0 controls) so a crafted path/model/error
+// cannot inject fake log lines into raw dumps or break line-oriented tools.
+function sanitizeLogText(value: string | null | undefined, max = 2_000): string | null {
+  if (value == null) return null;
+  // Strip C0 controls (incl. CR/LF) and DEL so log dumps stay single-line.
+  const cleaned = String(value).replace(/[\x00-\x1F\x7F]/g, " ").trim();
+  if (!cleaned) return null;
+  return cleaned.length > max ? cleaned.slice(0, max) : cleaned;
+}
+
 export function writeLog(input: LogInput) {
   const id = uuid();
   pendingLogs.push({
     ...input,
     id,
-    input_text: STORE_LOG_CONTENT ? input.input_text : null,
-    output_text: STORE_LOG_CONTENT ? input.output_text : null,
-    reasoning_text: STORE_LOG_CONTENT ? input.reasoning_text : null,
+    method: sanitizeLogText(input.method, 16) || "GET",
+    path: sanitizeLogText(input.path, 500) || "/",
+    model: sanitizeLogText(input.model, 200),
+    provider_name: sanitizeLogText(input.provider_name, 200),
+    api_key_name: sanitizeLogText(input.api_key_name, 200),
+    error: sanitizeLogText(input.error, 1_000),
+    input_text: STORE_LOG_CONTENT ? sanitizeLogText(input.input_text, 8_000) : null,
+    output_text: STORE_LOG_CONTENT ? sanitizeLogText(input.output_text, 8_000) : null,
+    reasoning_text: STORE_LOG_CONTENT ? sanitizeLogText(input.reasoning_text, 8_000) : null,
   });
   if (pendingLogs.length > MAX_PENDING_LOGS) {
     pendingLogs.splice(0, pendingLogs.length - MAX_PENDING_LOGS);
@@ -260,7 +276,7 @@ export function listLogsFiltered(input: ListLogsFilter = {}) {
          u.username AS username,
          u.display_name AS display_name
        ${fromSql}
-       ORDER BY l.created_at DESC LIMIT ? OFFSET ?`,
+       ORDER BY l.created_at DESC, l.id DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset) as RequestLogWithUser[];
 

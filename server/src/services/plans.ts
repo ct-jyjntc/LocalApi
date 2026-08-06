@@ -190,7 +190,7 @@ export function listPlanOrders(userId: string, limit = 100) {
      JOIN plans ON plans.id = plan_orders.plan_id
      LEFT JOIN plans previous ON previous.id = plan_orders.previous_plan_id
      WHERE plan_orders.user_id = ?
-     ORDER BY plan_orders.created_at DESC LIMIT ?`,
+     ORDER BY plan_orders.created_at DESC, plan_orders.id DESC LIMIT ?`,
   ).all(userId, Math.min(Math.max(1, limit), 500)) as Array<PlanOrder & {
     plan_name: string;
     previous_plan_name: string | null;
@@ -198,12 +198,22 @@ export function listPlanOrders(userId: string, limit = 100) {
 }
 
 function existingPlanTransaction(userId: string, requestId: string) {
-  const order = db.prepare(
-    "SELECT id FROM plan_orders WHERE user_id = ? AND idempotency_key = ?",
-  ).get(userId, requestId) as { id: string } | undefined;
-  if (!order) return null;
+  // L10: idempotency_key is globally UNIQUE. Look up by key alone first so a
+  // cross-user collision returns the owner's order (or a clear 409) instead
+  // of a raw SQLITE_CONSTRAINT 500 when the INSERT races the UNIQUE index.
+  const anyOwner = db.prepare(
+    "SELECT id, user_id FROM plan_orders WHERE idempotency_key = ?",
+  ).get(requestId) as { id: string; user_id: string } | undefined;
+  if (!anyOwner) return null;
+  if (anyOwner.user_id !== userId) {
+    throw new PlanTransactionError(
+      409,
+      "idempotency_key_conflict",
+      "Idempotency key is already in use",
+    );
+  }
   return {
-    order: getPlanOrder(order.id),
+    order: getPlanOrder(anyOwner.id),
     subscription: getActiveSubscription(userId),
   };
 }
@@ -408,6 +418,11 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
     const requestId = `auto:${row.id}:${dueAt}`;
     const start = new Date();
     const end = addDays(start, plan.cycle_days);
+    // Never shorten prepaid entitlement: if the stored entitlement_end still
+    // reaches further than a fresh period from now (cycle changed, legacy
+    // data, delayed maintenance), keep the longer end so the user is not
+    // charged a full period while losing remaining prepaid days.
+    const entitlementEnd = new Date(Math.max(Date.parse(row.entitlement_end) || 0, end.getTime()));
 
     if (!wallet || wallet.balance_micros - wallet.reserved_micros < plan.price_micros) {
       db.prepare(
@@ -427,7 +442,7 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
         plan.price_micros,
         wallet?.balance_micros ?? 0,
         `${plan.name} 自动续费失败：余额不足`,
-        JSON.stringify({ entitlement_from: start.toISOString(), entitlement_to: end.toISOString() }),
+        JSON.stringify({ entitlement_from: start.toISOString(), entitlement_to: entitlementEnd.toISOString() }),
         now,
         now,
       );
@@ -463,7 +478,7 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
       plan.price_micros,
       updatedWallet.balance_micros,
       `${plan.name} 自动续费`,
-      JSON.stringify({ entitlement_from: start.toISOString(), entitlement_to: end.toISOString() }),
+      JSON.stringify({ entitlement_from: start.toISOString(), entitlement_to: entitlementEnd.toISOString() }),
       now,
       now,
     );
@@ -482,7 +497,7 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
     ).run(
       start.toISOString(),
       end.toISOString(),
-      end.toISOString(),
+      entitlementEnd.toISOString(),
       plan.included_credits_micros,
       plan.price_micros,
       now,
@@ -496,7 +511,34 @@ function autoRenewSubscription(row: Subscription, plan: Plan) {
   })();
 }
 
+// L15: if a past bug left more than one active subscription for a user,
+// keep the newest and cancel the rest (and free their stock). Called from
+// get/maintain so every read path self-heals.
+function reconcileMultipleActiveSubscriptions(userId: string) {
+  const rows = db
+    .prepare(
+      `SELECT id, plan_id FROM subscriptions
+       WHERE user_id = ? AND status = 'active'
+       ORDER BY created_at DESC`,
+    )
+    .all(userId) as Array<{ id: string; plan_id: string }>;
+  if (rows.length <= 1) return rows[0] ?? null;
+  const now = nowIso();
+  const [keep, ...extras] = rows;
+  db.transaction(() => {
+    for (const extra of extras) {
+      db.prepare(
+        "UPDATE subscriptions SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'active'",
+      ).run(now, extra.id);
+      db.prepare("UPDATE plans SET stock_used = MAX(0, stock_used - 1), updated_at = ? WHERE id = ?")
+        .run(now, extra.plan_id);
+    }
+  })();
+  return keep;
+}
+
 export function getActiveSubscription(userId: string): ActiveSubscription | null {
+  reconcileMultipleActiveSubscriptions(userId);
   const row = db
     .prepare(
       `SELECT s.* FROM subscriptions s
@@ -511,7 +553,12 @@ export function getActiveSubscription(userId: string): ActiveSubscription | null
   return { ...row, plan: publicPlan(plan) };
 }
 
-export function maintainActiveSubscription(userId: string): ActiveSubscription | null {
+export function maintainActiveSubscription(
+  userId: string,
+  options?: { allowAutoRenew?: boolean },
+): ActiveSubscription | null {
+  const allowAutoRenew = options?.allowAutoRenew ?? true;
+  reconcileMultipleActiveSubscriptions(userId);
   let row = db
     .prepare(
       `SELECT s.* FROM subscriptions s
@@ -526,7 +573,11 @@ export function maintainActiveSubscription(userId: string): ActiveSubscription |
   if (Date.parse(row.period_end) <= Date.now() && row.reserved_micros === 0) {
     row = advancePaidPeriods(row, plan);
     if (Date.parse(row.period_end) <= Date.now()) {
-      if (row.auto_renew !== 1 || plan.enabled !== 1) {
+      // When the user is explicitly paying (purchase/renew/upgrade), do NOT
+      // silently run the auto-renewal first: that would charge the wallet a
+      // full period and then charge again for the user's own operation
+      // (double charge). Expire instead; the caller decides the next step.
+      if (row.auto_renew !== 1 || plan.enabled !== 1 || !allowAutoRenew) {
         expireSubscription(row);
         return null;
       }
@@ -567,7 +618,10 @@ export function setSubscriptionOverage(userId: string, enabled: boolean) {
 export function purchasePlan(userId: string, planId: string, requestId = uuid()) {
   const duplicate = existingPlanTransaction(userId, requestId);
   if (duplicate) return duplicate;
-  maintainActiveSubscription(userId);
+  // Never auto-renew here: an expired subscription must expire so the purchase
+  // below is the only charge. Auto-renewing first would bill a full period and
+  // then bill again for the purchase (double charge).
+  maintainActiveSubscription(userId, { allowAutoRenew: false });
   const orderId = uuid();
   db.transaction(() => {
     const current = db.prepare(
@@ -633,7 +687,9 @@ export function upgradePlan(userId: string, targetPlanId: string, requestId = uu
   // Drop holds left by disconnected clients so upgrades are not blocked forever.
   cleanupStaleReservations();
   releaseUserPendingReservations(userId, 2 * 60_000);
-  const active = maintainActiveSubscription(userId);
+  // Do not let the auto-renewal charge first here either — the upgrade itself
+  // bills the difference. An expired subscription is expired (404 below).
+  const active = maintainActiveSubscription(userId, { allowAutoRenew: false });
   if (!active) throw new PlanTransactionError(404, "active_subscription_not_found", "Active subscription not found");
   const orderId = uuid();
   db.transaction(() => {
@@ -747,7 +803,10 @@ export function renewPlan(userId: string, requestId = uuid()) {
   if (duplicate) return duplicate;
   cleanupStaleReservations();
   releaseUserPendingReservations(userId, 2 * 60_000);
-  const active = maintainActiveSubscription(userId);
+  // Same double-charge guard as purchasePlan: this operation IS the renewal,
+  // so the auto-renewal path must not charge first. An expired subscription
+  // is expired (404 below); a prepaid one is advanced for free and extended.
+  const active = maintainActiveSubscription(userId, { allowAutoRenew: false });
   if (!active) throw new PlanTransactionError(404, "active_subscription_not_found", "Active subscription not found");
   const orderId = uuid();
   db.transaction(() => {
@@ -810,22 +869,30 @@ export function assignPlan(userId: string, planId: string, autoRenew = true) {
   const end = addDays(start, plan.cycle_days);
   const now = nowIso();
   db.transaction(() => {
-    const current = db
-      .prepare("SELECT plan_id FROM subscriptions WHERE user_id = ? AND status = 'active'")
-      .get(userId) as { plan_id: string } | undefined;
-    if (current) {
+    // L15: cancel EVERY active subscription for the user (not just one row)
+    // so a leftover multi-active state cannot block subsequent purchases.
+    const currents = db
+      .prepare("SELECT id, plan_id FROM subscriptions WHERE user_id = ? AND status = 'active'")
+      .all(userId) as Array<{ id: string; plan_id: string }>;
+    for (const current of currents) {
       db.prepare("UPDATE plans SET stock_used = MAX(0, stock_used - 1), updated_at = ? WHERE id = ?")
         .run(now, current.plan_id);
     }
-    db.prepare(
-      "UPDATE subscriptions SET status = 'cancelled', updated_at = ? WHERE user_id = ? AND status = 'active'",
-    ).run(now, userId);
+    if (currents.length) {
+      db.prepare(
+        "UPDATE subscriptions SET status = 'cancelled', updated_at = ? WHERE user_id = ? AND status = 'active'",
+      ).run(now, userId);
+    }
     const latestPlan = db.prepare("SELECT stock_limit, stock_used, enabled FROM plans WHERE id = ?").get(planId) as
       | { stock_limit: number; stock_used: number; enabled: number }
       | undefined;
-    if (!latestPlan || latestPlan.enabled !== 1) throw new Error("Plan not found or disabled");
+    // L11: surface typed PlanTransactionError so the route returns 4xx JSON
+    // instead of an uncaught Error -> HTML/JSON 500.
+    if (!latestPlan || latestPlan.enabled !== 1) {
+      throw new PlanTransactionError(404, "plan_not_found", "Plan not found or disabled");
+    }
     if (latestPlan.stock_limit > 0 && latestPlan.stock_used >= latestPlan.stock_limit) {
-      throw new Error("Plan inventory is exhausted");
+      throw new PlanTransactionError(409, "plan_out_of_stock", "Plan inventory is exhausted");
     }
     db.prepare("UPDATE plans SET stock_used = stock_used + 1, updated_at = ? WHERE id = ?").run(now, planId);
     db.prepare(

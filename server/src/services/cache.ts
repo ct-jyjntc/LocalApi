@@ -213,10 +213,13 @@ export function listCache(limit = 100, offset = 0) {
       `SELECT id, cache_key, method, path, model, status_code, body_size,
               hit_count, ttl_seconds, created_at, expires_at, last_hit_at
        FROM cache_entries
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT ? OFFSET ?`,
     )
-    .all(limit, offset) as Array<Omit<CacheEntry, "response_body" | "response_headers" | "request_hash">>;
+    .all(
+      Math.max(1, Math.min(500, Math.floor(Number.isFinite(limit) ? limit : 100))),
+      Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0)),
+    ) as Array<Omit<CacheEntry, "response_body" | "response_headers" | "request_hash">>;
 
   const total = (
     db.prepare("SELECT COUNT(*) as c FROM cache_entries").get() as { c: number }

@@ -37,3 +37,18 @@ export function decryptSecret(value: string) {
     decipher.final(),
   ]).toString("utf8");
 }
+
+/**
+ * Non-throwing variant: returns null when the value is encrypted but cannot
+ * be decrypted with the current SECRETS_KEY. Callers on request paths use
+ * this so a wrong/missing key degrades to a per-request failure (401 / empty
+ * key list) instead of crashing the process.
+ */
+export function tryDecryptSecret(value: string): string | null {
+  if (!value.startsWith(PREFIX)) return value;
+  try {
+    return decryptSecret(value);
+  } catch {
+    return null;
+  }
+}

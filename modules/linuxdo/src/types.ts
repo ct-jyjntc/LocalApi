@@ -95,10 +95,12 @@ export type ModuleContext = {
   mountPaymentRoutes(router: Router | RequestHandler): void;
   users: {
     getByUsername(username: string): { id: string; username: string; display_name: string } | null;
+    getByLinuxDoUid(uid: string): { id: string; username: string; display_name: string } | null;
     create(input: {
       username: string;
       display_name?: string;
       password: string;
+      linuxdo_uid?: string;
     }): { id: string; username: string; display_name: string };
     createSession(userId: string): { token: string; expires_at: string };
   };
@@ -119,6 +121,7 @@ export type ModuleContext = {
     max_amount_minor?: number;
   }): void;
   disablePaymentChannel(id: string): void;
+  enablePaymentChannel(id: string): void;
   getPaymentChannel(id: string): PaymentChannelLike | null;
   renderPaymentCheckoutPage(
     res: Response,

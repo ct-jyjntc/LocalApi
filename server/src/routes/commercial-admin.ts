@@ -47,7 +47,14 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | n
 }
 
 const models = z.array(z.string().trim().min(1).max(200)).max(256).optional();
-const feedbackAttachmentSchema = z.object({ name: z.string().max(160), type: z.string().regex(/^image\//), data: z.string().max(3_000_000) });
+const feedbackAttachmentSchema = z.object({
+  name: z.string().max(160),
+  type: z.string().regex(/^image\/(png|jpe?g|gif|webp|bmp|svg\+xml)$/i),
+  data: z.string().max(3_000_000).refine(
+    (value) => /^(?:data:image\/[a-z0-9.+-]+;base64,)?[A-Za-z0-9+/=\s]+$/.test(value),
+    { message: "Attachment data must be base64" },
+  ),
+});
 const limits = {
   rpm_limit: z.coerce.number().int().min(0).max(1_000_000).optional(),
   tpm_limit: z.coerce.number().int().min(0).max(100_000_000).optional(),
@@ -58,6 +65,13 @@ const userSchema = z.object({
   display_name: z.string().trim().max(120).optional().transform((value) => value || undefined),
   password: z.string().min(8).max(256),
   status: z.enum(["active", "suspended", "disabled"]).optional(),
+  // Admin-only LinuxDo identity binding. Empty string clears the binding.
+  linuxdo_uid: z
+    .string()
+    .trim()
+    .max(128)
+    .optional()
+    .transform((value) => (value ? value : null)),
 });
 const userPatchSchema = userSchema.omit({ username: true }).partial();
 const priceSchema = z.object({
@@ -138,7 +152,10 @@ commercialAdminRouter.get("/users", (req, res) => {
     q,
   }));
 });
-commercialAdminRouter.get("/feedback", (_req,res)=>res.json({items:listAllFeedback()}));
+// M10: the admin feedback list loads every thread AND every message with its
+// base64 attachments into memory — unbounded as users file feedback. Default
+// 100/page, capped at 500; the web panel can page through with limit/offset.
+commercialAdminRouter.get("/feedback", (req,res)=>{const limit=Number(req.query.limit??100);const offset=Number(req.query.offset??0);return res.json(listAllFeedback(Number.isFinite(limit)?Math.min(500,Math.max(1,Math.trunc(limit))):100,Number.isFinite(offset)?Math.max(0,Math.trunc(offset)):0));});
 commercialAdminRouter.post("/feedback/:id/replies",(req,res)=>{const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(feedbackAttachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"admin",body.body,body.attachments);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
 commercialAdminRouter.patch("/feedback/:id",(req,res)=>{const body=parseBody(z.object({status:z.enum(["open","resolved"])}),req.body,res);if(!body)return;return setFeedbackStatus(req.params.id,body.status)?res.json({ok:true}):res.status(404).json({error:"Feedback not found"});});
 commercialAdminRouter.post("/users", (req, res) => {
@@ -229,10 +246,11 @@ commercialAdminRouter.post("/users/:id/subscription", (req, res) => {
   try {
     subscription = assignPlan(req.params.id, body.plan_id, body.auto_renew !== false);
   } catch (error) {
-    if (error instanceof Error && error.message === "Plan inventory is exhausted") {
-      return res.status(409).json({ error: error.message, code: "plan_inventory_exhausted" });
+    // L11: assignPlan now throws PlanTransactionError with status/code.
+    if (error instanceof PlanTransactionError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
     }
-    return res.status(404).json({ error: error instanceof Error ? error.message : "Plan not found or disabled" });
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Failed to assign plan" });
   }
   if (!subscription) return res.status(404).json({ error: "Plan not found or disabled" });
   writeAudit({ action: "subscription.assign", target_type: "user", target_id: req.params.id, detail: body });

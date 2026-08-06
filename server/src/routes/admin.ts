@@ -22,7 +22,7 @@ import {
   updateProvider,
 } from "../services/providers";
 import { getAllSettings, getSetting, setSetting } from "../db";
-import { requireAdmin, verifyAdminToken } from "../middleware/auth";
+import { consumeAdminAuthFailure, requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
 import { hashAdminSecret } from "../utils/admin-secret";
 import { DEFAULT_ADMIN_ENTRY_PATH, isValidAdminEntryPath, normalizeAdminEntryPath } from "../utils/admin-entry";
@@ -175,6 +175,13 @@ adminRouter.post("/login", (req, res) => {
     return res.status(404).json({ error: "Not found", ok: false });
   }
   if (!password || !verifyAdminToken(password)) {
+    // Also counts against the shared per-IP budget so /login and protected
+    // endpoints cannot be used as two independent brute-force pipelines.
+    const shared = consumeAdminAuthFailure(req);
+    if (!shared.allowed) {
+      res.setHeader("retry-after", String(Math.ceil(shared.retryAfterMs / 1000)));
+      return res.status(429).json({ error: "Too many login attempts", ok: false });
+    }
     return res.status(401).json({ error: "Invalid admin password", ok: false });
   }
   resetRateLimit(limiterKey);

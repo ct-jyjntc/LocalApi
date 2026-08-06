@@ -19,7 +19,9 @@ export function UserPaymentsPage() {
     queryFn: () => userApi.payments.orders({ limit: 50, offset: 0 }),
     refetchInterval: (query) => query.state.data?.items.some((item) => ["pending", "paid"].includes(item.status)) ? 3_000 : false,
   });
-  const me = useQuery({ queryKey: ["user-me"], queryFn: userApi.me });
+  // M15: use the same ["user","me"] key as every other page so a wallet
+// top-up here invalidates the plan/settings/models me() caches too.
+const me = useQuery({ queryKey: ["user", "me"], queryFn: userApi.me });
   const [amount, setAmount] = useState("10");
   const [selectedChannelId, setSelectedChannelId] = useState("");
   const returnedOrderNo = useRef<string | null>(null);
@@ -84,8 +86,8 @@ export function UserPaymentsPage() {
     if (!order || !["credited", "refunded"].includes(order.status)) return;
     returnedOrderNo.current = null;
     toast.success(order.status === "credited" ? "支付已确认并入账" : "订单已退款");
-    qc.invalidateQueries({ queryKey: ["user-me"] });
-    qc.invalidateQueries({ queryKey: ["user-dashboard"] });
+    qc.invalidateQueries({ queryKey: ["user", "me"] });
+    qc.invalidateQueries({ queryKey: ["user", "dashboard"] });
   }, [orders.data?.items, qc]);
 
   const amountMinor = Math.round((Number(amount) || 0) * 100);

@@ -71,9 +71,17 @@ export function migratePointsScaleIfNeeded() {
       }
       setSetting("points_scale_v2", "1");
     })();
-  } catch {
-    // Tables may not exist on brand-new empty boot before CREATE — ignore.
-    setSetting("points_scale_v2", "1");
+  } catch (error) {
+    // L12: only mark the migration complete when the tables truly do not
+    // exist yet (brand-new empty boot). Any other failure must leave the
+    // flag unset so a later boot retries — otherwise balances stay at the
+    // old scale forever (permanent 100× shrinkage).
+    const message = error instanceof Error ? error.message : String(error);
+    if (/no such table/i.test(message)) {
+      setSetting("points_scale_v2", "1");
+      return;
+    }
+    console.error("[checkin] points scale migration failed; will retry on next boot:", error);
   }
 }
 
@@ -299,6 +307,11 @@ export function performCheckin(userId: string) {
   if (settings.points_max_cents <= 0 && settings.points_min_cents <= 0) {
     throw new CheckinError(503, "checkin_misconfigured", "Check-in points range is not configured");
   }
+  // L14: min=max=0 (or a range that always yields 0) would burn the day's
+  // check-in for nothing. Reject before inserting the record.
+  if (settings.points_max_cents <= 0) {
+    throw new CheckinError(503, "checkin_misconfigured", "Check-in points range must award more than zero");
+  }
 
   const today = todayKey();
   let account = getPointsAccount(userId);
@@ -447,12 +460,17 @@ export function exchangePoints(userId: string, points: number) {
     throw new CheckinError(503, "exchange_disabled", "Points exchange is not configured");
   }
 
-  // balance_micros = points * exchange_rate_credits * 1_000_000
-  // = (amountCents / 100) * exchange_micros
-  const creditMicros = Math.round((amountCents * settings.exchange_micros) / POINTS_SCALE);
-  if (creditMicros <= 0) {
+  // L13: amountCents * exchange_micros can overflow Number.MAX_SAFE_INTEGER
+  // under extreme configs. Use BigInt and reject oversized results.
+  const creditMicrosBig =
+    (BigInt(amountCents) * BigInt(settings.exchange_micros)) / BigInt(POINTS_SCALE);
+  if (creditMicrosBig <= 0n) {
     throw new CheckinError(400, "exchange_too_small", "Exchange amount is too small for the current rate");
   }
+  if (creditMicrosBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new CheckinError(400, "exchange_too_large", "Exchange amount exceeds the supported range");
+  }
+  const creditMicros = Number(creditMicrosBig);
 
   let account = getPointsAccount(userId);
   let wallet = getWallet(userId);

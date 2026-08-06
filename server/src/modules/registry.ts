@@ -188,8 +188,10 @@ export class ModuleRegistry {
   }
 
   installFromZip(zipBuffer: Buffer, options: { activate?: boolean } = {}) {
-    const tempRoot = path.join(modulesRoot(), `.tmp-install-${Date.now()}`);
-    rmrf(tempRoot);
+    // L16: Date.now() alone collides under concurrent installs within the
+    // same millisecond. Prefer mkdtempSync which also adds a random suffix.
+    fs.mkdirSync(modulesRoot(), { recursive: true });
+    const tempRoot = fs.mkdtempSync(path.join(modulesRoot(), ".tmp-install-"));
     try {
       extractModuleZip(zipBuffer, tempRoot);
       // Support zips that wrap contents in a single top-level folder.
@@ -255,9 +257,16 @@ export class ModuleRegistry {
     try {
       const result = definition.activate(ctx);
       if (result && typeof (result as Promise<void>).then === "function") {
-        // Activation is sync-preferred; still allow promise but surface rejections.
+        // L18: async activate failures used to only log. Tear the module
+        // back down so a half-live module cannot keep routes/timers around
+        // while the row still says "enabled".
         void (result as Promise<void>).catch((error) => {
           console.error(`[modules] async activate failed for ${id}`, error);
+          try {
+            this.deactivate(id);
+          } catch (deactivateError) {
+            console.error(`[modules] cleanup after async activate failure for ${id}`, deactivateError);
+          }
         });
       }
       this.active.set(id, { definition, handles, manifest });

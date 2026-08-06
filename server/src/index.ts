@@ -1,4 +1,9 @@
 import "dotenv/config";
+// M11: with NODE_ENV unset, Express runs in "development" mode and emits
+// verbose HTML error pages (stack traces, filesystem paths) on every 500.
+// Default to production; development servers set NODE_ENV=development
+// explicitly.
+process.env.NODE_ENV ??= "production";
 import cors from "cors";
 import express from "express";
 import path from "path";
@@ -14,10 +19,33 @@ import { cleanupStaleReservations } from "./services/billing";
 import { maintainDueSubscriptions } from "./services/plans";
 import { migratePointsScaleIfNeeded } from "./services/checkin";
 import { moduleRegistry } from "./modules/registry";
+import { checkSecretsHealth } from "./utils/secrets-health";
+import { errorHandler, notFoundJson } from "./middleware/errors";
 
 initDb();
 migratePointsScaleIfNeeded();
 moduleRegistry.migrateLegacyAndBoot();
+
+// Fail loudly at startup when stored credentials cannot be decrypted with the
+// current SECRETS_KEY. Without this, a wrong/missing key turns every request
+// that touches a credential into a 500 while the server looks healthy.
+const secretsHealth = checkSecretsHealth();
+for (const issue of secretsHealth.issues) {
+  console.error(`[secrets] ${issue}`);
+}
+if (secretsHealth.issues.length > 0) {
+  console.error(
+    "[secrets] Refusing to start: stored credentials cannot be decrypted. " +
+      "Restore the original SECRETS_KEY, or delete and re-enter the affected credentials.",
+  );
+  process.exit(1);
+}
+if (secretsHealth.plaintextCount > 0) {
+  console.warn(
+    `[secrets] ${secretsHealth.plaintextCount} credential field(s) are stored in plaintext. ` +
+      "Set SECRETS_KEY before saving new credentials to enable encryption at rest.",
+  );
+}
 
 // Single-port app
 const SINGLE_PORT = Number(process.env.PORT || 5555);
@@ -200,6 +228,14 @@ if (webDist) {
     "[ui] web/dist not found. Run `npm run build --prefix web` first.",
   );
 }
+
+// M11: JSON 404 + global JSON error handler. The SPA fallback above already
+// answered non-API GETs, so anything that reaches notFoundJson is a miss on an
+// API/unknown route. The error handler catches body-parser overruns (413),
+// multer LIMIT_FILE_SIZE (413), JSON parse failures (400) and unknown 5xx
+// without leaking stack traces or filesystem paths.
+app.use(notFoundJson);
+app.use(errorHandler);
 
 const server = app.listen(SINGLE_PORT, LISTEN_HOST, () => {
   console.log(`LocalAPI on http://${LISTEN_HOST}:${SINGLE_PORT}`);

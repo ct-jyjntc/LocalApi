@@ -36,11 +36,13 @@ export function UserPlanPage() {
   const subscription = me.data?.subscription;
 
   const refresh = () => {
+    // M15: a single ["user","me"] / ["user","dashboard"] key is enough —
+    // the previous dual invalidation was only needed because some pages
+    // used the flat "user-me" / "user-dashboard" aliases.
     qc.invalidateQueries({ queryKey: ["user", "me"] });
-    qc.invalidateQueries({ queryKey: ["user-me"] });
     qc.invalidateQueries({ queryKey: ["user", "plans"] });
     qc.invalidateQueries({ queryKey: ["user", "commerce-orders"] });
-    qc.invalidateQueries({ queryKey: ["user-dashboard"] });
+    qc.invalidateQueries({ queryKey: ["user", "dashboard"] });
   };
   const autoRenew = useMutation({
     mutationFn: userApi.subscription.setAutoRenew,

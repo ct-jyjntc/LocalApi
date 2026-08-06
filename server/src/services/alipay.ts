@@ -282,14 +282,36 @@ export async function refundAlipayOrder(
   }, fetcher);
   if (body.code !== "10000") throw apiError(body);
   if (body.fund_change !== "Y") {
-    const query = await callAlipayApi(credentials, "alipay.trade.fastpay.refund.query", {
-      ...(input.tradeNo ? { trade_no: input.tradeNo } : { out_trade_no: input.orderNo }),
-      out_request_no: input.refundNo,
-    }, fetcher);
-    if (query.code !== "10000" || query.refund_status !== "REFUND_SUCCESS") {
+    const query = await queryAlipayRefund(credentials, input, fetcher);
+    if (!query.found || query.refundStatus !== "REFUND_SUCCESS") {
       throw new Error("Alipay refund result is pending or could not be confirmed");
     }
-    return query;
+    return query.raw;
   }
   return body;
+}
+
+/**
+ * Reconciliation query for a refund (alipay.trade.fastpay.refund.query).
+ * Used to resolve the lost-response window: when the original refund call
+ * times out or fails signature verification we cannot know whether Alipay
+ * accepted it, so a later query decides — REFUND_SUCCESS means money moved,
+ * "not found" means the refund was never accepted.
+ */
+export async function queryAlipayRefund(
+  credentials: AlipayCredentials,
+  input: { tradeNo?: string; orderNo: string; refundNo: string },
+  fetcher: FetchLike = fetch,
+): Promise<{ found: boolean; refundStatus: string | null; raw: Record<string, unknown> }> {
+  const body = await callAlipayApi(credentials, "alipay.trade.fastpay.refund.query", {
+    ...(input.tradeNo ? { trade_no: input.tradeNo } : { out_trade_no: input.orderNo }),
+    out_request_no: input.refundNo,
+  }, fetcher);
+  if (body.code !== "10000") return { found: false, refundStatus: null, raw: body };
+  const refundStatus = typeof body.refund_status === "string" ? body.refund_status : null;
+  // A query response with no refund record (no refund_amount/out_request_no
+  // echo) means Alipay has no record of the refund being accepted.
+  const echo = typeof body.out_request_no === "string" && body.out_request_no.length > 0;
+  const hasAmount = typeof body.refund_amount === "string" && body.refund_amount.length > 0;
+  return { found: echo || hasAmount, refundStatus, raw: body };
 }

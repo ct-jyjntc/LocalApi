@@ -88,6 +88,12 @@ export function PaginationBar({
 }) {
   const pageCount = Math.max(1, Math.ceil(Math.max(0, total) / Math.max(1, pageSize)));
   const safePage = Math.min(Math.max(0, page), pageCount - 1);
+  // L27: after deleting the last row on the last page the parent still holds
+  // page=N while pageCount shrank — clamp the parent state so the list isn't
+  // stuck on an empty page.
+  if (safePage !== page) {
+    queueMicrotask(() => onPageChange(safePage));
+  }
   const from = total === 0 ? 0 : safePage * pageSize + 1;
   const to = Math.min(total, (safePage + 1) * pageSize);
   return (

@@ -188,39 +188,61 @@ export async function exchangeLinuxDoCode(
     throw new Error("LinuxDo login is not configured");
   }
 
+  // L26: every outbound OAuth hop needs a hard timeout — a hung relay or
+  // LinuxDo endpoint used to block the login callback forever.
+  const withTimeout = (timeoutMs = 15_000) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    return { signal: controller.signal, clear: () => clearTimeout(timer) };
+  };
+
   if (config.relay_url) {
-    const response = await fetch(`${config.relay_url}/exchange`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-relay-secret": config.relay_secret,
-      },
-      body: JSON.stringify({ code, redirect_uri: redirectUri }),
-    });
-    if (!response.ok) {
-      throw new Error(`OAuth relay failed (${response.status})`);
+    const timeout = withTimeout();
+    try {
+      const response = await fetch(`${config.relay_url}/exchange`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-relay-secret": config.relay_secret,
+        },
+        body: JSON.stringify({ code, redirect_uri: redirectUri }),
+        signal: timeout.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`OAuth relay failed (${response.status})`);
+      }
+      return (await response.json()) as {
+        username?: string;
+        name?: string;
+        id?: string | number;
+      };
+    } finally {
+      timeout.clear();
     }
-    return (await response.json()) as {
-      username?: string;
-      name?: string;
-      id?: string | number;
-    };
   }
 
-  const tokenRes = await fetch(`${config.base_url}/oauth2/token`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      accept: "application/json",
-    },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      client_id: config.client_id,
-      client_secret: config.client_secret,
-    }),
-  });
+  const tokenTimeout = withTimeout();
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch(`${config.base_url}/oauth2/token`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: config.client_id,
+        client_secret: config.client_secret,
+      }),
+      signal: tokenTimeout.signal,
+    });
+  } finally {
+    tokenTimeout.clear();
+  }
   if (!tokenRes.ok) {
     throw new Error(`LinuxDo token exchange failed (${tokenRes.status})`);
   }
@@ -229,12 +251,19 @@ export async function exchangeLinuxDoCode(
     throw new Error("LinuxDo token response missing access_token");
   }
 
-  const profileRes = await fetch(`${config.base_url}/api/user`, {
-    headers: {
-      authorization: `Bearer ${token.access_token}`,
-      accept: "application/json",
-    },
-  });
+  const profileTimeout = withTimeout();
+  let profileRes: Response;
+  try {
+    profileRes = await fetch(`${config.base_url}/api/user`, {
+      headers: {
+        authorization: `Bearer ${token.access_token}`,
+        accept: "application/json",
+      },
+      signal: profileTimeout.signal,
+    });
+  } finally {
+    profileTimeout.clear();
+  }
   if (!profileRes.ok) {
     throw new Error(`LinuxDo profile request failed (${profileRes.status})`);
   }

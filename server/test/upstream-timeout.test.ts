@@ -15,11 +15,23 @@ test("streaming response releases the total timeout after its first body chunk",
   assert.equal(timeout.didTimeout(), false);
 });
 
-test("non-streaming response keeps the full-response timeout", async () => {
+test("non-streaming response releases the provider timeout after its first body chunk", async () => {
   const controller = new AbortController();
   const timeout = createUpstreamTimeout(controller, 25);
 
   timeout.onBodyChunk(false);
+  await wait(50);
+
+  // M8: a large buffered download must not be truncated by timeout_ms once
+  // the body has started; the proxy's idle timer takes over for stalls.
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(timeout.didTimeout(), false);
+});
+
+test("timeout still fires when no body chunk arrives (TTFB)", async () => {
+  const controller = new AbortController();
+  const timeout = createUpstreamTimeout(controller, 25);
+
   await wait(50);
 
   assert.equal(controller.signal.aborted, true);

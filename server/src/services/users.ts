@@ -34,6 +34,7 @@ export function publicUser(row: User, lifetimeTopupMicros?: number) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     last_login_at: row.last_login_at,
+    linuxdo_uid: row.linuxdo_uid ?? null,
     tier: resolveTierForTopup(topup),
   };
 }
@@ -45,6 +46,21 @@ export function getUser(id: string): User | null {
 export function getUserByUsername(username: string): User | null {
   return (
     (db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE").get(username.trim()) as
+      | User
+      | undefined) ?? null
+  );
+}
+
+/**
+ * Look up a user by their bound LinuxDo identity (profile.id).
+ * This is the only identity-safe way to resolve an OAuth login — username
+ * lookups are NOT safe for that purpose because usernames are attacker-chosen.
+ */
+export function getUserByLinuxDoUid(uid: string): User | null {
+  const normalized = String(uid).trim();
+  if (!normalized) return null;
+  return (
+    (db.prepare("SELECT * FROM users WHERE linuxdo_uid = ?").get(normalized) as
       | User
       | undefined) ?? null
   );
@@ -68,6 +84,7 @@ function mapUserListRow(row: Record<string, unknown>) {
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     last_login_at: (row.last_login_at as string | null) ?? null,
+    linuxdo_uid: (row.linuxdo_uid as string | null) ?? null,
     balance_micros: Number(row.balance_micros || 0),
     reserved_micros: Number(row.reserved_micros || 0),
     lifetime_spent_micros: Number(row.lifetime_spent_micros || 0),
@@ -111,7 +128,7 @@ function mapUserListRow(row: Record<string, unknown>) {
 const USER_LIST_SELECT = `
   SELECT u.id, u.username, u.display_name, u.status, u.allowed_models,
          u.rpm_limit, u.tpm_limit, u.concurrency_limit,
-         u.created_at, u.updated_at, u.last_login_at,
+         u.created_at, u.updated_at, u.last_login_at, u.linuxdo_uid,
          COALESCE(w.balance_micros, 0) AS balance_micros,
          COALESCE(w.reserved_micros, 0) AS reserved_micros,
          COALESCE(w.lifetime_spent_micros, 0) AS lifetime_spent_micros,
@@ -171,7 +188,7 @@ export function listUsersPage(input: { limit?: number; offset?: number; q?: stri
       .get(...params) as { c: number }
   ).c;
   const items = db
-    .prepare(`${USER_LIST_SELECT} ${where} ORDER BY u.created_at DESC LIMIT ? OFFSET ?`)
+    .prepare(`${USER_LIST_SELECT} ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT ? OFFSET ?`)
     .all(...params, limit, offset)
     .map((row) => mapUserListRow(row as Record<string, unknown>));
   return { items, total, limit, offset };
@@ -186,6 +203,7 @@ export function createUser(input: {
   rpm_limit?: number;
   tpm_limit?: number;
   concurrency_limit?: number;
+  linuxdo_uid?: string | null;
 }) {
   const id = uuid();
   const now = nowIso();
@@ -193,8 +211,9 @@ export function createUser(input: {
     db.prepare(
       `INSERT INTO users (
         id, username, display_name, password_hash, status, allowed_models,
-        rpm_limit, tpm_limit, concurrency_limit, created_at, updated_at, last_login_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        rpm_limit, tpm_limit, concurrency_limit, created_at, updated_at, last_login_at,
+        linuxdo_uid
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
     ).run(
       id,
       input.username.trim(),
@@ -207,6 +226,7 @@ export function createUser(input: {
       input.concurrency_limit ?? 0,
       now,
       now,
+      input.linuxdo_uid ? String(input.linuxdo_uid) : null,
     );
     db.prepare(
       `INSERT INTO wallet_accounts (user_id, balance_micros, reserved_micros, lifetime_spent_micros, updated_at)
@@ -226,13 +246,16 @@ export function updateUser(
     rpm_limit: number;
     tpm_limit: number;
     concurrency_limit: number;
+    linuxdo_uid: string | null;
   }>,
 ) {
   const user = getUser(id);
   if (!user) return null;
+  // linuxdo_uid is a deliberate admin binding/unbinding operation: null unbinds.
+  const hasLinuxDoUid = "linuxdo_uid" in input;
   db.prepare(
     `UPDATE users SET display_name = ?, password_hash = ?, status = ?, allowed_models = ?,
-      rpm_limit = ?, tpm_limit = ?, concurrency_limit = ?, updated_at = ? WHERE id = ?`,
+      rpm_limit = ?, tpm_limit = ?, concurrency_limit = ?, linuxdo_uid = ?, updated_at = ? WHERE id = ?`,
   ).run(
     input.display_name?.trim() || user.display_name,
     input.password ? hashPassword(input.password) : user.password_hash,
@@ -241,10 +264,17 @@ export function updateUser(
     input.rpm_limit ?? user.rpm_limit,
     input.tpm_limit ?? user.tpm_limit,
     input.concurrency_limit ?? user.concurrency_limit,
+    hasLinuxDoUid
+      ? input.linuxdo_uid
+        ? String(input.linuxdo_uid).trim()
+        : null
+      : user.linuxdo_uid ?? null,
     nowIso(),
     id,
   );
-  if (input.status && input.status !== "active") {
+  // Non-active status revokes sessions; a password change must too — a leaked
+  // session token must not outlive the password it was issued under.
+  if ((input.status && input.status !== "active") || input.password) {
     db.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(id);
   }
   return publicUser(getUser(id)!);
@@ -253,8 +283,12 @@ export function updateUser(
 export function changeUserPassword(userId: string, currentPassword: string, newPassword: string) {
   const user = getUser(userId);
   if (!user || !verifyPassword(currentPassword, user.password_hash)) return false;
-  db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
-    .run(hashPassword(newPassword), nowIso(), userId);
+  db.transaction(() => {
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+      .run(hashPassword(newPassword), nowIso(), userId);
+    // Revoke every session: a leaked token must not survive a password change.
+    db.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(userId);
+  })();
   return true;
 }
 

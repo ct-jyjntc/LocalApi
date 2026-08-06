@@ -55,8 +55,8 @@ export function UserUsagePage() {
     qc.invalidateQueries({ queryKey: ["user", "commerce-orders"] });
     qc.invalidateQueries({ queryKey: ["user-payment-orders"] });
     qc.invalidateQueries({ queryKey: ["user", "commerce-ledger"] });
-    qc.invalidateQueries({ queryKey: ["user-me"] });
-    qc.invalidateQueries({ queryKey: ["user-dashboard"] });
+    qc.invalidateQueries({ queryKey: ["user", "me"] });
+    qc.invalidateQueries({ queryKey: ["user", "dashboard"] });
   };
   const sync = useMutation({
     mutationFn: userApi.payments.sync,

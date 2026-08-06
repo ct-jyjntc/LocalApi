@@ -6,12 +6,14 @@ import { consumeRateLimit } from "../services/rate-limit";
 import {
   createUser,
   createUserSession,
+  getUserByLinuxDoUid,
   getUserByUsername,
 } from "../services/users";
 import {
   PaymentError,
   creditNotifiedOrder,
   disablePaymentChannel,
+  enablePaymentChannel,
   ensurePaymentChannel,
   formatAssetAmount,
   getPaymentChannel,
@@ -99,6 +101,11 @@ export function buildModuleContext(
         if (!user) return null;
         return { id: user.id, username: user.username, display_name: user.display_name };
       },
+      getByLinuxDoUid(uid) {
+        const user = getUserByLinuxDoUid(uid);
+        if (!user) return null;
+        return { id: user.id, username: user.username, display_name: user.display_name };
+      },
       create(input) {
         const created = createUser(input);
         return {
@@ -119,6 +126,7 @@ export function buildModuleContext(
     },
     ensurePaymentChannel,
     disablePaymentChannel,
+    enablePaymentChannel,
     getPaymentChannel(id: string) {
       const channel = getPaymentChannel(id);
       return channel

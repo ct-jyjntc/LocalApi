@@ -7,9 +7,22 @@ import { createAuthRoutes } from "./routes/auth";
 import { createPaymentRoutes } from "./routes/payments";
 import { setPaymentProvider } from "./routes/payment-bridge";
 
+// Deactivate → activate cycles must not permanently kill the payment channel:
+// remember whether it was enabled before deactivation so activate can restore it.
+let wasChannelEnabledBeforeDeactivate = false;
+let authRoutesCleanup: (() => void) | null = null;
+
 const definition: ModuleDefinition = {
   activate(ctx: ModuleContext) {
     seedLinuxDoOAuthFromEnv(ctx);
+
+    // Restore the channel after a deactivate→activate cycle. A channel the
+    // admin never enabled (or explicitly disabled) stays disabled.
+    if (wasChannelEnabledBeforeDeactivate) {
+      const channel = ctx.getPaymentChannel(LINUXDO_CHANNEL_ID);
+      if (channel && !channel.enabled) ctx.enablePaymentChannel(LINUXDO_CHANNEL_ID);
+    }
+    wasChannelEnabledBeforeDeactivate = false;
 
     ctx.ensurePaymentChannel({
       id: LINUXDO_CHANNEL_ID,
@@ -26,12 +39,20 @@ const definition: ModuleDefinition = {
     ctx.registerPaymentProvider(paymentProvider);
     ctx.registerAuthProvider(createAuthProvider(ctx));
     ctx.contributeAdminSettings(createSettingsContribution(ctx));
-    ctx.mountUserRoutes(createAuthRoutes(ctx));
+    const authRoutes = createAuthRoutes(ctx);
+    authRoutesCleanup = authRoutes.cleanup;
+    ctx.mountUserRoutes(authRoutes.router);
     ctx.mountPaymentRoutes(createPaymentRoutes(ctx));
   },
 
   deactivate(ctx: ModuleContext) {
-    ctx.disablePaymentChannel(LINUXDO_CHANNEL_ID);
+    authRoutesCleanup?.();
+    authRoutesCleanup = null;
+    const channel = ctx.getPaymentChannel(LINUXDO_CHANNEL_ID);
+    wasChannelEnabledBeforeDeactivate = channel?.enabled === 1;
+    if (wasChannelEnabledBeforeDeactivate) {
+      ctx.disablePaymentChannel(LINUXDO_CHANNEL_ID);
+    }
   },
 };
 

@@ -173,8 +173,23 @@ export function getRetryDelayMs(): number {
   return Number.isFinite(n) ? Math.max(0, Math.min(10_000, Math.floor(n))) : 400;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// L4: retry delays must honor the client abort signal — otherwise a
+// disconnected client still burns the full retry budget (and upstream
+// slots) while sleeping between attempts.
+function sleep(ms: number, signal?: AbortSignal) {
+  if (ms <= 0) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error("Client disconnected"), { name: "AbortError" }));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error("Client disconnected"), { name: "AbortError" }));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Normal retry class used by settings → max_retries. */
@@ -652,8 +667,13 @@ async function pipeResponseToClient(params: {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = undefined;
   };
+  // Stall detector, armed ONLY while waiting for the next upstream chunk.
+  // Client writes (including backpressure/drain waits) never count as
+  // upstream stall: a slow reader must not kill the upstream stream. It
+  // applies to buffered (non-streaming) responses too — the provider
+  // timeout_ms was released on the first body chunk, so the idle timer is
+  // what protects against a stalled download.
   const armIdle = () => {
-    if (!streamingResponse) return;
     clearIdle();
     idleTimer = setTimeout(() => {
       streamError = streamError || "Upstream stream idle timeout";
@@ -685,14 +705,16 @@ async function pipeResponseToClient(params: {
         forceCloseUpstream("Request max duration exceeded");
         throw new Error("Request max duration exceeded");
       }
+      // Not idle: this chunk is in hand. Writing it (and waiting out client
+      // backpressure) must not arm the stall timer — a paused reader is not
+      // an upstream stall.
+      clearIdle();
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
       if (responseBytes === 0) {
-        // TTFB timeout ends once the body starts; idle timeout takes over for stalls.
+        // TTFB timeout ends once the body starts; the idle timer takes over
+        // for stalls (streaming and buffered responses alike).
         handle.onBodyChunk(streamingResponse);
         commitHeaders();
-        armIdle();
-      } else {
-        armIdle();
       }
       responseBytes += chunk.length;
       responseCollector.push(chunk);
@@ -700,6 +722,9 @@ async function pipeResponseToClient(params: {
         await Promise.race([once(res, "drain"), once(res, "close")]);
         if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
       }
+      // Idle again: waiting for the next upstream chunk. The stream ends
+      // (for await completes) before this timer can fire.
+      armIdle();
     }
     handle.clearTimeout();
     clearIdle();
@@ -1014,7 +1039,9 @@ export async function handleProxyHttp(
           else otherRetriesUsed += 1;
           forgetProviderAffinity(affinityKey, provider.id);
           lastError = `Upstream HTTP ${status}`;
-          await sleep(retryDelay * attempts);
+          // L4: stop sleeping once the client is gone.
+          if (clientAbort.signal.aborted) break;
+          await sleep(retryDelay * attempts, clientAbort.signal);
           continue;
         }
 
@@ -1057,13 +1084,15 @@ export async function handleProxyHttp(
           if (isRetryableError(error) && normalRetriesUsed < normalMaxRetries) {
             normalRetriesUsed += 1;
             forgetProviderAffinity(affinityKey, provider.id);
-            await sleep(retryDelay * attempts);
+            if (clientAbort.signal.aborted) break;
+            await sleep(retryDelay * attempts, clientAbort.signal);
             continue;
           }
           if (!isRetryableError(error) && otherRetriesUsed < otherMaxRetries) {
             otherRetriesUsed += 1;
             forgetProviderAffinity(affinityKey, provider.id);
-            await sleep(retryDelay * attempts);
+            if (clientAbort.signal.aborted) break;
+            await sleep(retryDelay * attempts, clientAbort.signal);
             continue;
           }
         }

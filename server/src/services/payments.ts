@@ -15,6 +15,7 @@ import {
 import {
   buildAlipayPaymentSubmission,
   queryAlipayOrder,
+  queryAlipayRefund,
   refundAlipayOrder,
   verifyAlipaySignature,
   type AlipayCredentials,
@@ -854,7 +855,7 @@ export function listPaymentOrdersPage(input: {
        JOIN users ON users.id = payment_orders.user_id
        JOIN payment_channels ON payment_channels.id = payment_orders.channel_id
        ${where}
-       ORDER BY payment_orders.created_at DESC LIMIT ? OFFSET ?`,
+       ORDER BY payment_orders.created_at DESC, payment_orders.id DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, limit, offset) as Array<PaymentOrder & Record<string, unknown>>;
   return { items: rows.map(publicOrder), total, limit, offset };
@@ -1003,6 +1004,36 @@ function failRefundInTransaction(orderId: string, refundId: string, message: str
   ).run(message, failedAt, refund.id);
 }
 
+async function syncAlipayRefund(order: PaymentOrder, userId?: string) {
+  const refund = activePaymentRefund(order.id);
+  if (!refund) return getPaymentOrder(order.id, userId);
+  const configured = requireConfiguredChannel(order.channel_id, { allowDisabled: true });
+  let result: { found: boolean; refundStatus: string | null; raw: Record<string, unknown> };
+  try {
+    result = await queryAlipayRefund(configured.alipayCredentials!, {
+      tradeNo: order.channel_trade_no || undefined,
+      orderNo: order.order_no,
+      refundNo: refund.refund_no,
+    });
+  } catch (error) {
+    // Query itself failed (network/signature): keep the refund pending and
+    // let the next sync retry. Never fail here — the money may have moved.
+    throw error;
+  }
+  if (result.found && result.refundStatus === "REFUND_SUCCESS") {
+    db.transaction(() => completeRefundInTransaction(order.id, refund.id, result.raw))();
+  } else if (!result.found) {
+    db.transaction(() => failRefundInTransaction(order.id, refund.id, "Alipay refund was not found"))();
+  } else {
+    // REFUND_CLOSED or pending: keep reconciling on the next sync.
+    db.prepare(
+      `UPDATE payment_refunds SET status = 'processing', response = ?, error = NULL, updated_at = ?
+       WHERE id = ? AND status IN ('pending', 'processing')`,
+    ).run(JSON.stringify(result.raw), nowIso(), refund.id);
+  }
+  return getPaymentOrder(order.id, userId);
+}
+
 async function syncWechatPayRefund(order: PaymentOrder, userId?: string) {
   const refund = activePaymentRefund(order.id);
   if (!refund) return getPaymentOrder(order.id, userId);
@@ -1035,8 +1066,9 @@ export async function syncPaymentOrder(idOrNo: string, userId?: string) {
   const visible = getPaymentOrder(idOrNo, userId);
   if (!visible) throw new PaymentError(404, "payment_order_not_found", "Payment order not found");
   const order = db.prepare("SELECT * FROM payment_orders WHERE id = ?").get(visible.id) as PaymentOrder;
-  if (order.status === "refunding" && order.channel_id === WECHATPAY_CHANNEL_ID) {
-    return syncWechatPayRefund(order, userId);
+  if (order.status === "refunding") {
+    if (order.channel_id === WECHATPAY_CHANNEL_ID) return syncWechatPayRefund(order, userId);
+    if (order.channel_id === ALIPAY_CHANNEL_ID) return syncAlipayRefund(order, userId);
   }
   if (["credited", "refunding", "refunded"].includes(order.status)) return visible;
   const configured = requireConfiguredChannel(order.channel_id, { allowDisabled: true });
@@ -1151,6 +1183,10 @@ export function ensurePaymentChannel(seed: PaymentChannelSeed) {
 
 export function disablePaymentChannel(id: string) {
   db.prepare("UPDATE payment_channels SET enabled = 0, updated_at = ? WHERE id = ?").run(nowIso(), id);
+}
+
+export function enablePaymentChannel(id: string) {
+  db.prepare("UPDATE payment_channels SET enabled = 1, updated_at = ? WHERE id = ?").run(nowIso(), id);
 }
 
 export function handleAlipayNotification(form: Record<string, unknown>) {
@@ -1390,8 +1426,16 @@ export async function refundPaymentOrder(idOrNo: string, reason: string) {
     const message = error instanceof Error ? error.message : "Refund failed";
     const latest = getPaymentOrder(order.id);
     if (latest?.status === "refunded") return latest;
-    db.transaction(() => failRefundInTransaction(order.id, refundId, message))();
-    throw new PaymentError(502, "refund_failed", message);
+    // A failed call does NOT mean the refund was not accepted: the request may
+    // have reached the gateway with the response lost (timeout, signature
+    // failure). Marking it failed here would let the wallet be re-refunded
+    // later — a double refund. Leave the refund pending; syncPaymentOrder
+    // reconciles with the gateway and only then completes or fails it.
+    db.prepare(
+      `UPDATE payment_refunds SET status = 'processing', error = ?, updated_at = ?
+       WHERE id = ? AND status IN ('pending', 'processing')`,
+    ).run(message, nowIso(), refundId);
+    throw new PaymentError(502, "refund_pending", `${message} (refund pending reconciliation)`);
   }
   return getPaymentOrder(order.id);
 }

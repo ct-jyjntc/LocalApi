@@ -47,6 +47,17 @@ export class ApiError extends Error {
   }
 }
 
+// M13: broadcast when an authenticated request receives 401 so the app shell
+// can drop the session and return to the login page. Login/register/public
+// endpoints use auth:false and never emit this.
+export const AUTH_EXPIRED_EVENT = "localapi:auth-expired";
+export type AuthExpiredDetail = { mode: "admin" | "user" };
+
+function notifyAuthExpired(mode: "admin" | "user") {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<AuthExpiredDetail>(AUTH_EXPIRED_EVENT, { detail: { mode } }));
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -57,10 +68,12 @@ async function request<T>(
   if (!headers.has("Content-Type") && init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  if (opts?.auth === "user") {
+  const authMode: "admin" | "user" | false =
+    opts?.auth === "user" ? "user" : opts?.auth === false ? false : "admin";
+  if (authMode === "user") {
     const token = getUserToken();
     if (token) headers.set("x-user-token", token);
-  } else if (opts?.auth !== false) {
+  } else if (authMode === "admin") {
     const token = getAdminToken();
     if (token) headers.set("x-admin-token", token);
   }
@@ -73,6 +86,14 @@ async function request<T>(
       message = data.error?.message || data.error || message;
     } catch {
       // ignore
+    }
+    // M13: an authenticated 401 means the session is gone (expired, revoked
+    // after password change, etc.). Clear the matching token and notify the
+    // shell so the user is bounced to login instead of staring at a stuck UI.
+    if (res.status === 401 && authMode) {
+      if (authMode === "admin") clearAdminToken();
+      else clearUserToken();
+      notifyAuthExpired(authMode);
     }
     throw new ApiError(res.status, String(message));
   }
@@ -987,6 +1008,12 @@ export const userApi = {
       { auth: false },
     ),
   logout: () => request<{ ok: boolean }>("/user/api/logout", { method: "POST" }, { auth: "user" }),
+  linuxdoExchange: (code: string) =>
+    request<{ token: string; expires_at: string }>(
+      "/user/api/auth/linuxdo/exchange",
+      { method: "POST", body: JSON.stringify({ code }) },
+      { auth: false },
+    ),
   me: () =>
     request<{ user: UserRow; wallet: Wallet | null; tier: TierSummary; subscription: SubscriptionRow | null; prices: ModelPrice[] }>(
       "/user/api/me",

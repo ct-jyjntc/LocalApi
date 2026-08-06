@@ -68,7 +68,8 @@ export function initDb() {
       concurrency_limit INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      last_login_at TEXT
+      last_login_at TEXT,
+      linuxdo_uid TEXT
     );
 
     CREATE TABLE IF NOT EXISTS user_sessions (
@@ -501,6 +502,20 @@ export function initDb() {
     db.exec("ALTER TABLE providers ADD COLUMN model_mappings TEXT NOT NULL DEFAULT '{}'");
   }
 
+  // Migrate older DBs that lack the LinuxDo identity binding column.
+  const userCols = (
+    db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!userCols.includes("linuxdo_uid")) {
+    db.exec("ALTER TABLE users ADD COLUMN linuxdo_uid TEXT");
+  }
+  // The unique index must be created AFTER the ALTER above: on a legacy table,
+  // CREATE INDEX ... ON users(linuxdo_uid) fails with "no such column" (IF NOT
+  // EXISTS guards the index, not the column). Idempotent on new DBs.
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_linuxdo_uid ON users(linuxdo_uid) WHERE linuxdo_uid IS NOT NULL",
+  );
+
   // Migrate older DBs that lack detail columns
   const keyCols = (
     db.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>
@@ -841,6 +856,7 @@ export type User = {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  linuxdo_uid: string | null;
 };
 
 export type UserTier = {

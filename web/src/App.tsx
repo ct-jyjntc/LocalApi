@@ -9,6 +9,7 @@ import { I18nProvider } from "@/lib/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import {
   api,
+  AUTH_EXPIRED_EVENT,
   clearAdminToken,
   clearUserToken,
   getAdminToken,
@@ -16,6 +17,7 @@ import {
   getUserToken,
   setAdminEntryPath,
   userApi,
+  type AuthExpiredDetail,
 } from "@/lib/api";
 
 const DashboardPage = lazy(() =>
@@ -88,7 +90,14 @@ const ModulesPage = lazy(() =>
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
+      // M13: never auto-retry 401s — the session is already dead and the
+      // request() helper has already cleared the token + fired AUTH_EXPIRED.
+      retry: (failureCount, error) => {
+        if (error instanceof Error && "status" in error && (error as { status: number }).status === 401) {
+          return false;
+        }
+        return failureCount < 1;
+      },
       refetchOnWindowFocus: false,
     },
   },
@@ -152,10 +161,21 @@ function Root() {
 
   const verify = useCallback(async () => {
     const params = new URLSearchParams(window.location.search);
-    const linuxdoToken = params.get("linuxdo_token");
-    if (linuxdoToken) {
-      localStorage.setItem("localapi_user_token", linuxdoToken);
-      localStorage.setItem("localapi_auth_mode", "user");
+    const linuxdoCode = params.get("linuxdo_code");
+    if (linuxdoCode) {
+      // One-time login code from the OAuth callback. Exchange it for a session
+      // token over POST — the full-access token never travels in the URL, and
+      // the exchange is bound to the nonce cookie set when the login started,
+      // so a code delivered out-of-band cannot log this browser into someone
+      // else's account.
+      try {
+        const exchanged = await userApi.linuxdoExchange(linuxdoCode);
+        localStorage.setItem("localapi_user_token", exchanged.token);
+        localStorage.setItem("localapi_auth_mode", "user");
+      } catch {
+        // Exchange failed (expired/mismatched code): fall through to normal
+        // verification so the login page is shown.
+      }
       window.history.replaceState(null, "", window.location.pathname);
     }
     const preferred = localStorage.getItem("localapi_auth_mode") as AuthMode | null;
@@ -198,6 +218,31 @@ function Root() {
     verify();
   }, [verify]);
 
+  // M13: mid-session 401s (expired/revoked tokens) are emitted by request().
+  // Drop the matching mode, wipe the react-query cache (M14), and bounce the
+  // UI back to the login page so the user never sits on a stuck dashboard.
+  useEffect(() => {
+    const onExpired = (event: Event) => {
+      const detail = (event as CustomEvent<AuthExpiredDetail>).detail;
+      const expiredMode = detail?.mode;
+      queryClient.clear();
+      if (expiredMode === "admin") {
+        clearAdminToken();
+        const entryPath = getAdminEntryPath();
+        window.history.replaceState(null, "", entryPath);
+        setAdminEntryPathState(entryPath);
+        setLoginMode("admin");
+      } else {
+        clearUserToken();
+        window.history.replaceState(null, "", "/");
+        setLoginMode("user");
+      }
+      setMode(null);
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, []);
+
   if (mode === "loading") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-xs text-muted-foreground">
@@ -214,6 +259,9 @@ function Root() {
     <AuthedApp
       mode={mode}
       onLogout={() => {
+        // M14: wipe the react-query cache on logout so the next account never
+        // briefly renders the previous user's wallet / plan / keys.
+        queryClient.clear();
         if (mode === "admin") {
           const entryPath = getAdminEntryPath();
           clearAdminToken();

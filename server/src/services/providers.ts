@@ -1,12 +1,14 @@
 import { v4 as uuid } from "uuid";
 import { db, Provider } from "../db";
 import { nowIso } from "../utils/time";
-import { decryptSecret, encryptSecret } from "../utils/secrets";
+import { encryptSecret, tryDecryptSecret } from "../utils/secrets";
 
 /** Parse stored provider key field into a list of non-empty keys. */
 export function parseProviderKeys(raw: string | null | undefined): string[] {
   if (!raw) return [];
-  const s = decryptSecret(raw).trim();
+  // Undecryptable credentials (wrong/missing SECRETS_KEY) parse to an empty
+  // key list instead of throwing on the proxy path.
+  const s = (tryDecryptSecret(raw) ?? "").trim();
   if (!s) return [];
 
   // JSON array

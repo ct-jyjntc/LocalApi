@@ -81,10 +81,15 @@ const userKeyCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
 });
 const userKeyPatchSchema = z.object({ name: z.string().trim().min(1).max(120).optional(), enabled: z.boolean().optional() });
+// L21: the number branch used to accept 1.234 via z.coerce.number().positive()
+// while the string branch only allowed 2 decimals. Force the same 2-decimal
+// rule for both so client rounding cannot disagree with the server.
 const topupSchema = z.object({
   amount: z.union([
     z.string().trim().regex(/^\d+(?:\.\d{1,2})?$/),
-    z.coerce.number().positive(),
+    z.number().positive().refine((n) => Number.isFinite(n) && /^\d+(?:\.\d{1,2})?$/.test(String(n)), {
+      message: "Amount must have at most two decimal places",
+    }),
   ]),
   channel_id: z.string().trim().min(1).max(120).optional(),
   mode: z.enum(["page", "wap", "native", "h5"]).optional(),
@@ -229,10 +234,42 @@ userRouter.get("/me", (req, res) => {
     prices: listModelPrices().filter((price) => price.enabled),
   });
 });
-const attachmentSchema = z.object({ name: z.string().max(160), type: z.string().regex(/^image\//), data: z.string().max(3_000_000) });
-userRouter.get("/feedback", (req, res) => res.json({ items: listUserFeedback(requestUser(req).id) }));
-userRouter.post("/feedback", (req, res) => { const body=parseBody(z.object({subject:z.string().trim().min(2).max(160),body:z.string().trim().min(1).max(5000),attachments:z.array(attachmentSchema).max(3).default([])}),req.body,res); if(!body)return; return res.status(201).json(createFeedback(requestUser(req).id,body.subject,body.body,body.attachments)); });
-userRouter.post("/feedback/:id/replies", (req,res)=>{const user=requestUser(req);const thread=getFeedbackThread(req.params.id);if(!thread||thread.user_id!==user.id)return res.status(404).json({error:"Feedback not found"});if(thread.status!=="open")return res.status(409).json({error:"Resolved feedback must be reopened by an administrator before replying",code:"feedback_resolved"});const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(attachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"user",body.body,body.attachments,user.id);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
+// L22: require a concrete image/* subtype and a base64 payload (data-URL or
+// bare). The previous schema only checked /^image\// and accepted any string.
+const attachmentSchema = z.object({
+  name: z.string().max(160),
+  type: z.string().regex(/^image\/(png|jpe?g|gif|webp|bmp|svg\+xml)$/i),
+  data: z.string().max(3_000_000).refine(
+    (value) => /^(?:data:image\/[a-z0-9.+-]+;base64,)?[A-Za-z0-9+/=\s]+$/.test(value),
+    { message: "Attachment data must be base64" },
+  ),
+});
+// Feedback is stored as base64 attachments in SQLite, so both list endpoints
+// are paginated (M10) — otherwise a busy user (or an admin panel with many
+// users) loads every thread and every attachment into memory at once.
+function feedbackPage(req: Request) {
+  const limit = Number(req.query.limit ?? 100);
+  const offset = Number(req.query.offset ?? 0);
+  return {
+    limit: Number.isFinite(limit) ? Math.min(500, Math.max(1, Math.trunc(limit))) : 100,
+    offset: Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0,
+  };
+}
+// One shared per-user budget for creating threads AND replying (M10): each
+// message can carry up to 3×3 MB of base64 attachments, so unbounded posting
+// is unbounded disk growth.
+const FEEDBACK_RATE_LIMIT = 10;
+const FEEDBACK_RATE_WINDOW_MS = 10 * 60_000;
+function consumeFeedbackRate(userId: string, res: Response): boolean {
+  const rate = consumeRateLimit(`feedback:${userId}`, FEEDBACK_RATE_LIMIT, FEEDBACK_RATE_WINDOW_MS);
+  if (rate.allowed) return true;
+  res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
+  res.status(429).json({ error: "Too many feedback messages", code: "feedback_rate_limited" });
+  return false;
+}
+userRouter.get("/feedback", (req, res) => { const page = feedbackPage(req); return res.json(listUserFeedback(requestUser(req).id, page.limit, page.offset)); });
+userRouter.post("/feedback", (req, res) => { if (!consumeFeedbackRate(requestUser(req).id, res)) return; const body=parseBody(z.object({subject:z.string().trim().min(2).max(160),body:z.string().trim().min(1).max(5000),attachments:z.array(attachmentSchema).max(3).default([])}),req.body,res); if(!body)return; return res.status(201).json(createFeedback(requestUser(req).id,body.subject,body.body,body.attachments)); });
+userRouter.post("/feedback/:id/replies", (req,res)=>{const user=requestUser(req);if(!consumeFeedbackRate(user.id,res))return;const thread=getFeedbackThread(req.params.id);if(!thread||thread.user_id!==user.id)return res.status(404).json({error:"Feedback not found"});if(thread.status!=="open")return res.status(409).json({error:"Resolved feedback must be reopened by an administrator before replying",code:"feedback_resolved"});const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(attachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"user",body.body,body.attachments,user.id);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
 userRouter.patch("/me/password", (req, res) => {
   const body = parseBody(
     z.object({ current_password: z.string().min(8).max(256), new_password: z.string().min(8).max(256) }),
