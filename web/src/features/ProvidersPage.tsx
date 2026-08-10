@@ -26,6 +26,7 @@ const emptyForm = {
   base_url: "",
   api_keys: "",
   models: "glm-5.2\nmock-echo",
+  proxy_ids: [] as string[],
   enabled: true,
   timeout_ms: 60000,
 };
@@ -92,6 +93,10 @@ export function ProvidersPage() {
     queryKey: ["providers"],
     queryFn: () => api.providers.list(),
   });
+  const { data: proxyData } = useQuery({
+    queryKey: ["proxies"],
+    queryFn: () => api.proxies.list(),
+  });
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Provider | null>(null);
   const [form, setForm] = useState(emptyForm);
@@ -116,10 +121,22 @@ export function ProvidersPage() {
           ...(keys.length > 0 ? { api_keys: keys } : {}),
           models,
           model_mappings,
+          proxy_ids: form.proxy_ids,
           enabled: form.enabled,
           timeout_ms: form.timeout_ms,
         });
       }
+
+      return api.providers.create({
+        name: form.name,
+        base_url: form.base_url,
+        api_keys: keys,
+        models,
+        model_mappings,
+        proxy_ids: form.proxy_ids,
+        enabled: form.enabled,
+        timeout_ms: form.timeout_ms,
+      });
 
       return api.providers.create({
         name: form.name,
@@ -186,6 +203,7 @@ export function ProvidersPage() {
       base_url: p.base_url,
       api_keys: existingKeys.join("\n"),
       models: formatModelsEditor(p.models, p.model_mappings || {}),
+      proxy_ids: p.proxy_ids ?? [],
       enabled: p.enabled,
       timeout_ms: p.timeout_ms,
     });
@@ -367,6 +385,44 @@ export function ProvidersPage() {
                 />
               </Field>
               <p className="mt-1 text-[11px] text-muted-foreground">{t("providers.modelsHint")}</p>
+            </div>
+            <div className="sm:col-span-2">
+              <Field label={t("providers.proxies")}>
+                {proxyData?.items.length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {proxyData.items.map((node) => {
+                      const active = form.proxy_ids.includes(node.id);
+                      return (
+                        <button
+                          key={node.id}
+                          type="button"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              proxy_ids: active
+                                ? form.proxy_ids.filter((id) => id !== node.id)
+                                : [...form.proxy_ids, node.id],
+                            })
+                          }
+                          className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
+                            active
+                              ? "border-foreground/40 bg-foreground/10 text-foreground"
+                              : "border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground"
+                          } ${node.enabled ? "" : "opacity-50"}`}
+                        >
+                          {node.name}
+                          {!node.enabled ? "（停用）" : ""}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    {t("providers.proxiesNone")}
+                  </p>
+                )}
+              </Field>
+              <p className="mt-1 text-[11px] text-muted-foreground">{t("providers.proxiesHint")}</p>
             </div>
             <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2 sm:col-span-2">
               <div>

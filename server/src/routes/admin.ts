@@ -21,6 +21,13 @@ import {
   sanitizeProvider,
   updateProvider,
 } from "../services/providers";
+import {
+  createProxyNode,
+  deleteProxyNode,
+  listProxyNodes,
+  sanitizeProxyNode,
+  updateProxyNode,
+} from "../services/proxies";
 import { getAllSettings, getSetting, setSetting } from "../db";
 import { consumeAdminAuthFailure, requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
@@ -44,6 +51,21 @@ const httpUrl = z
 const modelMappingsSchema = z
   .record(z.string().trim().min(1).max(200), z.string().trim().min(1).max(200))
   .optional();
+const proxyUrl = z
+  .string()
+  .trim()
+  .min(1)
+  .max(300)
+  .refine((value) => /^socks4?:\/\/|^socks5h?:\/\//i.test(value), {
+    message: "proxy url must use socks4/socks5 scheme",
+  });
+const proxyNodeSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  url: proxyUrl,
+  enabled: z.boolean().optional(),
+});
+const proxyNodePatchSchema = proxyNodeSchema.partial();
+const proxyIdsSchema = z.array(z.string().trim().min(1).max(100)).max(32).optional();
 const providerSchema = z.object({
   name: z.string().trim().min(1).max(120),
   base_url: httpUrl,
@@ -51,6 +73,7 @@ const providerSchema = z.object({
   api_keys: z.array(z.string().trim().min(1).max(4096)).max(64).optional(),
   models: z.array(z.string().trim().min(1).max(200)).max(256).optional(),
   model_mappings: modelMappingsSchema,
+  proxy_ids: proxyIdsSchema,
   enabled: z.boolean().optional(),
   timeout_ms: z.coerce.number().int().min(100).max(600_000).optional(),
 });
@@ -233,6 +256,33 @@ adminRouter.delete("/providers/:id", (req, res) => {
   const ok = deleteProvider(req.params.id);
   if (!ok) return res.status(404).json({ error: "Provider not found" });
   clearCache();
+  return res.json({ ok: true });
+});
+
+// Proxy nodes
+adminRouter.get("/proxies", (_req, res) => {
+  res.json({ items: listProxyNodes().map(sanitizeProxyNode) });
+});
+
+adminRouter.post("/proxies", (req, res) => {
+  const body = parseBody(proxyNodeSchema, req.body, res);
+  if (!body) return;
+  const node = createProxyNode(body);
+  if (!node) return res.status(400).json({ error: "Invalid proxy url" });
+  return res.status(201).json(sanitizeProxyNode(node));
+});
+
+adminRouter.patch("/proxies/:id", (req, res) => {
+  const body = parseBody(proxyNodePatchSchema, req.body, res);
+  if (!body) return;
+  const updated = updateProxyNode(req.params.id, body);
+  if (!updated) return res.status(404).json({ error: "Proxy node not found" });
+  return res.json(sanitizeProxyNode(updated));
+});
+
+adminRouter.delete("/proxies/:id", (req, res) => {
+  const ok = deleteProxyNode(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Proxy node not found" });
   return res.json({ ok: true });
 });
 

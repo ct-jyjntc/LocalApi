@@ -20,6 +20,7 @@ import {
   Tags,
   ShieldCheck,
   Users,
+  Waypoints,
   X,
 } from "lucide-react";
 import { Suspense, useEffect, useState, type CSSProperties } from "react";
@@ -40,9 +41,9 @@ type NavItem = {
 const ADMIN_NAV: NavItem[] = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true },
   { to: "/providers", labelKey: "nav.providers", icon: Server },
-  { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
+  { to: "/proxies", labelKey: "nav.proxies", icon: Waypoints },
   { to: "/users", label: { zh: "用户", en: "Users" }, icon: Users },
-  { to: "/pricing", label: { zh: "模型价格", en: "Pricing" }, icon: Tags },
+  { to: "/pricing", label: { zh: "模型配置", en: "Model config" }, icon: Tags },
   { to: "/plans", label: { zh: "套餐", en: "Plans" }, icon: Package },
   { to: "/tiers", label: { zh: "用户层级", en: "User tiers" }, icon: ShieldCheck },
   { to: "/billing", label: { zh: "计费用量", en: "Billing" }, icon: ChartNoAxesCombined },

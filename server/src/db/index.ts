@@ -38,8 +38,18 @@ export function initDb() {
       api_key TEXT NOT NULL DEFAULT '',
       models TEXT NOT NULL DEFAULT '[]',
       model_mappings TEXT NOT NULL DEFAULT '{}',
+      proxy_ids TEXT NOT NULL DEFAULT '[]',
       enabled INTEGER NOT NULL DEFAULT 1,
       timeout_ms INTEGER NOT NULL DEFAULT 60000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS proxy_nodes (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -115,6 +125,11 @@ export function initDb() {
       output_price_micros INTEGER NOT NULL DEFAULT 0,
       cache_read_price_micros INTEGER NOT NULL DEFAULT 0,
       cache_write_price_micros INTEGER NOT NULL DEFAULT 0,
+      reasoning_enabled INTEGER NOT NULL DEFAULT 0,
+      reasoning_effort TEXT NOT NULL DEFAULT '[]',
+      image_input INTEGER NOT NULL DEFAULT 0,
+      context_window INTEGER NOT NULL DEFAULT 0,
+      max_output_tokens INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -501,6 +516,10 @@ export function initDb() {
   if (!providerCols.includes("model_mappings")) {
     db.exec("ALTER TABLE providers ADD COLUMN model_mappings TEXT NOT NULL DEFAULT '{}'");
   }
+  if (!providerCols.includes("proxy_ids")) {
+    db.exec("ALTER TABLE providers ADD COLUMN proxy_ids TEXT NOT NULL DEFAULT '[]'");
+  }
+
 
   // Migrate older DBs that lack the LinuxDo identity binding column.
   const userCols = (
@@ -564,6 +583,25 @@ export function initDb() {
   for (const row of plainKeys) {
     const encrypted = encryptSecret(row.key_plain);
     if (encrypted !== row.key_plain) encryptKey.run(encrypted, row.id);
+  }
+
+  const priceCols = (
+    db.prepare("PRAGMA table_info(model_prices)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!priceCols.includes("reasoning_enabled")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN reasoning_enabled INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!priceCols.includes("reasoning_effort")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!priceCols.includes("context_window")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!priceCols.includes("max_output_tokens")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN max_output_tokens INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!priceCols.includes("image_input")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN image_input INTEGER NOT NULL DEFAULT 0");
   }
 
   const logCols = (
@@ -731,6 +769,26 @@ export function initDb() {
       updated_at TEXT NOT NULL,
       manifest_json TEXT NOT NULL DEFAULT '{}'
     );
+
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state_hash TEXT PRIMARY KEY,
+      user_id TEXT,
+      authorized INTEGER NOT NULL DEFAULT 0,
+      denied INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      access_hash TEXT NOT NULL UNIQUE,
+      refresh_hash TEXT NOT NULL UNIQUE,
+      access_expires_at TEXT NOT NULL,
+      refresh_expires_at TEXT NOT NULL,
+      rotated_from TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 
   const configuredAdmin = process.env.ADMIN_TOKEN?.trim();
@@ -820,12 +878,21 @@ export type Provider = {
   api_key: string;
   models: string;
   model_mappings: string;
+  proxy_ids: string;
   enabled: number;
   timeout_ms: number;
   created_at: string;
   updated_at: string;
 };
 
+export type ProxyNode = {
+  id: string;
+  name: string;
+  url: string;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+};
 export type ApiKey = {
   id: string;
   name: string;
@@ -878,11 +945,26 @@ export type ModelPrice = {
   output_price_micros: number;
   cache_read_price_micros: number;
   cache_write_price_micros: number;
+  reasoning_enabled: number;
+  reasoning_effort: string;
+  image_input: number;
+  context_window: number;
+  max_output_tokens: number;
   enabled: number;
   created_at: string;
   updated_at: string;
 };
 
+/**
+ * API-facing shape: booleans instead of 0/1 and a parsed effort array.
+ * listModelPrices()/getModelPrice() convert DB rows into this.
+ */
+export type ModelPriceView = Omit<ModelPrice, "reasoning_enabled" | "reasoning_effort" | "image_input" | "enabled"> & {
+  reasoning_enabled: boolean;
+  reasoning_effort: string[];
+  image_input: boolean;
+  enabled: boolean;
+};
 export type Plan = {
   id: string;
   name: string;

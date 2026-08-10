@@ -144,8 +144,18 @@ export type Provider = {
   has_api_key: boolean;
   models: string[];
   model_mappings?: Record<string, string>;
+  proxy_ids?: string[];
   enabled: boolean;
   timeout_ms: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProxyNode = {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -279,6 +289,11 @@ export type ModelPrice = {
   output_price_micros: number;
   cache_read_price_micros: number;
   cache_write_price_micros: number;
+  reasoning_enabled: boolean;
+  reasoning_effort: string[];
+  image_input: boolean;
+  context_window: number;
+  max_output_tokens: number;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -679,6 +694,23 @@ export const api = {
         body: JSON.stringify(model ? { model } : {}),
       }),
   },
+  proxies: {
+    list: () => request<{ items: ProxyNode[] }>("/admin/api/proxies"),
+    create: (body: { name: string; url: string; enabled?: boolean }) =>
+      request<ProxyNode>("/admin/api/proxies", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    update: (id: string, body: Partial<{ name: string; url: string; enabled: boolean }>) =>
+      request<ProxyNode>(`/admin/api/proxies/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    remove: (id: string) =>
+      request<{ ok: boolean }>(`/admin/api/proxies/${id}`, {
+        method: "DELETE",
+      }),
+  },
   keys: {
     list: (params?: { limit?: number; offset?: number; q?: string }) => {
       const search = new URLSearchParams();
@@ -1014,6 +1046,14 @@ export const userApi = {
       { method: "POST", body: JSON.stringify({ code }) },
       { auth: false },
     ),
+  oauth: {
+    authorize: (state: string, action: "allow" | "deny") =>
+      request<{ ok: boolean }>(
+        "/oauth/authorize",
+        { method: "POST", body: JSON.stringify({ state, action }) },
+        { auth: "user" },
+      ),
+  },
   me: () =>
     request<{ user: UserRow; wallet: Wallet | null; tier: TierSummary; subscription: SubscriptionRow | null; prices: ModelPrice[] }>(
       "/user/api/me",

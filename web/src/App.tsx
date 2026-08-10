@@ -5,6 +5,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { LoginPage } from "@/features/LoginPage";
+import { OAuthAuthorizePage } from "@/features/OAuthAuthorizePage";
 import { I18nProvider } from "@/lib/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import {
@@ -31,6 +32,9 @@ const LogsPage = lazy(() =>
 );
 const ProvidersPage = lazy(() =>
   import("@/features/ProvidersPage").then((m) => ({ default: m.ProvidersPage })),
+);
+const ProxiesPage = lazy(() =>
+  import("@/features/ProxiesPage").then((m) => ({ default: m.ProxiesPage })),
 );
 const SettingsPage = lazy(() =>
   import("@/features/SettingsPage").then((m) => ({ default: m.SettingsPage })),
@@ -122,8 +126,8 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
             <>
               <Route index element={<DashboardPage />} />
               <Route path="providers" element={<ProvidersPage />} />
-              <Route path="keys" element={<KeysPage />} />
-              <Route path="users" element={<UsersPage />} />
+              <Route path="providers" element={<ProvidersPage />} />
+              <Route path="proxies" element={<ProxiesPage />} />
               <Route path="pricing" element={<PricingPage />} />
               <Route path="plans" element={<PlansPage />} />
               <Route path="tiers" element={<TiersPage />} />
@@ -281,6 +285,25 @@ function Root() {
 }
 
 export default function App() {
+  // The OAuth consent page lives outside <Root />: Root's verify() rewrites
+  // the URL and would drop the `state` parameter mid-authorization.
+  if (window.location.pathname.startsWith("/oauth/authorize")) {
+    return (
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <I18nProvider>
+          <QueryClientProvider client={queryClient}>
+            <OAuthAuthorizePage />
+          </QueryClientProvider>
+        </I18nProvider>
+
+      </ThemeProvider>
+    );
+  }
   return (
     <ThemeProvider
       attribute="class"

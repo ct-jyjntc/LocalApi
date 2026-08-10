@@ -4,6 +4,7 @@ import { once } from "events";
 import fetch, { Response as FetchResponse } from "node-fetch";
 import type { Response as ExpressResponse } from "express";
 import { v4 as uuid } from "uuid";
+import { SocksProxyAgent } from "socks-proxy-agent";
 import { ApiKey, getSetting, Provider } from "../db";
 import { writeLog } from "./logs";
 import {
@@ -12,7 +13,10 @@ import {
   listProvidersForModel,
   mapProviderModel,
   pickProviderKey,
+  pickProviderProxy,
 } from "./providers";
+import { getProxyNode } from "./proxies";
+import { tryDecryptSecret } from "../utils/secrets";
 import { createResponseLogCollector, extractIO } from "../utils/content";
 import { createUpstreamTimeout, upstreamTimeoutError } from "./upstream-timeout";
 import { AccessError, beginRequestAccess, RequestAccess } from "./access";
@@ -271,8 +275,29 @@ function buildUpstreamHeaders(
   return headers;
 }
 
-function agentFor(url: string) {
-  return url.startsWith("https:") ? httpsAgent : httpAgent;
+const socksAgents = new Map<string, SocksProxyAgent>();
+
+function socksAgentFor(url: string): SocksProxyAgent {
+  const existing = socksAgents.get(url);
+  if (existing) return existing;
+  const agent = new SocksProxyAgent(url, {
+    keepAlive: true,
+    keepAliveMsecs: 30_000,
+    maxSockets,
+    maxFreeSockets: Math.min(64, maxSockets),
+    scheduling: "lifo",
+  });
+  socksAgents.set(url, agent);
+  return agent;
+}
+
+function agentFor(provider: Provider, upstreamUrl: string) {
+  const proxyId = pickProviderProxy(provider);
+  if (!proxyId) return upstreamUrl.startsWith("https:") ? httpsAgent : httpAgent;
+  const node = getProxyNode(proxyId);
+  const url = node ? (tryDecryptSecret(node.url) ?? "") : "";
+  if (!url) return upstreamUrl.startsWith("https:") ? httpsAgent : httpAgent;
+  return socksAgentFor(url);
 }
 
 function withMappedModel(provider: Provider, ctx: ProxyContext): ProxyContext {
@@ -328,7 +353,7 @@ async function openUpstream(
       method: mappedCtx.method,
       headers,
       signal: controller.signal as AbortSignal,
-      agent: agentFor(url),
+      agent: agentFor(provider, url),
       // Keep upstream compression intact; the relay never re-encodes payloads.
       compress: false,
     };

@@ -4,6 +4,7 @@ import { generateApiKey, hashApiKey } from "../utils/hash";
 import { nowIso } from "../utils/time";
 import { encryptSecret, tryDecryptSecret } from "../utils/secrets";
 
+import { authenticateOAuthToken } from "./oauth";
 const keyByHash = new Map<string, ApiKey>();
 const pendingLastUsed = new Map<string, string>();
 let keyCacheReady = false;
@@ -187,11 +188,19 @@ export function authenticateApiKey(raw: string | undefined | null) {
   ensureKeyCache();
   const row = keyByHash.get(hashApiKey(token));
 
-  if (!row || row.enabled !== 1) return null;
-  if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) return null;
+  if (row) {
+    if (row.enabled !== 1) return null;
+    if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) return null;
+    pendingLastUsed.set(row.id, nowIso());
+    return row;
+  }
 
-  pendingLastUsed.set(row.id, nowIso());
-  return row;
+  // OAuth broker access tokens (oat_…) are drop-in user-bound API keys —
+  // see services/oauth.ts. Keep the proxy hot path single-owner: the
+  // synthetic ApiKey row flows through every existing gate unchanged.
+  const oauthKey = authenticateOAuthToken(token);
+  if (oauthKey) return oauthKey;
+  return null;
 }
 
 function publicKey(row: ApiKey, oneTimeSecret?: string) {

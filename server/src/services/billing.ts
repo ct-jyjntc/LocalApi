@@ -1,7 +1,24 @@
 import { v4 as uuid } from "uuid";
-import { db, ModelPrice } from "../db";
+import { db, ModelPrice, ModelPriceView } from "../db";
 import { nowIso } from "../utils/time";
 import { maintainActiveSubscription } from "./plans";
+
+function toModelPriceView(row: ModelPrice): ModelPriceView {
+  let effort: string[] = [];
+  try {
+    const parsed = JSON.parse(row.reasoning_effort);
+    if (Array.isArray(parsed)) effort = parsed.filter((v): v is string => typeof v === "string");
+  } catch {
+    // malformed stored value — fall back to the empty list
+  }
+  return {
+    ...row,
+    reasoning_enabled: row.reasoning_enabled === 1,
+    reasoning_effort: effort,
+    image_input: row.image_input === 1,
+    enabled: row.enabled === 1,
+  };
+}
 
 export const MICROS_PER_CREDIT = 1_000_000;
 const PRICE_TOKEN_UNIT = 1_000_000n;
@@ -17,16 +34,12 @@ export class BillingError extends Error {
 }
 
 export function listModelPrices() {
-  return (db.prepare("SELECT * FROM model_prices ORDER BY model").all() as ModelPrice[]).map((row) => ({
-    ...row,
-    enabled: row.enabled === 1,
-  }));
+  return (db.prepare("SELECT * FROM model_prices ORDER BY model").all() as ModelPrice[]).map(toModelPriceView);
 }
 
-export function getModelPrice(model: string): ModelPrice | null {
-  return (
-    (db.prepare("SELECT * FROM model_prices WHERE model = ?").get(model) as ModelPrice | undefined) ?? null
-  );
+export function getModelPrice(model: string): ModelPriceView | null {
+  const row = db.prepare("SELECT * FROM model_prices WHERE model = ?").get(model) as ModelPrice | undefined;
+  return row ? toModelPriceView(row) : null;
 }
 
 export function upsertModelPrice(input: {
@@ -35,19 +48,31 @@ export function upsertModelPrice(input: {
   output_price_micros: number;
   cache_read_price_micros?: number;
   cache_write_price_micros?: number;
+  reasoning_enabled?: boolean;
+  reasoning_effort?: string[];
+  image_input?: boolean;
+  context_window?: number;
+  max_output_tokens?: number;
   enabled?: boolean;
 }) {
   const now = nowIso();
   db.prepare(
     `INSERT INTO model_prices (
       model, input_price_micros, output_price_micros, cache_read_price_micros,
-      cache_write_price_micros, enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      cache_write_price_micros, reasoning_enabled, reasoning_effort,
+      image_input, context_window, max_output_tokens,
+      enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(model) DO UPDATE SET
       input_price_micros = excluded.input_price_micros,
       output_price_micros = excluded.output_price_micros,
       cache_read_price_micros = excluded.cache_read_price_micros,
       cache_write_price_micros = excluded.cache_write_price_micros,
+      reasoning_enabled = excluded.reasoning_enabled,
+      reasoning_effort = excluded.reasoning_effort,
+      image_input = excluded.image_input,
+      context_window = excluded.context_window,
+      max_output_tokens = excluded.max_output_tokens,
       enabled = excluded.enabled,
       updated_at = excluded.updated_at`,
   ).run(
@@ -56,6 +81,11 @@ export function upsertModelPrice(input: {
     input.output_price_micros,
     input.cache_read_price_micros ?? 0,
     input.cache_write_price_micros ?? 0,
+    input.reasoning_enabled === false ? 0 : 1,
+    JSON.stringify(input.reasoning_effort ?? []),
+    input.image_input === false ? 0 : 1,
+    input.context_window ?? 0,
+    input.max_output_tokens ?? 0,
     input.enabled === false ? 0 : 1,
     now,
     now,
@@ -156,7 +186,7 @@ export type BillingReservation = {
   userId: string;
   apiKeyId: string;
   model: string;
-  price: ModelPrice;
+  price: ModelPriceView;
   estimatedPrompt: number;
   estimatedCompletion: number;
   reservedPlan: number;
@@ -177,7 +207,7 @@ export function reserveUsage(input: {
 }): BillingReservation {
   const billingMode = input.billingMode ?? "wallet";
   const price = getModelPrice(input.model);
-  if (!price || price.enabled !== 1) {
+  if (!price || !price.enabled) {
     throw new BillingError(402, "model_not_priced", `Model ${input.model} has no active price`);
   }
   const estimate = input.estimate ?? estimateRequestTokens(input.body);

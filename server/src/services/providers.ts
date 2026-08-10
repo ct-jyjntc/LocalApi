@@ -2,7 +2,7 @@ import { v4 as uuid } from "uuid";
 import { db, Provider } from "../db";
 import { nowIso } from "../utils/time";
 import { encryptSecret, tryDecryptSecret } from "../utils/secrets";
-
+import { getProxyNode, listProxyNodes } from "./proxies";
 /** Parse stored provider key field into a list of non-empty keys. */
 export function parseProviderKeys(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -40,10 +40,11 @@ export function serializeProviderKeys(keys: string[]): string {
 
 /** Round-robin pick for multi-key providers. */
 const keyCursor = new Map<string, number>();
+const proxyCursor = new Map<string, number>();
 let providerCache: Provider[] | null = null;
 const providerRuntime = new Map<
   string,
-  { keys: string[]; models: string[]; mappings: Record<string, string> }
+  { keys: string[]; models: string[]; mappings: Record<string, string>; proxyIds: string[] }
 >();
 
 function rebuildProviderRuntime(rows: Provider[]) {
@@ -53,6 +54,7 @@ function rebuildProviderRuntime(rows: Provider[]) {
       keys: parseProviderKeys(row.api_key),
       models: safeParseModels(row.models),
       mappings: safeParseMappings(row.model_mappings),
+      proxyIds: safeParseProxyIds(row.proxy_ids),
     });
   }
 }
@@ -93,6 +95,26 @@ export function pickProviderKey(provider: Provider): string {
   return key;
 }
 
+/**
+ * Round-robin pick among the provider's assigned proxy nodes.
+ * Returns the selected node's id, or null when the provider has no proxy.
+ */
+export function pickProviderProxy(provider: Provider): string | null {
+  const ids = providerRuntime.get(provider.id)?.proxyIds ?? safeParseProxyIds(provider.proxy_ids);
+  if (ids.length === 0) return null;
+  const nodes = listProxyNodes();
+  const available = ids.filter((id) => {
+    const node = nodes.find((n) => n.id === id);
+    return node && node.enabled === 1;
+  });
+  if (available.length === 0) return null;
+  if (available.length === 1) return available[0];
+  const idx = proxyCursor.get(provider.id) ?? 0;
+  const picked = available[idx % available.length];
+  proxyCursor.set(provider.id, idx + 1);
+  return picked;
+}
+
 export function listProviders(): Provider[] {
   ensureProviderCache();
   return providerCache!;
@@ -111,6 +133,7 @@ export function createProvider(input: {
   api_keys?: string[];
   models?: string[];
   model_mappings?: Record<string, string>;
+  proxy_ids?: string[];
   enabled?: boolean;
   timeout_ms?: number;
 }): Provider {
@@ -122,10 +145,11 @@ export function createProvider(input: {
       : serializeProviderKeys(parseProviderKeys(input.api_key ?? ""));
   const models = normalizeModels(input.models ?? []);
   const mappings = normalizeMappings(input.model_mappings ?? {}, models);
+  const proxyIds = normalizeProxyIds(input.proxy_ids ?? []);
   db.prepare(
     `INSERT INTO providers (
-      id, name, base_url, api_key, models, model_mappings, enabled, timeout_ms, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, name, base_url, api_key, models, model_mappings, proxy_ids, enabled, timeout_ms, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name,
@@ -133,6 +157,7 @@ export function createProvider(input: {
     keys,
     JSON.stringify(models),
     JSON.stringify(mappings),
+    JSON.stringify(proxyIds),
     input.enabled === false ? 0 : 1,
     input.timeout_ms ?? 60000,
     now,
@@ -151,6 +176,7 @@ export function updateProvider(
     api_keys: string[];
     models: string[];
     model_mappings: Record<string, string>;
+    proxy_ids: string[];
     enabled: boolean;
     timeout_ms: number;
   }>,
@@ -183,6 +209,10 @@ export function updateProvider(
           models,
         )
       : safeParseMappings(existing.model_mappings);
+  const proxyIds =
+    input.proxy_ids !== undefined
+      ? normalizeProxyIds(input.proxy_ids)
+      : safeParseProxyIds(existing.proxy_ids);
   const enabled =
     input.enabled !== undefined
       ? input.enabled
@@ -193,8 +223,8 @@ export function updateProvider(
 
   db.prepare(
     `UPDATE providers SET
-      name = ?, base_url = ?, api_key = ?, models = ?, model_mappings = ?, enabled = ?,
-      timeout_ms = ?, updated_at = ?
+      name = ?, base_url = ?, api_key = ?, models = ?, model_mappings = ?, proxy_ids = ?,
+      enabled = ?, timeout_ms = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     name,
@@ -202,6 +232,7 @@ export function updateProvider(
     api_key,
     JSON.stringify(models),
     JSON.stringify(mappings),
+    JSON.stringify(proxyIds),
     enabled,
     timeout_ms,
     nowIso(),
@@ -214,6 +245,7 @@ export function updateProvider(
 
 export function deleteProvider(id: string): boolean {
   keyCursor.delete(id);
+  proxyCursor.delete(id);
   const deleted = db.prepare("DELETE FROM providers WHERE id = ?").run(id).changes > 0;
   if (deleted) refreshProviderCache();
   return deleted;
@@ -240,6 +272,7 @@ export function sanitizeProvider(p: Provider) {
   const keys = runtime?.keys ?? parseProviderKeys(p.api_key);
   const models = runtime?.models ?? safeParseModels(p.models);
   const model_mappings = runtime?.mappings ?? safeParseMappings(p.model_mappings);
+  const proxy_ids = runtime?.proxyIds ?? safeParseProxyIds(p.proxy_ids);
   return {
     id: p.id,
     name: p.name,
@@ -250,6 +283,7 @@ export function sanitizeProvider(p: Provider) {
     has_api_key: keys.length > 0,
     models,
     model_mappings,
+    proxy_ids,
     enabled: p.enabled === 1,
     timeout_ms: p.timeout_ms,
     created_at: p.created_at,
@@ -368,6 +402,27 @@ function normalizeMappings(
     if (!publicName || publicName === "*" || !upstream || upstream === publicName) continue;
     if (allowed.size > 0 && !allowed.has(publicName)) continue;
     out[publicName] = upstream;
+  }
+  return out;
+}
+
+function safeParseProxyIds(raw: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? parsed.map(String).map((s) => s.trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeProxyIds(ids: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of ids) {
+    const id = String(item || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
   }
   return out;
 }

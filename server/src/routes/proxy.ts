@@ -97,15 +97,36 @@ v1.get("/models", async (req: Request, res: Response) => {
   }
 
   const providers = listProviders().filter((p) => p.enabled === 1);
-  const data: Array<{ id: string; object: string; owned_by: string }> = [];
+  const data: Array<{
+    id: string;
+    object: string;
+    owned_by: string;
+    reasoning?: { enabled: boolean; effort: string[] };
+    image_input?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+  }> = [];
 
   for (const p of providers) {
     try {
       const models = JSON.parse(p.models) as string[];
       for (const m of models) {
         if (m === "*") continue;
-        if (apiKey?.user_id && (!isModelAllowedForKey(apiKey, m, { includeSubscription: billingMode === "coding" }) || getModelPrice(m)?.enabled !== 1)) continue;
-        data.push({ id: m, object: "model", owned_by: p.name });
+        const price = getModelPrice(m);
+        if (apiKey?.user_id && (!isModelAllowedForKey(apiKey, m, { includeSubscription: billingMode === "coding" }) || !price?.enabled)) continue;
+        data.push({
+          id: m,
+          object: "model",
+          owned_by: p.name,
+          ...(price
+            ? {
+                reasoning: { enabled: price.reasoning_enabled, effort: price.reasoning_effort },
+                image_input: price.image_input,
+                ...(price.context_window > 0 ? { context_window: price.context_window } : {}),
+                ...(price.max_output_tokens > 0 ? { max_output_tokens: price.max_output_tokens } : {}),
+              }
+            : {}),
+        });
       }
     } catch {
       // skip

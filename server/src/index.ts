@@ -12,6 +12,7 @@ import { initDb, getSetting, setSetting } from "./db";
 import { adminRouter } from "./routes/admin";
 import { proxyRouter } from "./routes/proxy";
 import { userRouter } from "./routes/user";
+import { oauthRouter } from "./routes/oauth";
 import { paymentsRouter } from "./routes/payments";
 import { createProvider, listProviders } from "./services/providers";
 import { createApiKey, listApiKeys } from "./services/keys";
@@ -175,6 +176,9 @@ app.use(
 app.use(paymentsRouter);
 app.use(moduleRegistry.paymentHost.router);
 app.use(proxyRouter);
+// OAuth broker for the Pi-Web provider: /oauth/login|check|token|refresh are
+// public; /oauth/authorize is the browser consent endpoint (session auth).
+app.use("/oauth", express.json({ limit: "1mb" }), oauthRouter);
 
 // Frontend static + SPA fallback on the same port
 const webDistCandidates = [
@@ -211,7 +215,9 @@ if (webDist) {
     if (
       req.path.startsWith("/admin/api") ||
       req.path.startsWith("/user/api") ||
-      req.path.startsWith("/v1") ||
+      req.path.startsWith("/oauth/login") ||
+      req.path.startsWith("/oauth/check") ||
+      req.path.startsWith("/oauth/token") ||
       req.path.startsWith("/coding") ||
       req.path.startsWith("/payment/") ||
       req.path === "/health" ||

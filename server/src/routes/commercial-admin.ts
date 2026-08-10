@@ -80,6 +80,11 @@ const priceSchema = z.object({
   output_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   cache_read_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   cache_write_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  reasoning_enabled: z.boolean().optional(),
+  reasoning_effort: z.array(z.string().trim().min(1).max(40)).max(10).optional(),
+  image_input: z.boolean().optional(),
+  context_window: z.coerce.number().int().min(0).max(10_000_000).optional(),
+  max_output_tokens: z.coerce.number().int().min(0).max(10_000_000).optional(),
   enabled: z.boolean().optional(),
 });
 const planSchema = z.object({
