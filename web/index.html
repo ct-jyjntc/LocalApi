@@ -6,6 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
     <title>LocalAPI</title>
+    <script>
+      window.__LOCALAPI_BRANDING__ = /*__LOCALAPI_BRANDING__*/{};
+      (function () {
+        try {
+          var name = window.__LOCALAPI_BRANDING__.brand_name || localStorage.getItem("localapi_brand_name");
+          if (name) document.title = name;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

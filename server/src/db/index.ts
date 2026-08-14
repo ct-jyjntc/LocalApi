@@ -50,6 +50,20 @@ export function initDb() {
       name TEXT NOT NULL,
       url TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
+      library_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS proxy_libraries (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      default_protocol TEXT NOT NULL DEFAULT 'http',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      auto_update INTEGER NOT NULL DEFAULT 0,
+      update_interval_ms INTEGER NOT NULL DEFAULT 3600000,
+      last_updated_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -520,6 +534,14 @@ export function initDb() {
     db.exec("ALTER TABLE providers ADD COLUMN proxy_ids TEXT NOT NULL DEFAULT '[]'");
   }
 
+  const nodeCols = (
+    db.prepare("PRAGMA table_info(proxy_nodes)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!nodeCols.includes("library_id")) {
+    db.exec("ALTER TABLE proxy_nodes ADD COLUMN library_id TEXT");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_proxy_nodes_library ON proxy_nodes(library_id)");
+
 
   // Migrate older DBs that lack the LinuxDo identity binding column.
   const userCols = (
@@ -890,9 +912,24 @@ export type ProxyNode = {
   name: string;
   url: string;
   enabled: number;
+  library_id: string | null;
   created_at: string;
   updated_at: string;
 };
+
+export type ProxyLibrary = {
+  id: string;
+  name: string;
+  url: string;
+  default_protocol: string;
+  enabled: number;
+  auto_update: number;
+  update_interval_ms: number;
+  last_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ApiKey = {
   id: string;
   name: string;

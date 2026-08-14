@@ -126,8 +126,9 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
             <>
               <Route index element={<DashboardPage />} />
               <Route path="providers" element={<ProvidersPage />} />
-              <Route path="providers" element={<ProvidersPage />} />
               <Route path="proxies" element={<ProxiesPage />} />
+              <Route path="keys" element={<KeysPage />} />
+              <Route path="users" element={<UsersPage />} />
               <Route path="pricing" element={<PricingPage />} />
               <Route path="plans" element={<PlansPage />} />
               <Route path="tiers" element={<TiersPage />} />

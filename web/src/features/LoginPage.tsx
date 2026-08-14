@@ -6,9 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/lib/i18n";
-
-const BRAND_CACHE_KEY = "localapi_brand_name";
-const COMPANY_CACHE_KEY = "localapi_company_name";
+import { useBrand } from "@/lib/branding";
 
 export function LoginPage({
   mode,
@@ -21,10 +19,8 @@ export function LoginPage({
 }) {
   const { t, locale } = useI18n();
   const zh = locale === "zh";
-  const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
+  const { brandName, companyName } = useBrand();
   const registration = useQuery({ queryKey: ["user-config"], queryFn: userApi.config, staleTime: 30_000, enabled: mode === "user" });
-  const brandName = branding.data?.brand_name || localStorage.getItem(BRAND_CACHE_KEY) || t("shell.brand");
-  const companyName = branding.data?.company_name?.trim() || localStorage.getItem(COMPANY_CACHE_KEY) || "";
   const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -34,17 +30,6 @@ export function LoginPage({
   const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    document.title = brandName;
-  }, [brandName]);
-
-  useEffect(() => {
-    if (!branding.data) return;
-    localStorage.setItem(BRAND_CACHE_KEY, branding.data.brand_name || "LocalAPI");
-    if (branding.data.company_name?.trim()) localStorage.setItem(COMPANY_CACHE_KEY, branding.data.company_name.trim());
-    else localStorage.removeItem(COMPANY_CACHE_KEY);
-  }, [branding.data]);
 
   const loadCaptcha = useCallback(async () => {
     if (mode !== "user" || !isRegistering || !registration.data?.registration_enabled) return;

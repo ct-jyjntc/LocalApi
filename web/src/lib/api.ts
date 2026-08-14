@@ -150,7 +150,6 @@ export type Provider = {
   created_at: string;
   updated_at: string;
 };
-
 export type ProxyNode = {
   id: string;
   name: string;
@@ -160,6 +159,28 @@ export type ProxyNode = {
   updated_at: string;
 };
 
+export type ProxyLibrary = {
+  id: string;
+  name: string;
+  url: string;
+  default_protocol: string;
+  enabled: boolean;
+  auto_update: boolean;
+  update_interval_ms: number;
+  last_updated_at: string | null;
+  node_count: number;
+  created_at: string;
+  updated_at: string;
+  import?: {
+    added: number;
+    removed: number;
+    total: number;
+    alive?: number;
+    dead?: number;
+    skipped?: boolean;
+  } | null;
+  import_error?: string | null;
+};
 export type ProviderTestResult = {
   ok: boolean;
   provider_id: string;
@@ -548,6 +569,7 @@ export type Settings = {
   cache_paths: string[];
   brand_name: string;
   company_name: string;
+  proxy_test_url: string;
   announcement_enabled?: boolean;
   announcement_title?: string;
   announcement_content?: string;
@@ -695,7 +717,7 @@ export const api = {
       }),
   },
   proxies: {
-    list: () => request<{ items: ProxyNode[] }>("/admin/api/proxies"),
+    list: () => request<{ items: ProxyNode[]; libraries: ProxyLibrary[] }>("/admin/api/proxies"),
     create: (body: { name: string; url: string; enabled?: boolean }) =>
       request<ProxyNode>("/admin/api/proxies", {
         method: "POST",
@@ -710,6 +732,42 @@ export const api = {
       request<{ ok: boolean }>(`/admin/api/proxies/${id}`, {
         method: "DELETE",
       }),
+    libraryCreate: (body: {
+      name: string;
+      url: string;
+      default_protocol?: string;
+      enabled?: boolean;
+      auto_update?: boolean;
+      update_interval_ms?: number;
+    }) =>
+      request<ProxyLibrary>("/admin/api/proxies/libraries", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    libraryUpdate: (
+      id: string,
+      body: Partial<{
+        name: string;
+        url: string;
+        default_protocol: string;
+        enabled: boolean;
+        auto_update: boolean;
+        update_interval_ms: number;
+      }>,
+    ) =>
+      request<ProxyLibrary>(`/admin/api/proxies/libraries/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    libraryRemove: (id: string) =>
+      request<{ ok: boolean }>(`/admin/api/proxies/libraries/${id}`, {
+        method: "DELETE",
+      }),
+    libraryRefresh: (id: string) =>
+      request<{ added: number; removed: number; total: number; alive: number; dead: number; skipped?: boolean }>(
+        `/admin/api/proxies/libraries/${id}/refresh`,
+        { method: "POST" },
+      ),
   },
   keys: {
     list: (params?: { limit?: number; offset?: number; q?: string }) => {
@@ -784,6 +842,7 @@ export const api = {
       retry_delay_ms?: number;
       brand_name?: string;
       company_name?: string;
+      proxy_test_url?: string;
       announcement_enabled?: boolean;
       announcement_title?: string;
       announcement_content?: string;

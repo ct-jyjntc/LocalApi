@@ -1,0 +1,76 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - button "收起侧边栏" [ref=e6]
+        - generic [ref=e7]: LocalAPI
+      - navigation [ref=e8]:
+        - link "仪表盘" [ref=e9] [cursor=pointer]:
+          - /url: /
+        - link "渠道" [ref=e16] [cursor=pointer]:
+          - /url: /providers
+        - link "API 密钥" [active] [ref=e21] [cursor=pointer]:
+          - /url: /keys
+        - link "代理" [ref=e26] [cursor=pointer]:
+          - /url: /proxies
+        - link "用户" [ref=e35] [cursor=pointer]:
+          - /url: /users
+        - link "模型配置" [ref=e42] [cursor=pointer]:
+          - /url: /pricing
+        - link "套餐" [ref=e48] [cursor=pointer]:
+          - /url: /plans
+        - link "用户层级" [ref=e54] [cursor=pointer]:
+          - /url: /tiers
+        - link "计费用量" [ref=e59] [cursor=pointer]:
+          - /url: /billing
+        - link "支付订单" [ref=e63] [cursor=pointer]:
+          - /url: /payments
+        - link "模块" [ref=e67] [cursor=pointer]:
+          - /url: /modules
+        - link "请求日志" [ref=e72] [cursor=pointer]:
+          - /url: /logs
+        - link "用户反馈" [ref=e77] [cursor=pointer]:
+          - /url: /feedback
+        - link "设置" [ref=e81] [cursor=pointer]:
+          - /url: /settings
+      - button "退出登录" [ref=e87]
+    - main [ref=e90]:
+      - generic [ref=e232]:
+        - generic [ref=e233]:
+          - generic [ref=e234]:
+            - heading "API 密钥" [level=1] [ref=e235]
+            - paragraph [ref=e236]: 调用中转的客户端密钥。管理员认证后可查看完整密钥。
+          - button "创建密钥" [ref=e238]
+        - generic [ref=e239]:
+          - generic [ref=e240]:
+            - generic [ref=e241]: 名称
+            - generic [ref=e242]: 密钥
+            - generic [ref=e243]: 状态
+            - generic [ref=e244]: 最近使用
+            - generic [ref=e245]: 操作
+          - generic [ref=e246]:
+            - generic [ref=e247]: e2e-key
+            - generic [ref=e248]:
+              - code [ref=e249]: la_OmwmQKHkQUsCVc_kCwWPpL6OtkOaVKmR
+              - button "复制" [ref=e250]
+            - generic [ref=e251]: 启用
+            - generic [ref=e253]: 2026/8/11 17:14:08
+            - generic [ref=e254]:
+              - switch "Toggle e2e-key" [checked] [ref=e255] [cursor=pointer]
+              - button "Delete" [ref=e256]
+          - generic [ref=e257]:
+            - generic [ref=e258]: default
+            - generic [ref=e259]:
+              - code [ref=e260]: la_VOnkz1MAW8QLzYQZ3l4O5P33xnYl0ojv
+              - button "复制" [ref=e261]
+            - generic [ref=e262]: 启用
+            - generic [ref=e264]: —
+            - generic [ref=e265]:
+              - switch "Toggle default" [checked] [ref=e266] [cursor=pointer]
+              - button "Delete" [ref=e267]
+          - generic [ref=e268]:
+            - generic [ref=e269]: 显示 1-2 / 共 2 · 第 1/1 页
+            - generic [ref=e270]:
+              - button "上一页" [disabled] [ref=e271]
+              - button "下一页" [disabled] [ref=e272]
+  - region "Notifications alt+T"

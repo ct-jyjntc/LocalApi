@@ -2,7 +2,7 @@ import { v4 as uuid } from "uuid";
 import { db, Provider } from "../db";
 import { nowIso } from "../utils/time";
 import { encryptSecret, tryDecryptSecret } from "../utils/secrets";
-import { getProxyNode, listProxyNodes } from "./proxies";
+import { getProxyLibrary, getProxyNode, listProxyNodesByLibrary } from "./proxies";
 /** Parse stored provider key field into a list of non-empty keys. */
 export function parseProviderKeys(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -102,15 +102,31 @@ export function pickProviderKey(provider: Provider): string {
 export function pickProviderProxy(provider: Provider): string | null {
   const ids = providerRuntime.get(provider.id)?.proxyIds ?? safeParseProxyIds(provider.proxy_ids);
   if (ids.length === 0) return null;
-  const nodes = listProxyNodes();
-  const available = ids.filter((id) => {
-    const node = nodes.find((n) => n.id === id);
-    return node && node.enabled === 1;
-  });
-  if (available.length === 0) return null;
-  if (available.length === 1) return available[0];
+  // Candidate pool: plain node ids plus library ids expanded to their nodes.
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const node = getProxyNode(id);
+    if (node && node.enabled === 1) {
+      if (!seen.has(node.id)) {
+        seen.add(node.id);
+        candidates.push(node.id);
+      }
+      continue;
+    }
+    const library = getProxyLibrary(id);
+    if (library && library.enabled === 1) {
+      for (const n of listProxyNodesByLibrary(id)) {
+        if (n.enabled !== 1 || seen.has(n.id)) continue;
+        seen.add(n.id);
+        candidates.push(n.id);
+      }
+    }
+  }
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
   const idx = proxyCursor.get(provider.id) ?? 0;
-  const picked = available[idx % available.length];
+  const picked = candidates[idx % candidates.length];
   proxyCursor.set(provider.id, idx + 1);
   return picked;
 }

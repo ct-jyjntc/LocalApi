@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ApiError, api, getUserToken, setUserToken, userApi, type UserRow } from "@/lib/api";
+import { ApiError, getUserToken, setUserToken, userApi, type UserRow } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/lib/i18n";
-
-const BRAND_CACHE_KEY = "localapi_brand_name";
-const COMPANY_CACHE_KEY = "localapi_company_name";
+import { useBrand } from "@/lib/branding";
 
 /**
  * OAuth consent page for the Pi-Web provider integration.
@@ -22,33 +19,10 @@ const COMPANY_CACHE_KEY = "localapi_company_name";
  * logic never rewrites the URL and drops the `state` parameter.
  */
 export function OAuthAuthorizePage() {
-  const { t, locale } = useI18n();
+  const { locale } = useI18n();
   const zh = locale === "zh";
   const state = new URLSearchParams(window.location.search).get("state") || "";
-
-  // Branding follows the same chain as LoginPage/AppShell: live /branding
-  // first, cached copy while it loads, i18n default only when the operator
-  // has never set a brand name.
-  const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
-  const brandName =
-    branding.data?.brand_name || localStorage.getItem(BRAND_CACHE_KEY) || t("shell.brand");
-  const companyName =
-    branding.data?.company_name?.trim() || localStorage.getItem(COMPANY_CACHE_KEY) || "";
-
-  useEffect(() => {
-    if (!branding.data) return;
-    localStorage.setItem(BRAND_CACHE_KEY, branding.data.brand_name || t("shell.brand"));
-    if (branding.data.company_name?.trim()) {
-      localStorage.setItem(COMPANY_CACHE_KEY, branding.data.company_name.trim());
-    } else {
-      localStorage.removeItem(COMPANY_CACHE_KEY);
-    }
-  }, [branding.data, t]);
-
-  useEffect(() => {
-    document.title = brandName;
-  }, [brandName]);
-
+  const { brandName, companyName } = useBrand();
   const [phase, setPhase] = useState<"checking" | "login" | "consent" | "done" | "error">("checking");
   const [me, setMe] = useState<UserRow | null>(null);
   const [decision, setDecision] = useState<"allow" | "deny" | null>(null);

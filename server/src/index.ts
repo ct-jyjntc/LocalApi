@@ -19,8 +19,10 @@ import { createApiKey, listApiKeys } from "./services/keys";
 import { cleanupStaleReservations } from "./services/billing";
 import { maintainDueSubscriptions } from "./services/plans";
 import { migratePointsScaleIfNeeded } from "./services/checkin";
+import { startProxyScheduler } from "./services/proxy-scheduler";
 import { moduleRegistry } from "./modules/registry";
 import { checkSecretsHealth } from "./utils/secrets-health";
+import { applyBrandingToHtml, getPublicBrandingPayload } from "./services/branding";
 import { errorHandler, notFoundJson } from "./middleware/errors";
 
 initDb();
@@ -124,30 +126,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/branding", (_req, res) => {
-  const announcementEnabled = (getSetting("announcement_enabled") ?? "false") === "true";
-  const announcementContent = (getSetting("announcement_content") || "").trim();
-  res.json({
-    brand_name: getSetting("brand_name") || "LocalAPI",
-    company_name: getSetting("company_name") || "",
-    public_base_url: getSetting("public_base_url") || "",
-    announcement: announcementEnabled && announcementContent
-      ? {
-          enabled: true,
-          title: (getSetting("announcement_title") || "").trim() || "公告",
-          content: announcementContent,
-          banner: (getSetting("announcement_banner") ?? "true") === "true",
-          popup: (getSetting("announcement_popup") ?? "true") === "true",
-          updated_at: getSetting("announcement_updated_at") || "",
-        }
-      : {
-          enabled: false,
-          title: "",
-          content: "",
-          banner: false,
-          popup: false,
-          updated_at: "",
-        },
-  });
+  res.json(getPublicBrandingPayload());
 });
 
 app.get("/modules/public", (_req, res) => {
@@ -191,6 +170,16 @@ const webDist = webDistCandidates.find((p) =>
 );
 
 if (webDist) {
+  const sendBrandedSpa = (_req: express.Request, res: express.Response) => {
+    const html = applyBrandingToHtml(fs.readFileSync(path.join(webDist, "index.html"), "utf8"));
+    res.setHeader("Cache-Control", "no-cache");
+    res.type("html").send(html);
+  };
+
+  // Never let express.static serve the unbranded shell.
+  app.get("/", sendBrandedSpa);
+  app.get("/index.html", sendBrandedSpa);
+
   // Hashed assets can be cached forever; HTML stays revalidated.
   app.use(
     express.static(webDist, {
@@ -221,12 +210,12 @@ if (webDist) {
       req.path.startsWith("/coding") ||
       req.path.startsWith("/payment/") ||
       req.path === "/health" ||
+      req.path === "/branding" ||
       req.path === "/modules/public"
     ) {
       return next();
     }
-    res.setHeader("Cache-Control", "no-cache");
-    return res.sendFile(path.join(webDist, "index.html"));
+    return sendBrandedSpa(req, res);
   });
   console.log(`[ui] Serving admin console from ${webDist}`);
 } else {
@@ -249,6 +238,7 @@ const server = app.listen(SINGLE_PORT, LISTEN_HOST, () => {
   console.log(`  Admin API: http://${LISTEN_HOST}:${SINGLE_PORT}/admin/api`);
   console.log(`  Proxy    : http://${LISTEN_HOST}:${SINGLE_PORT}/v1/*`);
 });
+startProxyScheduler();
 
 const configuredKeepAlive = Number(process.env.CLIENT_KEEP_ALIVE_MS || 65_000);
 const keepAliveMs = Number.isFinite(configuredKeepAlive)

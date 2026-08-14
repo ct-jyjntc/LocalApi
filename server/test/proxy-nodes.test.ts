@@ -97,7 +97,7 @@ test("proxy nodes: CRUD, provider assignment and round-robin across socks proxie
     assert.equal(viewA.url, `socks5://127.0.0.1:${socksPortA}`);
     assert.equal(viewA.enabled, true);
     // Invalid scheme rejected by the service layer contract.
-    assert.equal(createProxyNode({ name: "bad", url: "http://127.0.0.1:1" }), null);
+    assert.equal(createProxyNode({ name: "bad", url: "ftp://127.0.0.1:1" }), null);
     // Update + disable
     const updated = updateProxyNode(nodeA!.id, { enabled: false });
     assert.equal(updated?.enabled, 0);

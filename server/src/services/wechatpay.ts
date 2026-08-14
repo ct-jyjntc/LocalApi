@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import fetch, { type RequestInit, type Response } from "node-fetch";
+import { getBrandName } from "./branding";
 
 export type WechatPayMode = "native" | "h5";
 
@@ -188,7 +189,7 @@ async function requestWechatPay(
 }
 
 function safeDescription(value: string) {
-  return Array.from(value.trim() || "LocalAPI 账户充值").slice(0, 127).join("");
+  return Array.from(value.trim() || `${getBrandName()} 账户充值`).slice(0, 127).join("");
 }
 
 export type CreateWechatPayOrderInput = {
@@ -221,7 +222,7 @@ export async function createWechatPayOrder(
   if (input.mode === "h5") {
     const h5Info: Record<string, string> = {
       type: credentials.h5Type?.trim() || "Wap",
-      app_name: credentials.h5AppName?.trim() || "LocalAPI",
+      app_name: credentials.h5AppName?.trim() || getBrandName(),
     };
     if (credentials.h5AppUrl?.trim()) h5Info.app_url = credentials.h5AppUrl.trim();
     body.scene_info = {

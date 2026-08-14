@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Megaphone, X } from "lucide-react";
 import { api, type Announcement } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,11 +65,10 @@ export function AnnouncementHost() {
   const [needsMarquee, setNeedsMarquee] = useState(false);
 
   const active = Boolean(announcement?.enabled && announcement.content.trim());
+  const bannerTitle = announcement?.title?.trim() || "";
   const marqueeText = useMemo(() => {
     if (!active || !announcement) return "";
-    const title = announcement.title?.trim();
-    const content = announcement.content.trim().replace(/\s+/g, " ");
-    return title ? `${title}：${content}` : content;
+    return announcement.content.trim().replace(/\s+/g, " ");
   }, [active, announcement]);
 
   useEffect(() => {
@@ -132,21 +130,25 @@ export function AnnouncementHost() {
   return (
     <>
       {showBanner ? (
-        <div className="sticky top-0 z-[25] border-b border-amber-500/20 bg-amber-50/95 text-amber-950 backdrop-blur dark:border-amber-400/15 dark:bg-amber-950/40 dark:text-amber-50">
-          <div className="flex h-9 items-center gap-2 px-3 sm:px-4">
-            <Megaphone className="size-3.5 shrink-0 opacity-80" strokeWidth={1.8} />
+        <div className="sticky top-12 z-[25] border-b border-border/60 bg-background/90 backdrop-blur lg:top-0">
+          <div className="mx-auto flex h-9 max-w-[1280px] items-center gap-2.5 px-3 sm:px-8">
+            {bannerTitle ? (
+              <>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{bannerTitle}</span>
+                <span className="h-3 w-px shrink-0 bg-border" aria-hidden />
+              </>
+            ) : null}
             <div ref={trackRef} className="relative min-w-0 flex-1 overflow-hidden">
-              {/* Hidden measurer: single copy, no animation */}
               <div
                 ref={textRef}
-                className="pointer-events-none invisible absolute left-0 top-0 whitespace-nowrap text-[12px] leading-9"
+                className="pointer-events-none invisible absolute left-0 top-0 whitespace-nowrap text-xs leading-9"
                 aria-hidden
               >
                 {marqueeText}
               </div>
               <div
                 className={cn(
-                  "whitespace-nowrap text-[12px] leading-9",
+                  "whitespace-nowrap text-xs leading-9 text-foreground/80",
                   needsMarquee ? "inline-block announcement-marquee-track" : "truncate",
                 )}
                 title={marqueeText}
@@ -164,43 +166,32 @@ export function AnnouncementHost() {
           if (!open) closeOnce();
         }}
       >
-        <DialogContent className="max-w-md">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Megaphone className="size-4 text-muted-foreground" strokeWidth={1.8} />
-              {announcement.title?.trim() || (zh ? "公告" : "Announcement")}
-            </DialogTitle>
+            <DialogTitle>{bannerTitle || (zh ? "公告" : "Announcement")}</DialogTitle>
             <DialogDescription className="sr-only">
               {zh ? "站点公告" : "Site announcement"}
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">
+          <div className="mt-3 max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/55 px-3 py-2.5 text-xs leading-5">
             {announcement.content}
           </div>
-          <DialogFooter className="mt-2 gap-2 sm:justify-between">
-            <Button type="button" variant="ghost" size="sm" onClick={dismissToday}>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={dismissToday}
+            >
               {zh ? "今日关闭" : "Hide today"}
             </Button>
             <Button type="button" size="sm" onClick={closeOnce}>
-              <X data-icon="inline-start" className="size-3.5" />
-              {zh ? "关闭" : "Close"}
+              {zh ? "知道了" : "Got it"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <style>{`
-        .announcement-marquee-track {
-          animation: announcement-marquee 22s linear infinite;
-        }
-        @keyframes announcement-marquee {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .announcement-marquee-track { animation: none; }
-        }
-      `}</style>
     </>
   );
 }

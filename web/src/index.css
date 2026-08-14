@@ -150,3 +150,19 @@ body {
 :focus-visible {
   outline-color: var(--ring);
 }
+
+@keyframes announcement-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.announcement-marquee-track {
+  animation: announcement-marquee 28s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .announcement-marquee-track {
+    animation: none;
+  }
+}

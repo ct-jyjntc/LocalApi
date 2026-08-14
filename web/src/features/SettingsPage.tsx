@@ -19,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useI18n, type Locale } from "@/lib/i18n";
 import { hasModuleFeature, usePublicModules } from "@/lib/modules";
+import { applyDocumentTitle, BRANDING_QUERY_KEY, DEFAULT_BRAND_NAME, persistBranding, resolveBrandName } from "@/lib/branding";
 
 export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const { theme, setTheme } = useTheme();
@@ -37,8 +38,9 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [maxRetries, setMaxRetries] = useState(2);
   const [otherMaxRetries, setOtherMaxRetries] = useState(0);
   const [retryDelayMs, setRetryDelayMs] = useState(400);
-  const [brandName, setBrandName] = useState("LocalAPI");
+  const [brandName, setBrandName] = useState(() => resolveBrandName());
   const [companyName, setCompanyName] = useState("");
+  const [proxyTestUrl, setProxyTestUrl] = useState("");
   const [announcementEnabled, setAnnouncementEnabled] = useState(false);
   const [announcementTitle, setAnnouncementTitle] = useState("");
   const [announcementContent, setAnnouncementContent] = useState("");
@@ -70,8 +72,9 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setMaxRetries(Number(data.max_retries ?? 2));
     setOtherMaxRetries(Number(data.other_max_retries ?? 0));
     setRetryDelayMs(Number(data.retry_delay_ms ?? 400));
-    setBrandName(data.brand_name || "LocalAPI");
+    setBrandName(data.brand_name || DEFAULT_BRAND_NAME);
     setCompanyName(data.company_name || "");
+    setProxyTestUrl(data.proxy_test_url || "");
     setAnnouncementEnabled(Boolean(data.announcement_enabled));
     setAnnouncementTitle(data.announcement_title || "");
     setAnnouncementContent(data.announcement_content || "");
@@ -123,6 +126,18 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const saveProxyHealth = useMutation({
+    mutationFn: async () =>
+      api.settings.update({
+        proxy_test_url: proxyTestUrl.trim() || undefined,
+      }),
+    onSuccess: () => {
+      toast.success(t("settings.proxyTestUrlSaved"));
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const saveRelay = useMutation({
     mutationFn: async () =>
       api.settings.update({
@@ -139,17 +154,16 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
 
   const saveBranding = useMutation({
     mutationFn: async () => api.settings.update({
-      brand_name: brandName.trim() || "LocalAPI",
+      brand_name: brandName.trim() || DEFAULT_BRAND_NAME,
       company_name: companyName.trim(),
       public_base_url: publicBaseUrl.trim(),
     }),
     onSuccess: (result) => {
-      localStorage.setItem("localapi_brand_name", result.brand_name || "LocalAPI");
-      if (result.company_name?.trim()) localStorage.setItem("localapi_company_name", result.company_name.trim());
-      else localStorage.removeItem("localapi_company_name");
+      persistBranding(result.brand_name, result.company_name);
+      applyDocumentTitle(result.brand_name || DEFAULT_BRAND_NAME);
       toast.success(t("settings.brandingSaved"));
       qc.invalidateQueries({ queryKey: ["settings"] });
-      qc.invalidateQueries({ queryKey: ["branding"] });
+      qc.invalidateQueries({ queryKey: BRANDING_QUERY_KEY });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -659,6 +673,26 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
         <div className="flex justify-end">
           <Button size="sm" disabled={saveBranding.isPending || !brandName.trim()} onClick={() => saveBranding.mutate()}>
             {saveBranding.isPending ? t("common.loading") : t("settings.saveBranding")}
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t("settings.proxyTestUrl")}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.proxyTestUrlHint")}</p>
+        </div>
+        <div className="space-y-1.5">
+          <Input
+            value={proxyTestUrl}
+            maxLength={255}
+            placeholder="https://www.gstatic.com/generate_204"
+            onChange={(event) => setProxyTestUrl(event.target.value)}
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" disabled={saveProxyHealth.isPending} onClick={() => saveProxyHealth.mutate()}>
+            {saveProxyHealth.isPending ? t("common.loading") : t("common.save")}
           </Button>
         </div>
       </Card>

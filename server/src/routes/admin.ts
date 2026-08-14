@@ -1,5 +1,7 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import { getAllSettings, getSetting, setSetting } from "../db";
+import { getBrandName } from "../services/branding";
 import {
   clearCache,
   deleteCacheEntry,
@@ -22,13 +24,21 @@ import {
   updateProvider,
 } from "../services/providers";
 import {
+  createProxyLibrary,
   createProxyNode,
+  DEFAULT_PROXY_TEST_URL,
+  deleteProxyLibrary,
   deleteProxyNode,
+  getProxyLibrary,
+  listProxyLibraries,
   listProxyNodes,
+  listProxyNodesByLibrary,
+  refreshProxyLibrary,
+  sanitizeProxyLibrary,
   sanitizeProxyNode,
+  updateProxyLibrary,
   updateProxyNode,
 } from "../services/proxies";
-import { getAllSettings, getSetting, setSetting } from "../db";
 import { consumeAdminAuthFailure, requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
 import { hashAdminSecret } from "../utils/admin-secret";
@@ -56,8 +66,8 @@ const proxyUrl = z
   .trim()
   .min(1)
   .max(300)
-  .refine((value) => /^socks4?:\/\/|^socks5h?:\/\//i.test(value), {
-    message: "proxy url must use socks4/socks5 scheme",
+  .refine((value) => /^(https?|socks4a?|socks5h?|socks):\/\//i.test(value), {
+    message: "proxy url must use http/https/socks4/socks5 scheme",
   });
 const proxyNodeSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -65,6 +75,21 @@ const proxyNodeSchema = z.object({
   enabled: z.boolean().optional(),
 });
 const proxyNodePatchSchema = proxyNodeSchema.partial();
+const proxyLibrarySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  url: z
+    .string()
+    .trim()
+    .url()
+    .refine((value) => /^https?:\/\//i.test(value), {
+      message: "library url must use http or https",
+    }),
+  default_protocol: z.enum(["http", "https", "socks4", "socks5"]).optional(),
+  enabled: z.boolean().optional(),
+  auto_update: z.boolean().optional(),
+  update_interval_ms: z.coerce.number().int().min(60_000).max(31_536_000_000).optional(),
+});
+const proxyLibraryPatchSchema = proxyLibrarySchema.partial();
 const proxyIdsSchema = z.array(z.string().trim().min(1).max(100)).max(32).optional();
 const providerSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -126,6 +151,7 @@ const settingsSchema = z.object({
   admin_entry_path: z.string().trim().max(65).refine(isValidAdminEntryPath, {
     message: "admin_entry_path must be a single safe path segment",
   }).optional(),
+  proxy_test_url: z.string().trim().max(255).optional(),
   registration_enabled: z.boolean().optional(),
   password_login_enabled: z.boolean().optional(),
   linuxdo_registration_enabled: z.boolean().optional(),
@@ -259,9 +285,12 @@ adminRouter.delete("/providers/:id", (req, res) => {
   return res.json({ ok: true });
 });
 
-// Proxy nodes
+// Proxy nodes + libraries
 adminRouter.get("/proxies", (_req, res) => {
-  res.json({ items: listProxyNodes().map(sanitizeProxyNode) });
+  res.json({
+    items: listProxyNodes().map(sanitizeProxyNode),
+    libraries: listProxyLibraries().map(sanitizeProxyLibrary),
+  });
 });
 
 adminRouter.post("/proxies", (req, res) => {
@@ -270,6 +299,47 @@ adminRouter.post("/proxies", (req, res) => {
   const node = createProxyNode(body);
   if (!node) return res.status(400).json({ error: "Invalid proxy url" });
   return res.status(201).json(sanitizeProxyNode(node));
+});
+
+// Libraries (must be registered before /proxies/:id routes)
+adminRouter.post("/proxies/libraries", async (req, res) => {
+  const body = parseBody(proxyLibrarySchema, req.body, res);
+  if (!body) return;
+  const library = createProxyLibrary(body);
+  if (!library) return res.status(400).json({ error: "Invalid library url" });
+  let importResult: { added: number; removed: number; total: number } | null = null;
+  let importError: string | null = null;
+  try {
+    importResult = await refreshProxyLibrary(library.id);
+  } catch (error) {
+    importError = error instanceof Error ? error.message : String(error);
+  }
+  return res.status(201).json({ ...sanitizeProxyLibrary(library), import: importResult, import_error: importError });
+});
+
+adminRouter.patch("/proxies/libraries/:id", (req, res) => {
+  const body = parseBody(proxyLibraryPatchSchema, req.body, res);
+  if (!body) return;
+  const updated = updateProxyLibrary(req.params.id, body);
+  if (!updated) return res.status(404).json({ error: "Proxy library not found" });
+  return res.json(sanitizeProxyLibrary(updated));
+});
+
+adminRouter.delete("/proxies/libraries/:id", (req, res) => {
+  const ok = deleteProxyLibrary(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Proxy library not found" });
+  return res.json({ ok: true });
+});
+
+adminRouter.post("/proxies/libraries/:id/refresh", async (req, res) => {
+  const library = getProxyLibrary(req.params.id);
+  if (!library) return res.status(404).json({ error: "Proxy library not found" });
+  try {
+    const result = await refreshProxyLibrary(library.id);
+    return res.json(result ?? { added: 0, removed: 0, total: 0 });
+  } catch (error) {
+    return res.status(502).json({ error: error instanceof Error ? error.message : "Refresh failed" });
+  }
 });
 
 adminRouter.patch("/proxies/:id", (req, res) => {
@@ -402,7 +472,7 @@ function serializeSettings() {
     cache_max_entries: Number(all.cache_max_entries || 1000),
     cache_methods: JSON.parse(all.cache_methods || "[]"),
     cache_paths: JSON.parse(all.cache_paths || "[]"),
-    brand_name: all.brand_name || "LocalAPI",
+    brand_name: getBrandName(),
     company_name: all.company_name || "",
     announcement_enabled: (all.announcement_enabled ?? "false") === "true",
     announcement_title: all.announcement_title || "",
@@ -412,10 +482,9 @@ function serializeSettings() {
     announcement_updated_at: all.announcement_updated_at || "",
     public_base_url: all.public_base_url || "",
     admin_entry_path: all.admin_entry_path || DEFAULT_ADMIN_ENTRY_PATH,
+    proxy_test_url: all.proxy_test_url || DEFAULT_PROXY_TEST_URL,
     registration_enabled: all.registration_enabled === "true",
     password_login_enabled: (all.password_login_enabled ?? "true") === "true",
-    linuxdo_registration_enabled: (all.linuxdo_registration_enabled ?? "true") === "true",
-    checkin_enabled: checkin.enabled,
     checkin_points_min: checkin.points_min,
     checkin_points_max: checkin.points_max,
     points_balance_cap: checkin.balance_cap,
@@ -475,6 +544,7 @@ adminRouter.patch("/settings", (req, res) => {
     setSetting("cache_paths", JSON.stringify(body.cache_paths));
   }
   if (body.brand_name !== undefined) setSetting("brand_name", body.brand_name);
+  if (body.proxy_test_url !== undefined) setSetting("proxy_test_url", body.proxy_test_url);
   if (body.company_name !== undefined) setSetting("company_name", body.company_name);
   if (
     body.announcement_enabled !== undefined ||

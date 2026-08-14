@@ -5,6 +5,7 @@ import {
   type PaymentChannel,
   type PaymentOrder,
 } from "../db";
+import { getBrandName } from "./branding";
 import { decryptSecret, encryptSecret } from "../utils/secrets";
 import { nowIso } from "../utils/time";
 import type { PaymentChannelSeed } from "../modules/types";
@@ -637,7 +638,7 @@ export async function createTopupOrder(
     asset: channelAsset(channel.provider),
     credited_micros: creditedMicros,
     exchange_rate_micros: channel.exchange_rate_micros,
-    title: `${getSetting("brand_name") || "LocalAPI"} 账户充值`,
+    title: `${getBrandName()} 账户充值`,
     pay_url: null,
     error: null,
     metadata: JSON.stringify(metadata),
@@ -771,7 +772,7 @@ export async function getWechatCheckout(orderNo: string, clientIp?: string) {
 
   const checkoutCredentials = {
     ...credentials,
-    h5AppName: credentials.h5AppName || getSetting("brand_name") || "LocalAPI",
+    h5AppName: credentials.h5AppName || getBrandName(),
     h5AppUrl: credentials.h5AppUrl || publicBaseUrl,
   };
   const created = await createWechatPayOrder(checkoutCredentials, {

@@ -1,0 +1,196 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - button "收起侧边栏" [ref=e6]
+        - generic [ref=e7]: LocalAPI
+      - navigation [ref=e8]:
+        - link "仪表盘" [ref=e9] [cursor=pointer]:
+          - /url: /
+        - link "渠道" [ref=e16] [cursor=pointer]:
+          - /url: /providers
+        - link "代理" [ref=e21] [cursor=pointer]:
+          - /url: /proxies
+        - link "用户" [ref=e30] [cursor=pointer]:
+          - /url: /users
+        - link "模型配置" [ref=e37] [cursor=pointer]:
+          - /url: /pricing
+        - link "套餐" [ref=e43] [cursor=pointer]:
+          - /url: /plans
+        - link "用户层级" [ref=e49] [cursor=pointer]:
+          - /url: /tiers
+        - link "计费用量" [ref=e54] [cursor=pointer]:
+          - /url: /billing
+        - link "支付订单" [ref=e58] [cursor=pointer]:
+          - /url: /payments
+        - link "模块" [ref=e62] [cursor=pointer]:
+          - /url: /modules
+        - link "请求日志" [ref=e67] [cursor=pointer]:
+          - /url: /logs
+        - link "用户反馈" [ref=e72] [cursor=pointer]:
+          - /url: /feedback
+        - link "设置" [ref=e76] [cursor=pointer]:
+          - /url: /settings
+      - button "退出登录" [ref=e82]
+    - main [ref=e85]:
+      - generic [ref=e86]:
+        - generic [ref=e87]:
+          - generic [ref=e88]:
+            - heading "设置" [level=1] [ref=e89]
+            - paragraph [ref=e90]: 外观、语言与管理员密码。
+          - button "退出登录" [ref=e92]
+        - generic [ref=e93]:
+          - heading "外观" [level=2] [ref=e94]
+          - generic [ref=e95]:
+            - text: 主题
+            - generic [ref=e96]:
+              - button "浅色" [ref=e97]
+              - button "深色" [ref=e98]
+              - button "跟随系统" [ref=e99]
+          - generic [ref=e100]:
+            - text: 语言
+            - generic [ref=e101]:
+              - button "中文" [ref=e102]
+              - button "English" [ref=e103]
+        - generic [ref=e104]:
+          - generic [ref=e105]:
+            - heading "登录方式" [level=2] [ref=e106]
+            - paragraph [ref=e107]: 控制已有账号可用的登录入口；新用户注册方式在下方单独配置。
+          - generic [ref=e108]:
+            - generic [ref=e109]:
+              - paragraph [ref=e110]: 用户名密码登录
+              - paragraph [ref=e111]: 允许使用用户名和密码登录。
+            - switch [checked] [ref=e112] [cursor=pointer]
+          - button "保存登录方式" [ref=e114]
+        - generic [ref=e115]:
+          - generic [ref=e116]:
+            - heading "开放注册" [level=2] [ref=e117]
+            - paragraph [ref=e118]: 按需开启不同注册方式。已有账号仍可按已启用方式登录。
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - paragraph [ref=e121]: 用户名密码注册
+              - paragraph [ref=e122]: 关闭自助密码注册。
+            - switch [ref=e123] [cursor=pointer]
+          - button "保存注册设置" [ref=e125]
+        - generic [ref=e126]:
+          - generic [ref=e127]:
+            - heading "每日签到" [level=2] [ref=e128]
+            - paragraph [ref=e129]: 用户每天可签到一次获得随机积分，积分可兑换账户余额。
+          - generic [ref=e130]:
+            - generic [ref=e131]:
+              - paragraph [ref=e132]: 启用签到
+              - paragraph [ref=e133]: 用户可在「每日签到」页面签到。
+            - switch [checked] [ref=e134] [cursor=pointer]
+          - generic [ref=e135]:
+            - generic [ref=e136]:
+              - text: 单次最小奖励（两位小数）
+              - spinbutton [ref=e137]: "1.00"
+            - generic [ref=e138]:
+              - text: 单次最大奖励（两位小数）
+              - spinbutton [ref=e139]: "10.00"
+            - generic [ref=e140]:
+              - text: 积分持有上限
+              - spinbutton [ref=e141]: "0"
+              - paragraph [ref=e142]: 统计「未兑换积分 + 已兑换但未花掉的签到余额」（按积分折算）。达到上限后不能签到，需把余额使用掉后才能继续。用户侧只看到一个总余额。填 0 表示不限制。
+            - generic [ref=e143]:
+              - text: 积分兑换余额比例
+              - spinbutton [ref=e144]: "0.01"
+              - paragraph [ref=e145]: 1 积分兑换多少余额。例如 0.01 表示 100 积分 = 1 余额。
+          - button "保存签到设置" [ref=e147]
+        - generic [ref=e148]:
+          - generic [ref=e149]:
+            - generic [ref=e150]:
+              - heading "站点公告" [level=2] [ref=e151]
+              - paragraph [ref=e152]: 开启后顶部显示公告（内容超出宽度才滚动）。启用弹窗时，用户每次打开站点都会弹出；点「关闭」仅本次，点「今日关闭」当天不再弹。
+            - generic [ref=e153]:
+              - generic [ref=e154]: 启用
+              - switch [ref=e155] [cursor=pointer]
+          - generic [ref=e156]:
+            - generic [ref=e157]:
+              - text: 标题
+              - textbox "例如：维护通知" [disabled] [ref=e158]
+            - generic [ref=e159]:
+              - text: 内容
+              - textbox "公告正文，支持换行" [disabled] [ref=e160]
+            - generic [ref=e161]:
+              - generic [ref=e162]:
+                - paragraph [ref=e163]: 顶部显示
+                - paragraph [ref=e164]: 关闭后不显示顶部公告条（弹窗可单独开启）。
+              - switch [checked] [disabled] [ref=e165]
+            - generic [ref=e166]:
+              - generic [ref=e167]:
+                - paragraph [ref=e168]: 打开站点时弹出
+                - paragraph [ref=e169]: 关闭后不弹窗；可与顶部显示独立开关。
+              - switch [checked] [disabled] [ref=e170]
+          - button "保存公告" [ref=e172]
+        - generic [ref=e173]:
+          - generic [ref=e174]:
+            - heading "品牌设置" [level=2] [ref=e175]
+            - paragraph [ref=e176]: 自定义产品名称与公司页脚。
+          - generic [ref=e177]:
+            - generic [ref=e178]:
+              - text: 品牌名字
+              - textbox [ref=e179]: LocalAPI
+            - generic [ref=e180]:
+              - text: 公司名称
+              - textbox [ref=e181]
+              - paragraph [ref=e182]: 填写后会在右下角显示“@年份 公司名称”。
+            - generic [ref=e183]:
+              - text: 访问域名
+              - textbox "your-domain" [ref=e184]
+              - paragraph [ref=e185]: 用于 API 示例，可填写 api.example.com 或完整 http(s) 地址；留空显示 your-domain。
+          - button "保存品牌设置" [ref=e187]
+        - generic [ref=e188]:
+          - generic [ref=e189]:
+            - heading "代理测活地址" [level=2] [ref=e190]
+            - paragraph [ref=e191]: 刷新代理库时用于并发测活；无法连通该地址的节点会被剔除。留空使用默认值。
+          - textbox "https://www.gstatic.com/generate_204" [ref=e193]
+          - button "保存" [ref=e195]
+        - generic [ref=e196]:
+          - generic [ref=e197]:
+            - heading "中转" [level=2] [ref=e198]
+            - paragraph [ref=e199]: 重试会在开始流式输出前执行，并在支持同一模型的渠道之间故障转移。
+          - generic [ref=e200]:
+            - generic [ref=e201]:
+              - text: 普通重试次数
+              - spinbutton [ref=e202]: "2"
+              - paragraph [ref=e203]: 适用于 401 / 403 / 408 / 429 / 500 / 502 / 503 / 504 以及部分网络错误的额外尝试次数。
+            - generic [ref=e204]:
+              - text: 其他错误重试次数
+              - spinbutton [ref=e205]: "0"
+              - paragraph [ref=e206]: 适用于上述以外的其他上游错误（例如 HTTP 400 业务错误）。填 0 表示不重试。
+            - generic [ref=e207]:
+              - text: 重试间隔（毫秒）
+              - spinbutton [ref=e208]: "400"
+              - paragraph [ref=e209]: 基础间隔，会随尝试次数递增。
+          - button "保存中转设置" [ref=e211]
+        - generic [ref=e212]:
+          - generic [ref=e213]:
+            - heading "管理员安全入口" [level=2] [ref=e214]
+            - paragraph [ref=e215]: 管理员登录表单仅在该私密路径显示。请使用单段字母、数字、短横线或下划线路径。
+          - generic [ref=e216]:
+            - text: 安全路径
+            - textbox "/admin" [ref=e217]
+            - paragraph [ref=e218]: 管理员登录地址： http://127.0.0.1:5555/admin
+          - button "保存安全入口" [ref=e220]
+        - generic [ref=e221]:
+          - generic [ref=e222]:
+            - heading "管理员密码" [level=2] [ref=e223]
+            - paragraph [ref=e224]: 当前密码结尾为 ••••
+          - generic [ref=e225]:
+            - generic [ref=e226]:
+              - text: 当前密码
+              - textbox "修改时需要填写" [ref=e227]
+            - generic [ref=e228]:
+              - text: 新密码
+              - textbox "至少 8 位" [ref=e229]
+            - generic [ref=e230]:
+              - text: 确认新密码
+              - textbox "再输入一次" [ref=e231]
+          - generic [ref=e232]:
+            - button "修改密码" [disabled]
+        - generic [ref=e233]:
+          - heading "用法" [level=2] [ref=e234]
+          - paragraph [ref=e235]: 客户端携带 API 密钥访问本中转：
+          - generic [ref=e236]: "# 非流式 curl https://your-domain/v1/chat/completions \\ -H \"Authorization: Bearer <api-key>\" \\ -H \"Content-Type: application/json\" \\ -d '{\"model\":\"glm-5.2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}' # 流式 SSE curl -N https://your-domain/v1/chat/completions \\ -H \"Authorization: Bearer <api-key>\" \\ -H \"Content-Type: application/json\" \\ -d '{\"model\":\"glm-5.2\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}'"
+  - region "Notifications alt+T"

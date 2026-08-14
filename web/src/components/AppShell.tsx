@@ -26,9 +26,10 @@ import {
 import { Suspense, useEffect, useState, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { api, userApi } from "@/lib/api";
+import { userApi } from "@/lib/api";
 import { AnnouncementHost } from "@/components/AnnouncementHost";
 import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
+import { useBrand } from "@/lib/branding";
 
 type NavItem = {
   to: string;
@@ -41,6 +42,7 @@ type NavItem = {
 const ADMIN_NAV: NavItem[] = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, end: true },
   { to: "/providers", labelKey: "nav.providers", icon: Server },
+  { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
   { to: "/proxies", labelKey: "nav.proxies", icon: Waypoints },
   { to: "/users", label: { zh: "用户", en: "Users" }, icon: Users },
   { to: "/pricing", label: { zh: "模型配置", en: "Model config" }, icon: Tags },
@@ -66,12 +68,10 @@ const USER_NAV: NavItem[] = [
 ];
 
 const COLLAPSE_KEY = "localapi_sidebar_collapsed";
-const BRAND_CACHE_KEY = "localapi_brand_name";
-const COMPANY_CACHE_KEY = "localapi_company_name";
 
 export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"; onLogout?: () => void }) {
   const { t, locale } = useI18n();
-  const branding = useQuery({ queryKey: ["branding"], queryFn: api.branding, staleTime: 60_000 });
+  const { brandName, companyName } = useBrand();
   // User-console feature flags (check-in, etc.) — keep in sync with admin settings.
   const userConfig = useQuery({
     queryKey: ["user-config"],
@@ -79,8 +79,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
     staleTime: 30_000,
     enabled: mode === "user",
   });
-  const brandName = branding.data?.brand_name || localStorage.getItem(BRAND_CACHE_KEY) || t("shell.brand");
-  const companyName = branding.data?.company_name?.trim() || localStorage.getItem(COMPANY_CACHE_KEY) || "";
   const checkinEnabled = userConfig.data?.checkin_enabled !== false;
   const nav =
     mode === "admin"
@@ -90,17 +88,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
     return localStorage.getItem(COLLAPSE_KEY) === "1";
   });
   const [mobileOpen, setMobileOpen] = useState(false);
-
-  useEffect(() => {
-    document.title = brandName;
-  }, [brandName]);
-
-  useEffect(() => {
-    if (!branding.data) return;
-    localStorage.setItem(BRAND_CACHE_KEY, branding.data.brand_name || "LocalAPI");
-    if (branding.data.company_name?.trim()) localStorage.setItem(COMPANY_CACHE_KEY, branding.data.company_name.trim());
-    else localStorage.removeItem(COMPANY_CACHE_KEY);
-  }, [branding.data]);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");

@@ -388,9 +388,35 @@ export function ProvidersPage() {
             </div>
             <div className="sm:col-span-2">
               <Field label={t("providers.proxies")}>
-                {proxyData?.items.length ? (
+                {(proxyData?.libraries.length || proxyData?.items.length) ? (
                   <div className="flex flex-wrap gap-2">
-                    {proxyData.items.map((node) => {
+                    {proxyData!.libraries.map((lib) => {
+                      const active = form.proxy_ids.includes(lib.id);
+                      return (
+                        <button
+                          key={lib.id}
+                          type="button"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              proxy_ids: active
+                                ? form.proxy_ids.filter((id) => id !== lib.id)
+                                : [...form.proxy_ids, lib.id],
+                            })
+                          }
+                          title={t("providers.proxiesHint")}
+                          className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
+                            active
+                              ? "border-foreground/40 bg-foreground/10 text-foreground"
+                              : "border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground"
+                          } ${lib.enabled ? "" : "opacity-50"}`}
+                        >
+                          {lib.name} · {lib.node_count}
+                          {!lib.enabled ? "（停用）" : ""}
+                        </button>
+                      );
+                    })}
+                    {proxyData!.items.map((node) => {
                       const active = form.proxy_ids.includes(node.id);
                       return (
                         <button

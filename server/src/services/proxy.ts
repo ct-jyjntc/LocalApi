@@ -4,8 +4,8 @@ import { once } from "events";
 import fetch, { Response as FetchResponse } from "node-fetch";
 import type { Response as ExpressResponse } from "express";
 import { v4 as uuid } from "uuid";
-import { SocksProxyAgent } from "socks-proxy-agent";
 import { ApiKey, getSetting, Provider } from "../db";
+import { proxyAgentFor } from "./proxy-agent-pool";
 import { writeLog } from "./logs";
 import {
   getProvider,
@@ -267,6 +267,10 @@ function buildUpstreamHeaders(
   ctx: ProxyContext,
 ): Record<string, string> {
   const headers = headersToObject(ctx.headers);
+  // Never forward the client-facing Host header upstream; it would point at
+  // this relay (e.g. 127.0.0.1:5555) and strict upstreams (Cloudflare/nginx)
+  // reject the request. Let node-fetch derive Host from the upstream URL.
+  delete headers.host;
   const upstreamKey = pickProviderKey(provider);
   if (upstreamKey) headers.authorization = `Bearer ${upstreamKey}`;
   if (!headers.accept) {
@@ -275,30 +279,16 @@ function buildUpstreamHeaders(
   return headers;
 }
 
-const socksAgents = new Map<string, SocksProxyAgent>();
-
-function socksAgentFor(url: string): SocksProxyAgent {
-  const existing = socksAgents.get(url);
-  if (existing) return existing;
-  const agent = new SocksProxyAgent(url, {
-    keepAlive: true,
-    keepAliveMsecs: 30_000,
-    maxSockets,
-    maxFreeSockets: Math.min(64, maxSockets),
-    scheduling: "lifo",
-  });
-  socksAgents.set(url, agent);
-  return agent;
-}
-
 function agentFor(provider: Provider, upstreamUrl: string) {
   const proxyId = pickProviderProxy(provider);
   if (!proxyId) return upstreamUrl.startsWith("https:") ? httpsAgent : httpAgent;
   const node = getProxyNode(proxyId);
   const url = node ? (tryDecryptSecret(node.url) ?? "") : "";
   if (!url) return upstreamUrl.startsWith("https:") ? httpsAgent : httpAgent;
-  return socksAgentFor(url);
+  return proxyAgentFor(url, { httpsUpstream: upstreamUrl.startsWith("https:") });
 }
+
+
 
 function withMappedModel(provider: Provider, ctx: ProxyContext): ProxyContext {
   const publicModel = pickModel(ctx.body, ctx.query);
@@ -893,6 +883,20 @@ export async function handleProxyHttp(
   const retryDelay = getRetryDelayMs();
   const replayableBody = !ctx.bodyStream;
 
+  // Proxy-backed channels route through a rotating pool of (often flaky)
+  // public proxies; a dead node answers with 400/405/502 instead of failing
+  // the connection. Give them a small "other" retry budget so the next node
+  // in the pool gets a chance, even when other_max_retries is 0.
+  const hasProxy = (provider: Provider) => {
+    const raw = provider.proxy_ids;
+    if (!raw) return false;
+    if (Array.isArray(raw)) return raw.length > 0;
+    const trimmed = String(raw).trim();
+    return trimmed.length > 0 && trimmed !== "[]";
+  };
+  const otherRetryBudget = (provider: Provider) =>
+    hasProxy(provider) ? Math.max(otherMaxRetries, 4) : otherMaxRetries;
+
   const providerCandidates = listProvidersForModel(model);
   if (providerCandidates.length === 0) {
     const hasEnabledProvider = listProviders().some((item) => item.enabled === 1);
@@ -1052,7 +1056,7 @@ export async function handleProxyHttp(
         const otherFailure =
           replayableBody
           && canRetryOtherStatus(ctx, status)
-          && otherRetriesUsed < otherMaxRetries;
+          && otherRetriesUsed < otherRetryBudget(provider);
 
         if (normalFailure || otherFailure) {
           try {
