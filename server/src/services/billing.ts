@@ -1,7 +1,8 @@
 import { v4 as uuid } from "uuid";
-import { db, ModelPrice, ModelPriceView } from "../db";
+import { db, ModelPrice, ModelPriceView, type PriceWindow } from "../db";
 import { nowIso } from "../utils/time";
 import { maintainActiveSubscription } from "./plans";
+import { applyPriceWindows, parsePriceWindows, serializePriceWindows } from "./price-windows";
 
 function toModelPriceView(row: ModelPrice): ModelPriceView {
   let effort: string[] = [];
@@ -11,8 +12,10 @@ function toModelPriceView(row: ModelPrice): ModelPriceView {
   } catch {
     // malformed stored value — fall back to the empty list
   }
+  const { price_windows: rawWindows, ...rest } = row;
   return {
-    ...row,
+    ...rest,
+    windows: parsePriceWindows(rawWindows),
     reasoning_enabled: row.reasoning_enabled === 1,
     reasoning_effort: effort,
     image_input: row.image_input === 1,
@@ -54,15 +57,18 @@ export function upsertModelPrice(input: {
   context_window?: number;
   max_output_tokens?: number;
   enabled?: boolean;
+  windows?: PriceWindow[];
 }) {
   const now = nowIso();
+  const existing = getModelPrice(input.model.trim());
+  const windowsJson = serializePriceWindows(input.windows ?? existing?.windows ?? []);
   db.prepare(
     `INSERT INTO model_prices (
       model, input_price_micros, output_price_micros, cache_read_price_micros,
       cache_write_price_micros, reasoning_enabled, reasoning_effort,
       image_input, context_window, max_output_tokens,
-      enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      enabled, price_windows, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(model) DO UPDATE SET
       input_price_micros = excluded.input_price_micros,
       output_price_micros = excluded.output_price_micros,
@@ -74,6 +80,7 @@ export function upsertModelPrice(input: {
       context_window = excluded.context_window,
       max_output_tokens = excluded.max_output_tokens,
       enabled = excluded.enabled,
+      price_windows = excluded.price_windows,
       updated_at = excluded.updated_at`,
   ).run(
     input.model.trim(),
@@ -87,6 +94,7 @@ export function upsertModelPrice(input: {
     input.context_window ?? 0,
     input.max_output_tokens ?? 0,
     input.enabled === false ? 0 : 1,
+    windowsJson,
     now,
     now,
   );
@@ -206,10 +214,11 @@ export function reserveUsage(input: {
   billingMode?: "wallet" | "coding";
 }): BillingReservation {
   const billingMode = input.billingMode ?? "wallet";
-  const price = getModelPrice(input.model);
-  if (!price || !price.enabled) {
+  const stored = getModelPrice(input.model);
+  if (!stored || !stored.enabled) {
     throw new BillingError(402, "model_not_priced", `Model ${input.model} has no active price`);
   }
+  const price = applyPriceWindows(stored);
   const estimate = input.estimate ?? estimateRequestTokens(input.body);
   const reserveCost = calculateCostMicros(price, {
     prompt_tokens: estimate.prompt,

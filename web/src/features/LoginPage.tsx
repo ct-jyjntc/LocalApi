@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/lib/i18n";
 import { useBrand } from "@/lib/branding";
+import { BrandMark } from "@/components/BrandMark";
 
 export function LoginPage({
   mode,
@@ -19,7 +20,7 @@ export function LoginPage({
 }) {
   const { t, locale } = useI18n();
   const zh = locale === "zh";
-  const { brandName, companyName } = useBrand();
+  const { brandName, companyName, tagline, iconUrl } = useBrand();
   const registration = useQuery({ queryKey: ["user-config"], queryFn: userApi.config, staleTime: 30_000, enabled: mode === "user" });
   const [isRegistering, setIsRegistering] = useState(false);
   const [username, setUsername] = useState("");
@@ -124,8 +125,8 @@ export function LoginPage({
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 py-12">
       <div className="w-full max-w-[360px] space-y-8">
-        <div className="space-y-3 text-center">
-          <h1 className="text-4xl font-medium tracking-tight">{brandName}</h1>
+        <div className="flex flex-col items-center space-y-4 text-center">
+          <BrandMark name={brandName} tagline={tagline} iconUrl={iconUrl} size="hero" />
           <p className="mx-auto max-w-[280px] text-sm leading-6 text-muted-foreground">{description}</p>
         </div>
 

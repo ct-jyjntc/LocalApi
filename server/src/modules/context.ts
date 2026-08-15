@@ -8,6 +8,7 @@ import {
   createUserSession,
   getUserByLinuxDoUid,
   getUserByUsername,
+  updateUser,
 } from "../services/users";
 import {
   PaymentError,
@@ -99,12 +100,27 @@ export function buildModuleContext(
       getByUsername(username) {
         const user = getUserByUsername(username);
         if (!user) return null;
-        return { id: user.id, username: user.username, display_name: user.display_name };
+        return {
+          id: user.id,
+          username: user.username,
+          display_name: user.display_name,
+          linuxdo_uid: user.linuxdo_uid ?? null,
+        };
       },
       getByLinuxDoUid(uid) {
         const user = getUserByLinuxDoUid(uid);
         if (!user) return null;
-        return { id: user.id, username: user.username, display_name: user.display_name };
+        return {
+          id: user.id,
+          username: user.username,
+          display_name: user.display_name,
+          linuxdo_uid: user.linuxdo_uid ?? null,
+        };
+      },
+      bindLinuxDoUid(userId, uid) {
+        const updated = updateUser(userId, { linuxdo_uid: uid });
+        if (!updated) return null;
+        return { id: updated.id, username: updated.username, display_name: updated.display_name };
       },
       create(input) {
         const created = createUser(input);

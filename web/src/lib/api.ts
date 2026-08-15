@@ -304,6 +304,16 @@ export type TierSummary = {
   next_required_micros: number;
 };
 
+export type PriceWindow = {
+  start: string;
+  end: string;
+  days: number[];
+  input_price_micros: number;
+  output_price_micros: number;
+  cache_read_price_micros: number;
+  cache_write_price_micros: number;
+};
+
 export type ModelPrice = {
   model: string;
   input_price_micros: number;
@@ -316,6 +326,8 @@ export type ModelPrice = {
   context_window: number;
   max_output_tokens: number;
   enabled: boolean;
+  windows?: PriceWindow[];
+  active_window_index?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -568,6 +580,8 @@ export type Settings = {
   cache_methods: string[];
   cache_paths: string[];
   brand_name: string;
+  brand_tagline?: string;
+  brand_icon_url?: string | null;
   company_name: string;
   proxy_test_url: string;
   announcement_enabled?: boolean;
@@ -629,8 +643,10 @@ export type Announcement = {
 
 export type Branding = {
   brand_name: string;
+  brand_tagline?: string;
   company_name: string;
   public_base_url: string;
+  icon_url?: string | null;
   announcement?: Announcement;
 };
 
@@ -841,6 +857,7 @@ export const api = {
       other_max_retries?: number;
       retry_delay_ms?: number;
       brand_name?: string;
+      brand_tagline?: string;
       company_name?: string;
       proxy_test_url?: string;
       announcement_enabled?: boolean;
@@ -868,6 +885,12 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify(body),
       }),
+    uploadBrandIcon: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return request<Settings>("/admin/api/settings/brand-icon", { method: "POST", body: form, headers: {} });
+    },
+    removeBrandIcon: () => request<Settings>("/admin/api/settings/brand-icon", { method: "DELETE" }),
   },
   modules: {
     public: () => request<{ items: PublicModule[] }>("/modules/public", {}, { auth: false }),

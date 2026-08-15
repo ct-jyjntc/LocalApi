@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import {
@@ -19,12 +19,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useI18n, type Locale } from "@/lib/i18n";
 import { hasModuleFeature, usePublicModules } from "@/lib/modules";
-import { applyDocumentTitle, BRANDING_QUERY_KEY, DEFAULT_BRAND_NAME, persistBranding, resolveBrandName } from "@/lib/branding";
+import { applyDocumentTitle, BRANDING_QUERY_KEY, DEFAULT_BRAND_NAME, formatBrandTitle, persistBranding, resolveBrandName } from "@/lib/branding";
 
 export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const { theme, setTheme } = useTheme();
   const { t, locale, setLocale } = useI18n();
   const qc = useQueryClient();
+  const iconFileRef = useRef<HTMLInputElement>(null);
   const { data } = useQuery({
     queryKey: ["settings"],
     queryFn: () => api.settings.get(),
@@ -39,6 +40,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [otherMaxRetries, setOtherMaxRetries] = useState(0);
   const [retryDelayMs, setRetryDelayMs] = useState(400);
   const [brandName, setBrandName] = useState(() => resolveBrandName());
+  const [brandTagline, setBrandTagline] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [proxyTestUrl, setProxyTestUrl] = useState("");
   const [announcementEnabled, setAnnouncementEnabled] = useState(false);
@@ -73,6 +75,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setOtherMaxRetries(Number(data.other_max_retries ?? 0));
     setRetryDelayMs(Number(data.retry_delay_ms ?? 400));
     setBrandName(data.brand_name || DEFAULT_BRAND_NAME);
+    setBrandTagline(data.brand_tagline || "");
     setCompanyName(data.company_name || "");
     setProxyTestUrl(data.proxy_test_url || "");
     setAnnouncementEnabled(Boolean(data.announcement_enabled));
@@ -155,15 +158,50 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const saveBranding = useMutation({
     mutationFn: async () => api.settings.update({
       brand_name: brandName.trim() || DEFAULT_BRAND_NAME,
+      brand_tagline: brandTagline.trim(),
       company_name: companyName.trim(),
       public_base_url: publicBaseUrl.trim(),
     }),
     onSuccess: (result) => {
-      persistBranding(result.brand_name, result.company_name);
-      applyDocumentTitle(result.brand_name || DEFAULT_BRAND_NAME);
+      persistBranding({
+        brandName: result.brand_name,
+        companyName: result.company_name,
+        tagline: result.brand_tagline,
+        iconUrl: result.brand_icon_url,
+      });
+      applyDocumentTitle(formatBrandTitle(result.brand_name || DEFAULT_BRAND_NAME, result.brand_tagline));
       toast.success(t("settings.brandingSaved"));
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: BRANDING_QUERY_KEY });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const applyIconResult = (result: { brand_name: string; company_name?: string; brand_tagline?: string; brand_icon_url?: string | null }) => {
+    persistBranding({
+      brandName: result.brand_name,
+      companyName: result.company_name,
+      tagline: result.brand_tagline,
+      iconUrl: result.brand_icon_url,
+    });
+    qc.invalidateQueries({ queryKey: ["settings"] });
+    qc.invalidateQueries({ queryKey: BRANDING_QUERY_KEY });
+  };
+
+  const uploadBrandIcon = useMutation({
+    mutationFn: (file: File) => api.settings.uploadBrandIcon(file),
+    onSuccess: (result) => {
+      applyIconResult(result);
+      toast.success(locale === "zh" ? "品牌图标已更新" : "Brand icon updated");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const removeBrandIcon = useMutation({
+    mutationFn: () => api.settings.removeBrandIcon(),
+    onSuccess: (result) => {
+      applyIconResult(result);
+      toast.success(locale === "zh" ? "品牌图标已移除" : "Brand icon removed");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -653,11 +691,79 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
           <div className="space-y-1.5">
             <Label>{t("settings.brandName")}</Label>
             <Input value={brandName} maxLength={80} onChange={(event) => setBrandName(event.target.value)} />
+            <p className="text-[11px] text-muted-foreground">{locale === "zh" ? "主标题，如 DeepSeek。" : "Main title, e.g. DeepSeek."}</p>
           </div>
           <div className="space-y-1.5">
+            <Label>{locale === "zh" ? "副标题" : "Tagline"}</Label>
+            <Input
+              value={brandTagline}
+              maxLength={20}
+              placeholder={locale === "zh" ? "开放平台" : "Open Platform"}
+              onChange={(event) => setBrandTagline(event.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">{locale === "zh" ? "显示在主标题旁的小标签。" : "Small badge next to the main title."}</p>
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
             <Label>{t("settings.companyName")}</Label>
             <Input value={companyName} maxLength={160} onChange={(event) => setCompanyName(event.target.value)} />
             <p className="text-[11px] text-muted-foreground">{t("settings.companyHint")}</p>
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label>{locale === "zh" ? "品牌图标" : "Brand icon"}</Label>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex size-10 items-center justify-center overflow-hidden rounded-md bg-secondary/55">
+                {data?.brand_icon_url ? (
+                  <img src={data.brand_icon_url} alt="" className="size-full object-contain" />
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">—</span>
+                )}
+              </div>
+              <input
+                ref={iconFileRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,.ico"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  if (file.size > 512 * 1024) {
+                    toast.error(locale === "zh" ? "图标需不超过 512 KB" : "Icon must be 512 KB or smaller");
+                    return;
+                  }
+                  uploadBrandIcon.mutate(file);
+                }}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="text-muted-foreground"
+                disabled={uploadBrandIcon.isPending}
+                onClick={() => iconFileRef.current?.click()}
+              >
+                {uploadBrandIcon.isPending
+                  ? t("common.loading")
+                  : locale === "zh" ? "上传图标" : "Upload icon"}
+              </Button>
+              {data?.brand_icon_url ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  disabled={removeBrandIcon.isPending}
+                  onClick={() => removeBrandIcon.mutate()}
+                >
+                  {locale === "zh" ? "移除" : "Remove"}
+                </Button>
+              ) : null}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {locale === "zh"
+                ? "PNG / JPEG / WebP / SVG / ICO，最大 512 KB。用于登录页、侧栏和浏览器标签图标。"
+                : "PNG / JPEG / WebP / SVG / ICO, max 512 KB. Used on login, sidebar, and the tab icon."}
+            </p>
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label>{t("settings.publicBaseUrl")}</Label>

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-test("LinuxDo OAuth login resolves by uid binding, never by username", async () => {
+test("LinuxDo OAuth login resolves by uid, claiming unbound same-name accounts", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "localapi-linuxdo-binding-"));
   process.env.LOCALAPI_DATA_DIR = dir;
   process.env.SECRETS_KEY = "linuxdo-binding-test-secret";
@@ -18,31 +18,44 @@ test("LinuxDo OAuth login resolves by uid binding, never by username", async () 
     updateUser,
   } = await import("../src/services/users");
 
-  // Decision logic mirrored from modules/linuxdo/src/routes/auth.ts callback:
-  // resolve by uid first; on miss, refuse when the username is already taken by
-  // a different, unbound account (would be an account-takeover vector).
+  // Decision logic from modules/linuxdo/src/routes/auth.ts callback:
+  // resolve by uid first; on miss, claim an unbound same-name account
+  // (pre-migration LinuxDo users have no linuxdo_uid). Refuse only when the
+  // username is already bound to a different uid.
   function resolveOAuthUser(uid: string, username: string) {
     const bound = getUserByLinuxDoUid(uid);
-    if (bound) return { user: bound, created: false };
+    if (bound) return { user: bound, created: false, claimed: false };
     const existing = getUserByUsername(username);
-    if (existing) return { conflict: true };
+    if (existing) {
+      if (!existing.linuxdo_uid) {
+        const claimed = updateUser(existing.id, { linuxdo_uid: uid });
+        return { user: claimed!, created: false, claimed: true };
+      }
+      return { conflict: true };
+    }
     const created = createUser({
       username,
       password: "random-password-not-user-facing",
       linuxdo_uid: uid,
     });
-    return { user: getUser(created.id)!, created: true };
+    return { user: getUser(created.id)!, created: true, claimed: false };
   }
 
   try {
     initDb();
     // Password-registered victim account "bob" with no LinuxDo binding.
+    // First successful OAuth with the same username claims that unbound
+    // pre-migration account (this is how existing LinuxDo users keep working).
     createUser({ username: "bob", password: "password-123" });
 
-    // Attacker registers a LinuxDo account named "bob" (uid 9999) and logs in.
-    const attack = resolveOAuthUser("9999", "bob");
-    assert.ok(attack.conflict, "same-named unbound account must refuse OAuth login");
-    assert.equal(getUserByLinuxDoUid("9999"), null, "no binding may be created for the attacker");
+    const claim = resolveOAuthUser("9999", "bob");
+    assert.ok(claim.claimed, "unbound same-name account must be claimed");
+    assert.equal(getUserByLinuxDoUid("9999")?.id, getUserByUsername("bob")?.id);
+
+    // A later attacker with a different uid cannot steal the now-bound name.
+    const attack = resolveOAuthUser("8888", "bob");
+    assert.ok(attack.conflict, "same-named already-bound account must refuse OAuth login");
+    assert.equal(getUserByLinuxDoUid("8888"), null, "no binding may be created for the attacker");
 
     // Victim can still log in with their password.
     assert.ok(getUserByUsername("bob"), "password account must remain intact");

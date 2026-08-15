@@ -116,16 +116,20 @@ export function createAuthRoutes(ctx: ModuleContext) {
       if (!user) {
         const existing = ctx.users.getByUsername(username);
         if (existing) {
-          // The username is taken by an account that is not bound to this
-          // LinuxDo identity. Logging the attacker in would hijack that
-          // account; creating a duplicate is impossible (unique username).
-          // Refuse and ask for manual admin binding instead.
-          return res
-            .status(409)
-            .send(
-              "该用户名已被其他账号占用且未绑定当前 LinuxDo 账号，登录已拒绝。" +
-                "如确为本人的账号，请先用密码登录，或联系管理员绑定 LinuxDo 账号。",
-            );
+          // Pre-migration accounts were created by username only and have no
+          // linuxdo_uid. Claim that unbound account on first successful OAuth
+          // so existing LinuxDo users keep working. If the username is already
+          // bound to a different uid, refuse (account-takeover guard).
+          if (!existing.linuxdo_uid) {
+            user = ctx.users.bindLinuxDoUid(existing.id, linuxdoUid) ?? existing;
+          } else {
+            return res
+              .status(409)
+              .send(
+                "该用户名已被其他账号占用且未绑定当前 LinuxDo 账号，登录已拒绝。" +
+                  "如确为本人的账号，请先用密码登录，或联系管理员绑定 LinuxDo 账号。",
+              );
+          }
         }
         const linuxdoRegistrationEnabled =
           (ctx.getSetting("linuxdo_registration_enabled") ?? "true") === "true";

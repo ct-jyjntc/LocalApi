@@ -30,6 +30,7 @@ import { userApi } from "@/lib/api";
 import { AnnouncementHost } from "@/components/AnnouncementHost";
 import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
 import { useBrand } from "@/lib/branding";
+import { BrandGlyph, BrandMark } from "@/components/BrandMark";
 
 type NavItem = {
   to: string;
@@ -71,7 +72,7 @@ const COLLAPSE_KEY = "localapi_sidebar_collapsed";
 
 export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"; onLogout?: () => void }) {
   const { t, locale } = useI18n();
-  const { brandName, companyName } = useBrand();
+  const { brandName, companyName, tagline, iconUrl } = useBrand();
   // User-console feature flags (check-in, etc.) — keep in sync with admin settings.
   const userConfig = useQuery({
     queryKey: ["user-config"],
@@ -121,6 +122,8 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
       >
         <SidebarChrome
           brand={brandName}
+          tagline={tagline}
+          iconUrl={iconUrl}
           collapsed={collapsed}
           onToggle={() => setCollapsed((v) => !v)}
           expandLabel={t("shell.expand")}
@@ -152,8 +155,8 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           />
           <aside className="absolute inset-y-0 left-0 flex w-[min(240px,calc(100vw-2rem))] flex-col bg-sidebar py-6 shadow-lg">
             <div className="flex h-8 shrink-0 items-center gap-1 px-3">
-              <span className="min-w-0 flex-1 truncate px-0.5 text-base font-semibold tracking-tight">
-                {brandName}
+              <span className="min-w-0 flex-1 px-0.5">
+                <BrandMark name={brandName} tagline={tagline} iconUrl={iconUrl} />
               </span>
               <Button
                 type="button"
@@ -202,7 +205,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
           >
             <Menu strokeWidth={1.8} />
           </Button>
-          <span className="truncate text-base font-semibold tracking-tight">{brandName}</span>
+          <BrandMark name={brandName} tagline={tagline} iconUrl={iconUrl} />
         </header>
 
         <AnnouncementHost />
@@ -228,46 +231,79 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
   );
 }
 
+function SidebarIconToggle({
+  collapsed,
+  iconUrl,
+  onToggle,
+  label,
+}: {
+  collapsed: boolean;
+  iconUrl?: string | null;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={label}
+      title={label}
+      className="group relative flex size-6 shrink-0 items-center justify-center rounded-md text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <span className="flex items-center justify-center transition-opacity duration-150 group-hover:opacity-0 group-focus-visible:opacity-0">
+        {iconUrl ? (
+          <img src={iconUrl} alt="" className="h-3.5 w-5 object-contain object-center dark:invert" />
+        ) : (
+          <BrandGlyph className="h-3.5 w-5" />
+        )}
+      </span>
+      <span className="absolute inset-0 flex items-center justify-center opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
+        {collapsed ? (
+          <PanelLeftOpen className="size-3.5" strokeWidth={1.8} />
+        ) : (
+          <PanelLeftClose className="size-3.5" strokeWidth={1.8} />
+        )}
+      </span>
+    </button>
+  );
+}
+
 function SidebarChrome({
   brand,
+  tagline,
+  iconUrl,
   collapsed,
   onToggle,
   expandLabel,
   collapseLabel,
 }: {
   brand: string;
+  tagline?: string | null;
+  iconUrl?: string | null;
   collapsed: boolean;
   onToggle: () => void;
   expandLabel: string;
   collapseLabel: string;
 }) {
+  const toggle = (
+    <SidebarIconToggle
+      collapsed={collapsed}
+      iconUrl={iconUrl}
+      onToggle={onToggle}
+      label={collapsed ? expandLabel : collapseLabel}
+    />
+  );
+
   return (
     <div
       className={cn(
-        "flex h-8 shrink-0 items-center gap-1 px-3",
+        "flex h-10 shrink-0 items-center px-3",
         collapsed && "justify-center px-2",
       )}
     >
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
-        onClick={onToggle}
-        aria-label={collapsed ? expandLabel : collapseLabel}
-        title={collapsed ? expandLabel : collapseLabel}
-      >
-        {collapsed ? (
-          <PanelLeftOpen strokeWidth={1.8} />
-        ) : (
-          <PanelLeftClose strokeWidth={1.8} />
-        )}
-      </Button>
-      {!collapsed ? (
-        <span className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight">
-          {brand}
-        </span>
-      ) : null}
+      {collapsed ? toggle : (
+        <BrandMark name={brand} tagline={tagline} iconUrl={iconUrl} leading={toggle} />
+      )}
     </div>
   );
 }

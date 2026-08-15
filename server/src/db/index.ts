@@ -25,6 +25,11 @@ db.pragma("busy_timeout = 5000");
 db.pragma("temp_store = MEMORY");
 db.pragma("cache_size = -32768");
 db.pragma("mmap_size = 268435456");
+try {
+  db.pragma("auto_vacuum = INCREMENTAL");
+} catch {
+  // Existing files keep their vacuum mode until reclaimSqliteSpace() VACUUMs.
+}
 
 const settingsCache = new Map<string, string>();
 let settingsCacheReady = false;
@@ -145,6 +150,7 @@ export function initDb() {
       context_window INTEGER NOT NULL DEFAULT 0,
       max_output_tokens INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
+      price_windows TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -521,6 +527,9 @@ export function initDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_logs_user_created ON request_logs(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_logs_status_created ON request_logs(status_code, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_logs_model_created ON request_logs(model, created_at DESC);
   `);
 
   // Migrate older DBs that lack provider columns
@@ -624,6 +633,9 @@ export function initDb() {
   }
   if (!priceCols.includes("image_input")) {
     db.exec("ALTER TABLE model_prices ADD COLUMN image_input INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!priceCols.includes("price_windows")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN price_windows TEXT NOT NULL DEFAULT '[]'");
   }
 
   const logCols = (
@@ -836,6 +848,7 @@ export function initDb() {
     other_max_retries: "0",
     retry_delay_ms: "400",
     brand_name: "LocalAPI",
+    brand_tagline: "",
     company_name: "",
     public_base_url: "",
     registration_enabled: "false",
@@ -891,6 +904,25 @@ export function initDb() {
   }
 
   refreshSettingsCache();
+  reclaimSqliteSpace();
+}
+
+/** Return deleted pages to the OS and checkpoint WAL. Safe on a ~10MB file. */
+export function reclaimSqliteSpace() {
+  try {
+    const mode = Number(db.pragma("auto_vacuum", { simple: true }) ?? 0);
+    if (mode !== 2) {
+      db.pragma("auto_vacuum = INCREMENTAL");
+      db.exec("VACUUM");
+      return;
+    }
+    const freelist = Number(db.pragma("freelist_count", { simple: true }) ?? 0);
+    if (freelist > 16) db.pragma("incremental_vacuum(256)");
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    db.pragma("optimize");
+  } catch {
+    // ignore
+  }
 }
 
 export type Provider = {
@@ -976,6 +1008,16 @@ export type UserTier = {
   updated_at: string;
 };
 
+export type PriceWindow = {
+  start: string;
+  end: string;
+  days: number[];
+  input_price_micros: number;
+  output_price_micros: number;
+  cache_read_price_micros: number;
+  cache_write_price_micros: number;
+};
+
 export type ModelPrice = {
   model: string;
   input_price_micros: number;
@@ -988,6 +1030,7 @@ export type ModelPrice = {
   context_window: number;
   max_output_tokens: number;
   enabled: number;
+  price_windows: string;
   created_at: string;
   updated_at: string;
 };
@@ -996,11 +1039,15 @@ export type ModelPrice = {
  * API-facing shape: booleans instead of 0/1 and a parsed effort array.
  * listModelPrices()/getModelPrice() convert DB rows into this.
  */
-export type ModelPriceView = Omit<ModelPrice, "reasoning_enabled" | "reasoning_effort" | "image_input" | "enabled"> & {
+export type ModelPriceView = Omit<
+  ModelPrice,
+  "reasoning_enabled" | "reasoning_effort" | "image_input" | "enabled" | "price_windows"
+> & {
   reasoning_enabled: boolean;
   reasoning_effort: string[];
   image_input: boolean;
   enabled: boolean;
+  windows: PriceWindow[];
 };
 export type Plan = {
   id: string;

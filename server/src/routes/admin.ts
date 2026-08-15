@@ -1,7 +1,16 @@
 import { Router, Response } from "express";
+import multer from "multer";
 import { z } from "zod";
 import { getAllSettings, getSetting, setSetting } from "../db";
-import { getBrandName } from "../services/branding";
+import {
+  BrandIconError,
+  BRAND_ICON_MAX_BYTES,
+  clearBrandIcon,
+  getBrandIconUrl,
+  getBrandName,
+  getBrandTagline,
+  saveBrandIcon,
+} from "../services/branding";
 import {
   clearCache,
   deleteCacheEntry,
@@ -139,6 +148,7 @@ const settingsSchema = z.object({
   cache_methods: z.array(z.enum(["GET", "POST"])).max(2).optional(),
   cache_paths: z.array(z.string().startsWith("/").max(300)).max(100).optional(),
   brand_name: z.string().trim().min(1).max(80).optional(),
+  brand_tagline: z.string().trim().max(20).optional(),
   company_name: z.string().trim().max(160).optional(),
   announcement_enabled: z.boolean().optional(),
   announcement_title: z.string().trim().max(120).optional(),
@@ -473,6 +483,8 @@ function serializeSettings() {
     cache_methods: JSON.parse(all.cache_methods || "[]"),
     cache_paths: JSON.parse(all.cache_paths || "[]"),
     brand_name: getBrandName(),
+    brand_tagline: getBrandTagline(),
+    brand_icon_url: getBrandIconUrl(),
     company_name: all.company_name || "",
     announcement_enabled: (all.announcement_enabled ?? "false") === "true",
     announcement_title: all.announcement_title || "",
@@ -544,6 +556,7 @@ adminRouter.patch("/settings", (req, res) => {
     setSetting("cache_paths", JSON.stringify(body.cache_paths));
   }
   if (body.brand_name !== undefined) setSetting("brand_name", body.brand_name);
+  if (body.brand_tagline !== undefined) setSetting("brand_tagline", body.brand_tagline);
   if (body.proxy_test_url !== undefined) setSetting("proxy_test_url", body.proxy_test_url);
   if (body.company_name !== undefined) setSetting("company_name", body.company_name);
   if (
@@ -624,6 +637,31 @@ adminRouter.patch("/settings", (req, res) => {
   }
 
   res.json(serializeSettings());
+});
+
+const brandIconUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: BRAND_ICON_MAX_BYTES },
+});
+
+adminRouter.post("/settings/brand-icon", brandIconUpload.single("file"), (req, res) => {
+  if (!req.file?.buffer?.length) {
+    return res.status(400).json({ error: "Image file is required" });
+  }
+  try {
+    saveBrandIcon(req.file.buffer);
+    return res.json(serializeSettings());
+  } catch (error) {
+    if (error instanceof BrandIconError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    return res.status(500).json({ error: "Unable to save brand icon" });
+  }
+});
+
+adminRouter.delete("/settings/brand-icon", (_req, res) => {
+  clearBrandIcon();
+  return res.json(serializeSettings());
 });
 
 adminRouter.use(modulesAdminRouter);

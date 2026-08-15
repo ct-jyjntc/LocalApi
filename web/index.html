@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@600;700&display=swap" rel="stylesheet" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
     <title>LocalAPI</title>
@@ -10,8 +13,15 @@
       window.__LOCALAPI_BRANDING__ = /*__LOCALAPI_BRANDING__*/{};
       (function () {
         try {
-          var name = window.__LOCALAPI_BRANDING__.brand_name || localStorage.getItem("localapi_brand_name");
-          if (name) document.title = name;
+          var boot = window.__LOCALAPI_BRANDING__ || {};
+          var name = boot.brand_name || localStorage.getItem("localapi_brand_name");
+          var tag = boot.brand_tagline || localStorage.getItem("localapi_brand_tagline");
+          if (name) document.title = tag ? name + " " + tag : name;
+          var icon = boot.icon_url || localStorage.getItem("localapi_brand_icon_url");
+          if (icon) {
+            var link = document.querySelector('link[rel="icon"]');
+            if (link) link.href = icon;
+          }
         } catch (e) {}
       })();
     </script>

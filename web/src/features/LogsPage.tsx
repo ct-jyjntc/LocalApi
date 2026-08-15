@@ -14,7 +14,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { formatMs, shortTime, cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { formatCredits, formatMs, shortTime, cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { useAppDialog } from "@/components/app-dialog-context";
 
@@ -44,6 +51,7 @@ export function LogsPage() {
   const [filters, setFilters] = useState<LogFilters>(EMPTY_FILTERS);
   const [draft, setDraft] = useState<LogFilters>(EMPTY_FILTERS);
   const [page, setPage] = useState(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const pageSize = 50;
 
   // Debounce free-text fields a bit so typing doesn't thrash the API.
@@ -68,9 +76,9 @@ export function LogsPage() {
         provider: filters.provider.trim() || undefined,
         model: filters.model.trim() || undefined,
       }),
-    refetchInterval: 12_000,
+    refetchInterval: 20_000,
     refetchIntervalInBackground: false,
-    staleTime: 8_000,
+    staleTime: 15_000,
     placeholderData: (prev) => prev,
   });
 
@@ -201,12 +209,12 @@ export function LogsPage() {
           <>
             <div className="divide-y divide-border/40 sm:hidden">
               {items.map((log) => (
-                <MobileLogRow key={log.id} log={log} />
+                <MobileLogRow key={log.id} log={log} onOpen={() => setSelectedId(log.id)} />
               ))}
             </div>
             <div className="hidden sm:block">
               {items.map((log) => (
-                <DesktopLogRow key={log.id} log={log} />
+                <DesktopLogRow key={log.id} log={log} onOpen={() => setSelectedId(log.id)} />
               ))}
             </div>
           </>
@@ -221,11 +229,17 @@ export function LogsPage() {
           zh={zh}
         />
       </Card>
+
+      <LogDetailDialog
+        logId={selectedId}
+        preview={items.find((item) => item.id === selectedId) || null}
+        onClose={() => setSelectedId(null)}
+      />
     </div>
   );
 }
 
-function DesktopLogRow({ log }: { log: LogRow }) {
+function DesktopLogRow({ log, onOpen }: { log: LogRow; onOpen: () => void }) {
   const { t } = useI18n();
   const inputTok = log.prompt_tokens ?? 0;
   const outputTok = log.completion_tokens ?? 0;
@@ -234,7 +248,7 @@ function DesktopLogRow({ log }: { log: LogRow }) {
   const usagePrefix = log.usage_estimated ? "≈" : "";
 
   return (
-    <div className={TABLE_ROW_CLASS}>
+    <button type="button" className={cn(TABLE_ROW_CLASS, "cursor-pointer border-0 bg-transparent")} onClick={onOpen}>
       <span className="w-10 shrink-0">
         <MethodBadge method={log.method} />
       </span>
@@ -283,11 +297,11 @@ function DesktopLogRow({ log }: { log: LogRow }) {
       <span className="hidden w-36 shrink-0 text-right text-[11px] text-muted-foreground xl:inline">
         {shortTime(log.created_at)}
       </span>
-    </div>
+    </button>
   );
 }
 
-function MobileLogRow({ log }: { log: LogRow }) {
+function MobileLogRow({ log, onOpen }: { log: LogRow; onOpen: () => void }) {
   const { t } = useI18n();
   const inputTok = log.prompt_tokens ?? 0;
   const outputTok = log.completion_tokens ?? 0;
@@ -295,7 +309,7 @@ function MobileLogRow({ log }: { log: LogRow }) {
   const reasonTok = log.reasoning_tokens ?? 0;
 
   return (
-    <div className="space-y-1.5 px-3 py-2.5 text-[11px]">
+    <button type="button" className="w-full space-y-1.5 border-0 bg-transparent px-3 py-2.5 text-left text-[11px] transition-colors hover:bg-secondary/40" onClick={onOpen}>
       <div className="flex items-center gap-2">
         <MethodBadge method={log.method} />
         <span className={cn("font-mono tabular-nums", log.status_code >= 400 && "text-destructive")}>
@@ -328,6 +342,107 @@ function MobileLogRow({ log }: { log: LogRow }) {
         </span>
       </div>
       {log.error ? <p className="break-words text-destructive">{log.error}</p> : null}
+    </button>
+  );
+}
+
+function LogDetailDialog({
+  logId,
+  preview,
+  onClose,
+}: {
+  logId: string | null;
+  preview: LogRow | null;
+  onClose: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const zh = locale === "zh";
+  const detail = useQuery({
+    queryKey: ["admin", "logs", "detail", logId],
+    queryFn: () => api.logs.get(logId!),
+    enabled: Boolean(logId),
+  });
+  const log = detail.data ?? preview;
+  if (!logId || !log) return null;
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-[720px]">
+        <DialogHeader>
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            <MethodBadge method={log.method} />
+            <span className="min-w-0 truncate font-mono text-xs font-normal">{log.path}</span>
+          </DialogTitle>
+          <DialogDescription className="sr-only">{t("logs.detail")}</DialogDescription>
+        </DialogHeader>
+
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+          <Meta label="HTTP" value={String(log.status_code)} danger={log.status_code >= 400} />
+          <Meta label={t("common.latency")} value={formatMs(log.latency_ms)} />
+          <Meta label={t("common.time")} value={shortTime(log.created_at)} />
+          <Meta label={t("logs.stream")} value={log.stream ? t("logs.filterStreamYes") : t("logs.filterStreamNo")} />
+          <Meta label={t("common.model")} value={log.model || "—"} mono />
+          <Meta label={t("logs.channel")} value={log.provider_name || "—"} />
+          <Meta label={t("logs.user")} value={userLabel(log)} />
+          <Meta label={t("logs.key")} value={log.api_key_name || "—"} />
+          <Meta label={t("logs.tokenInput")} value={fmtTok(log.prompt_tokens, log.usage_estimated)} />
+          <Meta label={t("logs.tokenOutput")} value={fmtTok(log.completion_tokens, log.usage_estimated)} />
+          <Meta label={t("logs.tokenCache")} value={fmtTok(log.cached_tokens, log.usage_estimated)} />
+          <Meta label={t("logs.tokenReasoning")} value={fmtTok(log.reasoning_tokens, log.usage_estimated)} />
+          <Meta label={zh ? "费用" : "Cost"} value={formatCredits(log.cost_micros ?? 0)} />
+          <Meta label={t("logs.responseCache")} value={log.cached ? t("logs.hit") : t("logs.miss")} />
+          <Meta label={zh ? "请求" : "Request"} value={fmtBytes(log.request_bytes)} />
+          <Meta label={zh ? "响应" : "Response"} value={fmtBytes(log.response_bytes)} />
+        </div>
+
+        {log.error ? (
+          <div className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+            {log.error}
+          </div>
+        ) : null}
+
+        {detail.isLoading ? (
+          <p className="mt-4 text-xs text-muted-foreground">{t("common.loading")}</p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            <TextBlock label={t("logs.input")} empty={t("logs.noInput")} value={detail.data?.input_text} />
+            <TextBlock label={t("logs.output")} empty={t("logs.noOutput")} value={detail.data?.output_text} />
+            <TextBlock label={t("logs.reasoning")} empty={t("logs.noReasoning")} value={detail.data?.reasoning_text} />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Meta({
+  label,
+  value,
+  mono,
+  danger,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <div className="min-w-0 rounded-md bg-secondary/55 px-2.5 py-2">
+      <p className="text-muted-foreground">{label}</p>
+      <p className={cn("mt-0.5 truncate", mono && "font-mono", danger && "text-destructive")} title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function TextBlock({ label, empty, value }: { label: string; empty: string; value?: string | null }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <div className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/55 px-3 py-2.5 font-mono text-[11px] leading-5">
+        {value?.trim() ? value : <span className="text-muted-foreground">{empty}</span>}
+      </div>
     </div>
   );
 }
@@ -364,6 +479,17 @@ function FilterSelect({
 
 function Tok({ n }: { n: number }) {
   return <span className="min-w-[1.5rem] text-right text-foreground/90">{Number(n || 0).toLocaleString()}</span>;
+}
+
+function fmtTok(n: number | undefined, estimated?: boolean) {
+  return `${estimated ? "≈" : ""}${Number(n || 0).toLocaleString()}`;
+}
+
+function fmtBytes(n: number | undefined) {
+  const bytes = Number(n || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function userLabel(log: Pick<LogRow, "user_label" | "display_name" | "username" | "user_id">) {

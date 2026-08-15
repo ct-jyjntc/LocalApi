@@ -8,6 +8,7 @@ import {
   listWalletLedgerPage,
   upsertModelPrice,
 } from "../services/billing";
+import { parsePriceWindows } from "../services/price-windows";
 import {
   adjustSubscriptionCredits,
   assignPlan,
@@ -74,6 +75,15 @@ const userSchema = z.object({
     .transform((value) => (value ? value : null)),
 });
 const userPatchSchema = userSchema.omit({ username: true }).partial();
+const priceWindowSchema = z.object({
+  start: z.string().trim().min(4).max(8),
+  end: z.string().trim().min(4).max(8),
+  days: z.array(z.coerce.number().int().min(0).max(6)).max(7).optional(),
+  input_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  output_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  cache_read_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  cache_write_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+});
 const priceSchema = z.object({
   model: z.string().trim().min(1).max(200),
   input_price_micros: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
@@ -86,6 +96,7 @@ const priceSchema = z.object({
   context_window: z.coerce.number().int().min(0).max(10_000_000).optional(),
   max_output_tokens: z.coerce.number().int().min(0).max(10_000_000).optional(),
   enabled: z.boolean().optional(),
+  windows: z.array(priceWindowSchema).max(16).optional(),
 });
 const planSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -366,7 +377,11 @@ commercialAdminRouter.put("/prices/:model", (req, res) => {
   const decodedModel = decodeURIComponent(req.params.model);
   const body = parseBody(priceSchema.omit({ model: true }).extend({ model: z.string().optional() }), req.body, res);
   if (!body) return;
-  const price = upsertModelPrice({ ...body, model: decodedModel });
+  const price = upsertModelPrice({
+    ...body,
+    model: decodedModel,
+    windows: body.windows ? parsePriceWindows(body.windows) : undefined,
+  });
   writeAudit({ action: "price.upsert", target_type: "model", target_id: decodedModel, detail: body });
   return res.json(price);
 });

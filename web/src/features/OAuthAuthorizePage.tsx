@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/lib/i18n";
 import { useBrand } from "@/lib/branding";
+import { BrandMark } from "@/components/BrandMark";
 
 /**
  * OAuth consent page for the Pi-Web provider integration.
@@ -22,7 +23,7 @@ export function OAuthAuthorizePage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
   const state = new URLSearchParams(window.location.search).get("state") || "";
-  const { brandName, companyName } = useBrand();
+  const { brandName, companyName, tagline, iconUrl } = useBrand();
   const [phase, setPhase] = useState<"checking" | "login" | "consent" | "done" | "error">("checking");
   const [me, setMe] = useState<UserRow | null>(null);
   const [decision, setDecision] = useState<"allow" | "deny" | null>(null);
@@ -98,8 +99,8 @@ export function OAuthAuthorizePage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 py-12">
       <div className="w-full max-w-[400px] space-y-6">
-        <div className="space-y-3 text-center">
-          <h1 className="text-3xl font-medium tracking-tight">{brandName}</h1>
+        <div className="flex flex-col items-center space-y-4 text-center">
+          <BrandMark name={brandName} tagline={tagline} iconUrl={iconUrl} size="hero" />
           {phase !== "error" ? (
             <p className="mx-auto max-w-[320px] text-sm leading-6 text-muted-foreground">
               {zh ? "Pi-Web 请求访问你的账号" : "Pi-Web is requesting access to your account"}

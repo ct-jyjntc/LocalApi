@@ -94,8 +94,9 @@ export type ModuleContext = {
   mountAdminRoutes(router: Router | RequestHandler): void;
   mountPaymentRoutes(router: Router | RequestHandler): void;
   users: {
-    getByUsername(username: string): { id: string; username: string; display_name: string } | null;
-    getByLinuxDoUid(uid: string): { id: string; username: string; display_name: string } | null;
+    getByUsername(username: string): { id: string; username: string; display_name: string; linuxdo_uid?: string | null } | null;
+    getByLinuxDoUid(uid: string): { id: string; username: string; display_name: string; linuxdo_uid?: string | null } | null;
+    bindLinuxDoUid(userId: string, uid: string): { id: string; username: string; display_name: string } | null;
     create(input: {
       username: string;
       display_name?: string;

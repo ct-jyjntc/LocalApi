@@ -22,7 +22,7 @@ import { migratePointsScaleIfNeeded } from "./services/checkin";
 import { startProxyScheduler } from "./services/proxy-scheduler";
 import { moduleRegistry } from "./modules/registry";
 import { checkSecretsHealth } from "./utils/secrets-health";
-import { applyBrandingToHtml, getPublicBrandingPayload } from "./services/branding";
+import { applyBrandingToHtml, getPublicBrandingPayload, readBrandIcon } from "./services/branding";
 import { errorHandler, notFoundJson } from "./middleware/errors";
 
 initDb();
@@ -129,6 +129,14 @@ app.get("/branding", (_req, res) => {
   res.json(getPublicBrandingPayload());
 });
 
+app.get("/branding/icon", (_req, res) => {
+  const icon = readBrandIcon();
+  if (!icon) return res.status(404).end();
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader("Content-Type", icon.mime);
+  return res.send(icon.buffer);
+});
+
 app.get("/modules/public", (_req, res) => {
   res.json({ items: moduleRegistry.listPublic() });
 });
@@ -210,7 +218,7 @@ if (webDist) {
       req.path.startsWith("/coding") ||
       req.path.startsWith("/payment/") ||
       req.path === "/health" ||
-      req.path === "/branding" ||
+      req.path.startsWith("/branding") ||
       req.path === "/modules/public"
     ) {
       return next();

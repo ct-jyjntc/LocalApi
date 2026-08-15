@@ -22,6 +22,7 @@ import {
   listUsageRecordsPage,
   listWalletLedgerPage,
 } from "../services/billing";
+import { applyPriceWindows } from "../services/price-windows";
 import {
   authenticateUser,
   createUserSession,
@@ -231,7 +232,7 @@ userRouter.get("/me", (req, res) => {
     wallet: getPublicWallet(user.id),
     tier: resolveUserTier(user.id),
     subscription: getActiveSubscription(user.id),
-    prices: listModelPrices().filter((price) => price.enabled),
+    prices: listModelPrices().filter((price) => price.enabled).map((price) => applyPriceWindows(price)),
   });
 });
 // L22: require a concrete image/* subtype and a base64 payload (data-URL or

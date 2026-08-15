@@ -25,6 +25,7 @@ test("linuxdo oauth: one-time code, token never in URL, nonce-bound exchange", a
     createUserSession,
     getUserByLinuxDoUid,
     getUserByUsername,
+    updateUser,
   } = await import("../src/services/users");
 
   // Fake only the LinuxDo relay exchange; every other request passes through
@@ -60,11 +61,19 @@ test("linuxdo oauth: one-time code, token never in URL, nonce-bound exchange", a
     users: {
       getByUsername: (username: string) => {
         const user = getUserByUsername(username);
-        return user ? { id: user.id, username: user.username, display_name: user.display_name } : null;
+        return user
+          ? { id: user.id, username: user.username, display_name: user.display_name, linuxdo_uid: user.linuxdo_uid ?? null }
+          : null;
       },
       getByLinuxDoUid: (uid: string) => {
         const user = getUserByLinuxDoUid(uid);
-        return user ? { id: user.id, username: user.username, display_name: user.display_name } : null;
+        return user
+          ? { id: user.id, username: user.username, display_name: user.display_name, linuxdo_uid: user.linuxdo_uid ?? null }
+          : null;
+      },
+      bindLinuxDoUid: (userId: string, uid: string) => {
+        const updated = updateUser(userId, { linuxdo_uid: uid });
+        return updated ? { id: updated.id, username: updated.username, display_name: updated.display_name } : null;
       },
       create: (input: { username: string; display_name?: string; password: string; linuxdo_uid?: string }) => {
         const created = createUser(input);

@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { db, RequestLog } from "../db";
+import { db, reclaimSqliteSpace, type RequestLog } from "../db";
 import { nowIso } from "../utils/time";
 
 type LogInput = {
@@ -40,7 +40,7 @@ let logsSincePrune = 0;
 
 type DashboardStats = ReturnType<typeof computeDashboardStats>;
 let dashboardCache: { at: number; value: DashboardStats } | null = null;
-const DASHBOARD_TTL_MS = 5_000;
+const DASHBOARD_TTL_MS = 20_000;
 
 function invalidateDashboardCache() {
   dashboardCache = null;
@@ -101,6 +101,7 @@ export function flushLogs(limit = 500) {
           )`,
         ).run(keep);
         logsSincePrune = 0;
+        reclaimSqliteSpace();
       }
     })();
     invalidateDashboardCache();
@@ -196,7 +197,7 @@ export function listLogs(limit = 100, offset = 0, userId?: string) {
 }
 
 export function listLogsFiltered(input: ListLogsFilter = {}) {
-  flushLogs(Number.MAX_SAFE_INTEGER);
+  flushLogs();
   const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 50)));
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
   const conditions: string[] = [];
@@ -304,7 +305,9 @@ export function getLog(id: string, userId?: string) {
 export function clearLogs() {
   flushLogs(Number.MAX_SAFE_INTEGER);
   invalidateDashboardCache();
-  return db.prepare("DELETE FROM request_logs").run().changes;
+  const removed = db.prepare("DELETE FROM request_logs").run().changes;
+  reclaimSqliteSpace();
+  return removed;
 }
 
 /** Drop stored prompt/response bodies to reclaim disk and speed up scans. */
@@ -318,11 +321,12 @@ export function stripLogContent() {
     )
     .run();
   invalidateDashboardCache();
+  reclaimSqliteSpace();
   return result.changes;
 }
 
 function computeDashboardStats() {
-  flushLogs(Number.MAX_SAFE_INTEGER);
+  flushLogs();
   const totals = db
     .prepare(
       `SELECT
