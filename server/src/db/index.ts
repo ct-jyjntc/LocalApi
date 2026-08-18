@@ -46,6 +46,8 @@ export function initDb() {
       proxy_ids TEXT NOT NULL DEFAULT '[]',
       enabled INTEGER NOT NULL DEFAULT 1,
       timeout_ms INTEGER NOT NULL DEFAULT 60000,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      custom_headers TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -151,6 +153,16 @@ export function initDb() {
       max_output_tokens INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       price_windows TEXT NOT NULL DEFAULT '[]',
+      prompt_preset_ids TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_presets (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      filename TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -171,6 +183,7 @@ export function initDb() {
       stock_used INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
+      visible INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -215,6 +228,93 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_plan_orders_user_created ON plan_orders(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_plan_orders_subscription ON plan_orders(subscription_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS free_prompt_claims (
+      model TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      prefix_chars INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      PRIMARY KEY (model, fingerprint)
+    );
+    CREATE INDEX IF NOT EXISTS idx_free_prompt_claims_user ON free_prompt_claims(user_id, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS free_prompt_claim_events (
+      id TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      prefix_chars INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_free_prompt_claim_events_created ON free_prompt_claim_events(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_free_prompt_claim_events_actor ON free_prompt_claim_events(actor_user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS risk_prompt_observations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      exact_hash TEXT NOT NULL,
+      simhash TEXT NOT NULL,
+      char_len INTEGER NOT NULL,
+      preview TEXT NOT NULL DEFAULT '',
+      client_ip TEXT,
+      user_agent TEXT,
+      api_key_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_risk_obs_model_created ON risk_prompt_observations(model, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS risk_groups (
+      id TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      reason TEXT NOT NULL,
+      sample_hash TEXT,
+      sample_preview TEXT,
+      max_similarity REAL NOT NULL DEFAULT 0,
+      min_gap_seconds INTEGER,
+      window_seconds INTEGER,
+      member_count INTEGER NOT NULL DEFAULT 0,
+      hit_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_action TEXT,
+      ai_score INTEGER,
+      ai_verdict TEXT,
+      ai_analyzed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_risk_groups_status_seen ON risk_groups(status, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS risk_group_members (
+      group_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      hit_count INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (group_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_risk_group_members_user ON risk_group_members(user_id, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS risk_group_events (
+      id TEXT PRIMARY KEY,
+      group_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      peer_user_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      similarity REAL NOT NULL,
+      exact_match INTEGER NOT NULL DEFAULT 0,
+      gap_seconds INTEGER NOT NULL DEFAULT 0,
+      preview TEXT NOT NULL DEFAULT '',
+      peer_preview TEXT NOT NULL DEFAULT '',
+      client_ip TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_risk_group_events_group ON risk_group_events(group_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY,
@@ -542,6 +642,16 @@ export function initDb() {
   if (!providerCols.includes("proxy_ids")) {
     db.exec("ALTER TABLE providers ADD COLUMN proxy_ids TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!providerCols.includes("sort_order")) {
+    db.exec("ALTER TABLE providers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+    const rows = db.prepare("SELECT id FROM providers ORDER BY created_at ASC").all() as Array<{ id: string }>;
+    const update = db.prepare("UPDATE providers SET sort_order = ? WHERE id = ?");
+    rows.forEach((row, idx) => update.run(idx, row.id));
+  }
+  if (!providerCols.includes("custom_headers")) {
+    db.exec("ALTER TABLE providers ADD COLUMN custom_headers TEXT NOT NULL DEFAULT '{}'");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_providers_sort_order ON providers(sort_order)");
 
   const nodeCols = (
     db.prepare("PRAGMA table_info(proxy_nodes)").all() as Array<{ name: string }>
@@ -558,6 +668,9 @@ export function initDb() {
   ).map((c) => c.name);
   if (!userCols.includes("linuxdo_uid")) {
     db.exec("ALTER TABLE users ADD COLUMN linuxdo_uid TEXT");
+  }
+  if (!userCols.includes("training_consent")) {
+    db.exec("ALTER TABLE users ADD COLUMN training_consent INTEGER NOT NULL DEFAULT 1");
   }
   // The unique index must be created AFTER the ALTER above: on a legacy table,
   // CREATE INDEX ... ON users(linuxdo_uid) fails with "no such column" (IF NOT
@@ -637,6 +750,9 @@ export function initDb() {
   if (!priceCols.includes("price_windows")) {
     db.exec("ALTER TABLE model_prices ADD COLUMN price_windows TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!priceCols.includes("prompt_preset_ids")) {
+    db.exec("ALTER TABLE model_prices ADD COLUMN prompt_preset_ids TEXT NOT NULL DEFAULT '[]'");
+  }
 
   const logCols = (
     db.prepare("PRAGMA table_info(request_logs)").all() as Array<{ name: string }>
@@ -691,6 +807,105 @@ export function initDb() {
     const setOrder = db.prepare("UPDATE plans SET sort_order = ? WHERE id = ?");
     db.transaction(() => existingPlans.forEach((plan, index) => setOrder.run(index, plan.id)))();
   }
+  if (!planCols.includes("visible")) {
+    db.exec("ALTER TABLE plans ADD COLUMN visible INTEGER NOT NULL DEFAULT 1");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS free_prompt_claims (
+      model TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      prefix_chars INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      PRIMARY KEY (model, fingerprint)
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_free_prompt_claims_user ON free_prompt_claims(user_id, last_seen_at DESC)");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS free_prompt_claim_events (
+      id TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      prefix_chars INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_free_prompt_claim_events_created ON free_prompt_claim_events(created_at DESC)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_free_prompt_claim_events_actor ON free_prompt_claim_events(actor_user_id, created_at DESC)");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS risk_prompt_observations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      exact_hash TEXT NOT NULL,
+      simhash TEXT NOT NULL,
+      char_len INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_risk_obs_model_created ON risk_prompt_observations(model, created_at DESC)");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS risk_groups (
+      id TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      reason TEXT NOT NULL,
+      sample_hash TEXT,
+      member_count INTEGER NOT NULL DEFAULT 0,
+      hit_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_action TEXT
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_risk_groups_status_seen ON risk_groups(status, last_seen_at DESC)");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS risk_group_members (
+      group_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      hit_count INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (group_id, user_id)
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_risk_group_members_user ON risk_group_members(user_id, last_seen_at DESC)");
+  const riskObsCols = (db.prepare("PRAGMA table_info(risk_prompt_observations)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!riskObsCols.includes("preview")) db.exec("ALTER TABLE risk_prompt_observations ADD COLUMN preview TEXT NOT NULL DEFAULT ''");
+  if (!riskObsCols.includes("client_ip")) db.exec("ALTER TABLE risk_prompt_observations ADD COLUMN client_ip TEXT");
+  if (!riskObsCols.includes("user_agent")) db.exec("ALTER TABLE risk_prompt_observations ADD COLUMN user_agent TEXT");
+  if (!riskObsCols.includes("api_key_id")) db.exec("ALTER TABLE risk_prompt_observations ADD COLUMN api_key_id TEXT");
+  const riskGroupCols = (db.prepare("PRAGMA table_info(risk_groups)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!riskGroupCols.includes("sample_preview")) db.exec("ALTER TABLE risk_groups ADD COLUMN sample_preview TEXT");
+  if (!riskGroupCols.includes("max_similarity")) db.exec("ALTER TABLE risk_groups ADD COLUMN max_similarity REAL NOT NULL DEFAULT 0");
+  if (!riskGroupCols.includes("min_gap_seconds")) db.exec("ALTER TABLE risk_groups ADD COLUMN min_gap_seconds INTEGER");
+  if (!riskGroupCols.includes("window_seconds")) db.exec("ALTER TABLE risk_groups ADD COLUMN window_seconds INTEGER");
+  if (!riskGroupCols.includes("ai_score")) db.exec("ALTER TABLE risk_groups ADD COLUMN ai_score INTEGER");
+  if (!riskGroupCols.includes("ai_verdict")) db.exec("ALTER TABLE risk_groups ADD COLUMN ai_verdict TEXT");
+  if (!riskGroupCols.includes("ai_analyzed_at")) db.exec("ALTER TABLE risk_groups ADD COLUMN ai_analyzed_at TEXT");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS risk_group_events (
+      id TEXT PRIMARY KEY,
+      group_id TEXT NOT NULL,
+      actor_user_id TEXT NOT NULL,
+      peer_user_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      similarity REAL NOT NULL,
+      exact_match INTEGER NOT NULL DEFAULT 0,
+      gap_seconds INTEGER NOT NULL DEFAULT 0,
+      preview TEXT NOT NULL DEFAULT '',
+      peer_preview TEXT NOT NULL DEFAULT '',
+      client_ip TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_risk_group_events_group ON risk_group_events(group_id, created_at DESC)");
 
   const subscriptionCols = (
     db.prepare("PRAGMA table_info(subscriptions)").all() as Array<{ name: string }>
@@ -854,6 +1069,11 @@ export function initDb() {
     registration_enabled: "false",
     // Username/password sign-in for existing users.
     password_login_enabled: "true",
+    // Wallet-only: require lifetime top-up before calling zero-priced models.
+    wallet_free_model_topup_required: "true",
+    wallet_free_model_min_topup_micros: "1000000",
+    wallet_free_prompt_claim_required: "true",
+    wallet_free_prompt_window_seconds: "120",
     // Allow first-time account creation via LinuxDo OAuth (existing users can still log in when LinuxDo login is on).
     linuxdo_registration_enabled: "true",
     checkin_enabled: "true",
@@ -935,6 +1155,8 @@ export type Provider = {
   proxy_ids: string;
   enabled: number;
   timeout_ms: number;
+  sort_order: number;
+  custom_headers: string;
   created_at: string;
   updated_at: string;
 };
@@ -977,6 +1199,8 @@ export type ApiKey = {
   tpm_limit: number;
   concurrency_limit: number;
   expires_at: string | null;
+  username?: string | null;
+  user_display_name?: string | null;
 };
 
 export type User = {
@@ -993,6 +1217,7 @@ export type User = {
   updated_at: string;
   last_login_at: string | null;
   linuxdo_uid: string | null;
+  training_consent: number;
 };
 
 export type UserTier = {
@@ -1031,6 +1256,7 @@ export type ModelPrice = {
   max_output_tokens: number;
   enabled: number;
   price_windows: string;
+  prompt_preset_ids: string;
   created_at: string;
   updated_at: string;
 };
@@ -1041,13 +1267,23 @@ export type ModelPrice = {
  */
 export type ModelPriceView = Omit<
   ModelPrice,
-  "reasoning_enabled" | "reasoning_effort" | "image_input" | "enabled" | "price_windows"
+  "reasoning_enabled" | "reasoning_effort" | "image_input" | "enabled" | "price_windows" | "prompt_preset_ids"
 > & {
   reasoning_enabled: boolean;
   reasoning_effort: string[];
   image_input: boolean;
   enabled: boolean;
   windows: PriceWindow[];
+  prompt_preset_ids: string[];
+};
+
+export type PromptPreset = {
+  id: string;
+  name: string;
+  filename: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
 };
 export type Plan = {
   id: string;
@@ -1065,6 +1301,7 @@ export type Plan = {
   stock_used: number;
   sort_order: number;
   enabled: number;
+  visible: number;
   created_at: string;
   updated_at: string;
 };

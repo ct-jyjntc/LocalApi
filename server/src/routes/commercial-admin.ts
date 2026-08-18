@@ -22,6 +22,8 @@ import {
 } from "../services/plans";
 import { adjustPoints, CheckinError } from "../services/checkin";
 import { createUser, deleteUser, deleteUsers, listUsersPage, setUsersStatus, updateUser } from "../services/users";
+import { listRiskRadar, resolveRiskGroup } from "../services/risk-radar";
+import { analyzeRiskGroup, getRiskRadarAIModel, setRiskRadarAIModel } from "../services/risk-ai";
 import { listAuditLogs, writeAudit } from "../services/audit";
 import {
   PaymentError,
@@ -37,6 +39,12 @@ import {
 } from "../services/payments";
 import { createUserTier, deleteUserTier, listUserTiers, TierError, updateUserTier } from "../services/tiers";
 import { listAllFeedback, replyFeedback, setFeedbackStatus } from "../services/feedback";
+import {
+  createPromptPreset,
+  deletePromptPreset,
+  getPromptPreset,
+  listPromptPresets,
+} from "../services/prompt-presets";
 
 export const commercialAdminRouter = Router();
 
@@ -97,6 +105,12 @@ const priceSchema = z.object({
   max_output_tokens: z.coerce.number().int().min(0).max(10_000_000).optional(),
   enabled: z.boolean().optional(),
   windows: z.array(priceWindowSchema).max(16).optional(),
+  prompt_preset_ids: z.array(z.string().uuid()).max(20).optional(),
+});
+const promptPresetSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  filename: z.string().trim().max(200).optional().default(""),
+  content: z.string().min(1).max(2_000_000),
 });
 const planSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -109,6 +123,7 @@ const planSchema = z.object({
   overage_enabled: z.boolean().optional(),
   stock_limit: z.coerce.number().int().min(0).max(100_000_000).optional(),
   enabled: z.boolean().optional(),
+  visible: z.boolean().optional(),
 });
 const paymentChannelSchema = z.object({
   enabled: z.boolean().optional(),
@@ -157,16 +172,60 @@ commercialAdminRouter.get("/users", (req, res) => {
   const limit = Number(req.query.limit ?? 50);
   const offset = Number(req.query.offset ?? 0);
   const q = typeof req.query.q === "string" ? req.query.q : "";
+  const status = typeof req.query.status === "string" ? req.query.status : "";
   // Backward compatible: omit limit => paginated default 50.
   // Pass limit=0 to request a capped large page for lightweight maps (max 200).
   if (req.query.all === "1") {
-    return res.json(listUsersPage({ limit: 200, offset: 0, q }));
+    return res.json(listUsersPage({ limit: 200, offset: 0, q, status }));
   }
   return res.json(listUsersPage({
     limit: Number.isFinite(limit) ? limit : 50,
     offset: Number.isFinite(offset) ? offset : 0,
     q,
+    status,
   }));
+});
+
+commercialAdminRouter.get("/risk-radar", (req, res) => {
+  const hours = Number(req.query.hours ?? 72);
+  return res.json(listRiskRadar(Number.isFinite(hours) ? hours : 72));
+});
+commercialAdminRouter.post("/risk-radar/groups/:id/resolve", (req, res) => {
+  const body = parseBody(z.object({ action: z.enum(["disabled", "suspended", "ignored"]) }), req.body, res);
+  if (!body) return;
+  const result = resolveRiskGroup(req.params.id, body.action);
+  if (!result) return res.status(404).json({ error: "Risk group not found" });
+  writeAudit({
+    action: "risk.group.resolve",
+    target_type: "risk_group",
+    target_id: req.params.id,
+    detail: { action: body.action, updated: result.updated, ids: result.ids },
+  });
+  return res.json(result);
+});
+commercialAdminRouter.get("/risk-radar/ai-model", (_req, res) => {
+  return res.json({ model: getRiskRadarAIModel() });
+});
+commercialAdminRouter.post("/risk-radar/ai-model", (req, res) => {
+  const body = parseBody(z.object({ model: z.string().max(200) }), req.body, res);
+  if (!body) return;
+  setRiskRadarAIModel(body.model);
+  return res.json({ ok: true, model: body.model });
+});
+commercialAdminRouter.post("/risk-radar/groups/:id/analyze", async (req, res) => {
+  try {
+    const result = await analyzeRiskGroup(req.params.id);
+    if (!result) return res.status(404).json({ error: "Risk group not found" });
+    writeAudit({
+      action: "risk.group.analyze",
+      target_type: "risk_group",
+      target_id: req.params.id,
+      detail: { score: result.score, verdict: result.verdict },
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Analysis failed" });
+  }
 });
 // M10: the admin feedback list loads every thread AND every message with its
 // base64 attachments into memory — unbounded as users file feedback. Default
@@ -389,6 +448,32 @@ commercialAdminRouter.delete("/prices/:model", (req, res) => {
   const model = decodeURIComponent(req.params.model);
   const ok = deleteModelPrice(model);
   writeAudit({ action: "price.delete", target_type: "model", target_id: model });
+  return res.json({ ok });
+});
+
+// Prompt preset library: admin-uploaded system prompts bindable to models.
+// Injected by the relay and excluded from user billing (see services/proxy.ts).
+commercialAdminRouter.get("/prompt-presets", (_req, res) => res.json({ items: listPromptPresets() }));
+commercialAdminRouter.get("/prompt-presets/:id", (req, res) => {
+  const preset = getPromptPreset(req.params.id);
+  if (!preset) return res.status(404).json({ error: "Preset not found" });
+  return res.json(preset);
+});
+commercialAdminRouter.post("/prompt-presets", (req, res) => {
+  const body = parseBody(promptPresetSchema, req.body, res);
+  if (!body) return;
+  const preset = createPromptPreset(body);
+  writeAudit({
+    action: "prompt_preset.create",
+    target_type: "prompt_preset",
+    target_id: preset.id,
+    detail: { name: preset.name, filename: preset.filename, size: preset.content.length },
+  });
+  return res.status(201).json(preset);
+});
+commercialAdminRouter.delete("/prompt-presets/:id", (req, res) => {
+  const ok = deletePromptPreset(req.params.id);
+  writeAudit({ action: "prompt_preset.delete", target_type: "prompt_preset", target_id: req.params.id });
   return res.json({ ok });
 });
 

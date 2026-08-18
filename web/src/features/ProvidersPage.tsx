@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Check, FlaskConical, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, FlaskConical, GripVertical, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, type Provider, type ProviderTestResult } from "@/lib/api";
 import {
   EmptyState,
@@ -29,7 +29,21 @@ const emptyForm = {
   proxy_ids: [] as string[],
   enabled: true,
   timeout_ms: 60000,
+  custom_headers: "",
 };
+
+/** Parse "Key: Value" lines into a Record. */
+function parseCustomHeaders(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const idx = line.indexOf(":");
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (key && value) out[key] = value;
+  }
+  return out;
+}
 
 /** Parse "public" or "public => upstream" lines from the models editor. */
 function parseModelsEditor(raw: string): {
@@ -86,7 +100,8 @@ function concreteModels(models: string[]) {
 }
 
 export function ProvidersPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const zh = locale === "zh";
   const dialogs = useAppDialog();
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
@@ -107,6 +122,43 @@ export function ProvidersPage() {
   const [testItems, setTestItems] = useState<ModelTestItem[]>([]);
   const [testing, setTesting] = useState(false);
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+  const dragId = useRef<string | null>(null);
+
+  const reorder = useMutation({
+    mutationFn: (ids: string[]) => api.providers.reorder(ids),
+    onSuccess: () => {
+      toast.success("优先级已更新");
+      qc.invalidateQueries({ queryKey: ["providers"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const handleDragStart = (index: number, id: string) => {
+    setDragIndex(index);
+    dragId.current = id;
+  };
+  const handleDragOver = (event: React.DragEvent, index: number) => {
+    event.preventDefault();
+    if (dragIndex !== null && dragIndex !== index) setOverIndex(index);
+  };
+  const handleDrop = (event: React.DragEvent, index: number) => {
+    event.preventDefault();
+    if (dragIndex === null || dragIndex === index || !data?.items) return;
+    const items = [...data.items];
+    const [moved] = items.splice(dragIndex, 1);
+    items.splice(index, 0, moved);
+    reorder.mutate(items.map((p) => p.id));
+    setDragIndex(null);
+    setOverIndex(null);
+    dragId.current = null;
+  };
+  const handleDragEnd = () => {
+    setDragIndex(null);
+    setOverIndex(null);
+    dragId.current = null;
+  };
 
   const save = useMutation({
     mutationFn: async () => {
@@ -117,13 +169,13 @@ export function ProvidersPage() {
         return api.providers.update(editing.id, {
           name: form.name,
           base_url: form.base_url,
-          // A blank field preserves encrypted credentials already on the server.
           ...(keys.length > 0 ? { api_keys: keys } : {}),
           models,
           model_mappings,
           proxy_ids: form.proxy_ids,
           enabled: form.enabled,
           timeout_ms: form.timeout_ms,
+          custom_headers: parseCustomHeaders(form.custom_headers),
         });
       }
 
@@ -136,6 +188,7 @@ export function ProvidersPage() {
         proxy_ids: form.proxy_ids,
         enabled: form.enabled,
         timeout_ms: form.timeout_ms,
+        custom_headers: parseCustomHeaders(form.custom_headers),
       });
 
       return api.providers.create({
@@ -206,6 +259,7 @@ export function ProvidersPage() {
       proxy_ids: p.proxy_ids ?? [],
       enabled: p.enabled,
       timeout_ms: p.timeout_ms,
+      custom_headers: Object.entries(p.custom_headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n"),
     });
     setOpen(true);
   }
@@ -449,6 +503,21 @@ export function ProvidersPage() {
                 )}
               </Field>
               <p className="mt-1 text-[11px] text-muted-foreground">{t("providers.proxiesHint")}</p>
+            </div>
+            <div className="sm:col-span-2">
+              <Field label={zh ? "自定义请求头" : "Custom headers"}>
+                <Textarea
+                  rows={3}
+                  spellCheck={false}
+                  className="font-mono text-[11px]"
+                  value={form.custom_headers}
+                  onChange={(e) => setForm({ ...form, custom_headers: e.target.value })}
+                  placeholder={"User-Agent: eve/0.27.8\nX-Custom-Header: value"}
+                />
+              </Field>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {zh ? "每行一个，格式：Header: Value。Authorization 和 Host 不可自定义。" : "One per line, format: Header: Value. Authorization and Host are excluded."}
+              </p>
             </div>
             <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2 sm:col-span-2">
               <div>
@@ -782,10 +851,20 @@ export function ProvidersPage() {
             </div>
             <div className="hidden md:block">
               <div className={TABLE_HEAD_CLASS}>
+                <span className="w-6" />
                 <span className="w-36">{t("common.name")}</span><span className="min-w-0 flex-1">{t("providers.baseUrl")}</span><span className="w-16 text-right">{t("providers.keysCol")}</span><span className="w-36">{t("providers.modelsCol")}</span><span className="w-16">{t("common.status")}</span><span className="w-32 text-right">{t("common.actions")}</span>
               </div>
-              {data.items.map((p) => (
-                <div key={p.id} className={TABLE_ROW_CLASS}>
+              {data.items.map((p, index) => (
+                <div
+                  key={p.id}
+                  className={`${TABLE_ROW_CLASS} ${dragIndex === index ? "opacity-40" : ""} ${overIndex === index ? "border-t-2 border-t-primary" : ""}`}
+                  draggable
+                  onDragStart={() => handleDragStart(index, p.id)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDrop={(e) => handleDrop(e, index)}
+                  onDragEnd={handleDragEnd}
+                >
+                  <span className="flex w-6 cursor-grab items-center text-muted-foreground active:cursor-grabbing" title="拖动排序"><GripVertical className="size-3.5" /></span>
                   <span className="w-36 truncate font-medium">{p.name}</span><span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{p.base_url}</span><span className="w-16 text-right tabular-nums">{p.key_count ?? (p.has_api_key ? 1 : 0)}</span><span className="w-36 truncate text-muted-foreground">{p.models.slice(0, 2).join(", ")}{p.models.length > 2 ? ` +${p.models.length - 2}` : ""}</span><span className="w-16">{p.enabled ? <Badge variant="success">{t("common.active")}</Badge> : <Badge variant="secondary">{t("common.off")}</Badge>}</span>
                   <span className="flex w-32 items-center justify-end gap-1"><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" disabled={testing && testProvider?.id === p.id} onClick={() => startTest(p)} aria-label={t("providers.test")} title={t("providers.test")}>{testing && testProvider?.id === p.id ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}</Button><Switch checked={p.enabled} onCheckedChange={(v) => toggle.mutate({ id: p.id, enabled: v })} aria-label={`Toggle ${p.name}`} /><Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={() => startEdit(p)} aria-label="Edit"><Pencil className="size-3.5" strokeWidth={1.8} /></Button><Button variant="ghost" size="icon" className="size-6 text-muted-foreground hover:text-destructive" onClick={async () => { if (await dialogs.confirm({ title: p.name, description: t("providers.deleteConfirm", { name: p.name }), confirmText: "Delete", destructive: true })) remove.mutate(p.id); }} aria-label="Delete"><Trash2 className="size-3.5" strokeWidth={1.8} /></Button></span>
                 </div>

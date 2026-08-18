@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { creditsToMicros, formatCredits, shortTime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { useSearchParams } from "react-router-dom";
 
 function formatPoints(value: number | null | undefined) {
   return Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -22,11 +23,14 @@ export function UsersPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
   const qc = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const initialQ = searchParams.get("q") || "";
   const dialogs = useAppDialog();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [search, setSearch] = useState(initialQ);
+  const [debouncedSearch, setDebouncedSearch] = useState(initialQ);
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "suspended" | "disabled">("all");
   const [page, setPage] = useState(0);
   const pageSize = 50;
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -36,12 +40,13 @@ export function UsersPage() {
     return () => window.clearTimeout(timer);
   }, [search]);
   const users = useQuery({
-    queryKey: ["commercial", "users", debouncedSearch, page, pageSize],
+    queryKey: ["commercial", "users", debouncedSearch, statusFilter, page, pageSize],
     queryFn: () =>
       api.commercial.users.list({
         limit: pageSize,
         offset: page * pageSize,
         q: debouncedSearch || undefined,
+        status: statusFilter === "all" ? undefined : statusFilter,
       }),
     staleTime: 15_000,
     placeholderData: (prev) => prev,
@@ -217,15 +222,30 @@ export function UsersPage() {
       />
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-2 border-b border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
-          <Input
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-              setPage(0);
-            }}
-            placeholder={zh ? "搜索用户名 / 显示名 / 套餐" : "Search username / name / plan"}
-            className="sm:max-w-sm"
-          />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setPage(0);
+              }}
+              placeholder={zh ? "搜索用户名 / 显示名 / 套餐" : "Search username / name / plan"}
+              className="sm:max-w-sm"
+            />
+            <select
+              className="h-8 rounded-md border border-input bg-secondary/55 px-2.5 text-xs"
+              value={statusFilter}
+              onChange={(event) => {
+                setStatusFilter(event.target.value as typeof statusFilter);
+                setPage(0);
+              }}
+            >
+              <option value="all">{zh ? "全部状态" : "All statuses"}</option>
+              <option value="active">active</option>
+              <option value="suspended">suspended</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </div>
           <p className="text-[11px] text-muted-foreground">
             {zh
               ? `共 ${total} 人 · 第 ${safePage + 1}/${pageCount} 页`
@@ -288,6 +308,7 @@ export function UsersPage() {
                   />
                 </span>
                 <span className="w-40 shrink-0">{zh ? "用户" : "User"}</span>
+                <span className="w-24 shrink-0">{zh ? "状态" : "Status"}</span>
                 <span className="w-24 shrink-0">{zh ? "余额" : "Balance"}</span>
                 <span className="w-20 shrink-0">{zh ? "积分" : "Points"}</span>
                 <span className="min-w-0 flex-1">{zh ? "套餐 / 剩余" : "Plan / left"}</span>
@@ -308,6 +329,15 @@ export function UsersPage() {
                   <span className="w-40 shrink-0 truncate">
                     <span className="font-medium">{user.display_name}</span>
                     <span className="ml-1 text-[11px] text-muted-foreground">@{user.username}</span>
+                  </span>
+                  <span className="w-24 shrink-0">
+                    <Badge
+                      variant={
+                        user.status === "active" ? "success" : user.status === "suspended" ? "default" : "destructive"
+                      }
+                    >
+                      {user.status}
+                    </Badge>
                   </span>
                   <span className="w-24 shrink-0 font-mono tabular-nums">{formatCredits(user.balance_micros)}</span>
                   <span className="w-20 shrink-0 font-mono tabular-nums">{formatPoints(user.points_balance)}</span>

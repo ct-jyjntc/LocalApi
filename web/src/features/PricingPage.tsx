@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Brain, ImageIcon, Plus, Trash2 } from "lucide-react";
+import { Brain, FileText, ImageIcon, Plus, Trash2, Upload } from "lucide-react";
 import { api, type ModelPrice } from "@/lib/api";
 import { EmptyState, PageHeader, TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,7 @@ const emptyForm = {
   maxOutput: "",
   enabled: true,
   windows: [] as PriceWindowForm[],
+  promptPresetIds: [] as string[],
 };
 
 const EFFORT_OPTIONS: Array<{ value: string; label: string; en: string }> = [
@@ -46,6 +47,8 @@ export function PricingPage() {
   const qc = useQueryClient();
   const prices = useQuery({ queryKey: ["commercial", "prices"], queryFn: api.commercial.prices.list });
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers.list });
+  const presets = useQuery({ queryKey: ["commercial", "prompt-presets"], queryFn: api.commercial.promptPresets.list });
+  const fileRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState(emptyForm);
   const [formOpen, setFormOpen] = useState(false);
   const models = useMemo(
@@ -53,6 +56,26 @@ export function PricingPage() {
     [providers.data?.items],
   );
   const refresh = () => qc.invalidateQueries({ queryKey: ["commercial", "prices"] });
+  const refreshPresets = () => qc.invalidateQueries({ queryKey: ["commercial", "prompt-presets"] });
+  const uploadPresets = useMutation({
+    mutationFn: async (files: File[]) => {
+      for (const file of files) {
+        const content = await file.text();
+        await api.commercial.promptPresets.create({
+          name: file.name.replace(/\.[^.]+$/, ""),
+          filename: file.name,
+          content,
+        });
+      }
+    },
+    onSuccess: () => { toast.success(zh ? "提示词预设已上传" : "Prompt presets uploaded"); refreshPresets(); },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const removePreset = useMutation({
+    mutationFn: api.commercial.promptPresets.remove,
+    onSuccess: () => { toast.success(zh ? "预设已删除" : "Preset removed"); refreshPresets(); },
+    onError: (error: Error) => toast.error(error.message),
+  });
   const save = useMutation({
     mutationFn: () => api.commercial.prices.upsert(form.model.trim(), {
       input_price_micros: creditsToMicros(form.input),
@@ -65,6 +88,7 @@ export function PricingPage() {
       context_window: form.contextWindow ? Number(form.contextWindow) : 0,
       max_output_tokens: form.maxOutput ? Number(form.maxOutput) : 0,
       enabled: form.enabled,
+      prompt_preset_ids: form.promptPresetIds,
       windows: form.windows.map((window) => ({
         start: window.start,
         end: window.end,
@@ -96,6 +120,7 @@ export function PricingPage() {
     contextWindow: price.context_window ? String(price.context_window) : "",
     maxOutput: price.max_output_tokens ? String(price.max_output_tokens) : "",
     enabled: price.enabled,
+    promptPresetIds: price.prompt_preset_ids ?? [],
     windows: (price.windows ?? []).map((window) => ({
       start: window.start,
       end: window.end === "24:00" ? "23:59" : window.end,
@@ -113,6 +138,15 @@ export function PricingPage() {
       reasoningEffort: prev.reasoningEffort.includes(value)
         ? prev.reasoningEffort.filter((v) => v !== value)
         : [...prev.reasoningEffort, value],
+    }));
+  };
+
+  const togglePreset = (id: string) => {
+    setForm((prev) => ({
+      ...prev,
+      promptPresetIds: prev.promptPresetIds.includes(id)
+        ? prev.promptPresetIds.filter((v) => v !== id)
+        : [...prev.promptPresetIds, id],
     }));
   };
 
@@ -161,6 +195,29 @@ export function PricingPage() {
             </div>
           ) : null}
           <div className="flex items-center justify-between rounded-md bg-secondary/55 px-3 py-2 text-xs sm:col-span-2"><span>{zh ? "向用户开放此模型" : "Make this model available"}</span><Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></div>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label>{zh ? "提示词预设（作为 system 注入，不计入用户用量）" : "Prompt presets (injected as system, not billed to users)"}</Label>
+            {presets.data?.items.length ? (
+              <div className="flex flex-wrap gap-2">
+                {presets.data.items.map((preset) => {
+                  const active = form.promptPresetIds.includes(preset.id);
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => togglePreset(preset.id)}
+                      className={`flex h-8 items-center gap-1.5 rounded-full border px-4 text-xs transition-colors ${active ? "border-foreground bg-foreground text-background" : "border-border bg-card text-muted-foreground hover:border-muted-foreground/40"}`}
+                    >
+                      <FileText className="size-3" />
+                      {preset.name}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{zh ? "暂无预设，请先在下方上传。" : "No presets yet — upload one below first."}</p>
+            )}
+          </div>
           <PriceWindowsEditor
             windows={form.windows}
             onChange={(windows) => setForm({ ...form, windows })}
@@ -184,6 +241,41 @@ export function PricingPage() {
           </div>
         ))}
         {prices.data?.items.length ? <div className="hidden md:block"><div className={TABLE_HEAD_CLASS}><span className="min-w-0 flex-1">{zh ? "模型" : "Model"}</span><span className="w-20 shrink-0 text-right">{zh ? "输入" : "Input"}</span><span className="w-20 shrink-0 text-right">{zh ? "输出" : "Output"}</span><span className="w-20 shrink-0 text-right">{zh ? "缓存读" : "Cache read"}</span><span className="w-20 shrink-0 text-right">{zh ? "缓存写" : "Cache write"}</span><span className="w-16 shrink-0 text-right">{zh ? "上下文" : "Context"}</span><span className="w-16 shrink-0 text-right">{zh ? "最大输出" : "Max out"}</span><span className="w-12 shrink-0 text-right">{zh ? "图像" : "Image"}</span><span className="w-24 shrink-0 text-right">{zh ? "思考" : "Thinking"}</span><span className="w-20 shrink-0 text-right">{zh ? "操作" : "Actions"}</span></div>{prices.data.items.map((price) => <div className={TABLE_ROW_CLASS} key={price.model}><span className="flex min-w-0 flex-1 items-center gap-1.5"><button className="min-w-0 truncate text-left font-mono" onClick={() => edit(price)}>{price.model}</button>{price.windows?.length ? <Badge variant="secondary">{zh ? `${price.windows.length} 时段` : `${price.windows.length}`}</Badge> : null}</span><span className="w-20 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.input_price_micros)}</span><span className="w-20 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.output_price_micros)}</span><span className="w-20 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.cache_read_price_micros)}</span><span className="w-20 shrink-0 text-right font-mono tabular-nums">{formatCredits(price.cache_write_price_micros)}</span><span className="w-16 shrink-0 text-right font-mono tabular-nums">{formatTokens(price.context_window)}</span><span className="w-16 shrink-0 text-right font-mono tabular-nums">{formatTokens(price.max_output_tokens)}</span><span className="flex w-12 shrink-0 items-center justify-end"><ImageIcon className={`size-3.5 ${price.image_input ? "text-foreground" : "text-muted-foreground/40"}`} /></span><span className="flex min-w-0 w-24 shrink-0 items-center justify-end gap-1.5 text-xs" title={reasoningLabel(price)}><Brain className={`size-3 shrink-0 ${price.reasoning_enabled ? "text-foreground" : "text-muted-foreground/50"}`} /><span className={`truncate ${price.reasoning_enabled ? "" : "text-muted-foreground/60"}`}>{reasoningLabel(price)}</span></span><span className="flex w-20 shrink-0 items-center justify-end gap-1"><Badge variant={price.enabled ? "success" : "secondary"}>{price.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge><Button variant="ghost" size="icon" className="size-6" onClick={() => remove.mutate(price.model)}><Trash2 /></Button></span></div>)}</div> : null}
+      </Card>
+      <Card className="flex flex-col gap-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium">{zh ? "提示词预设库" : "Prompt preset library"}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{zh ? "上传 .md / .txt 提示词文件，在上方模型配置中绑定后随请求注入，这部分 Token 由平台承担。" : "Upload .md/.txt prompt files and bind them in the model config above; injected tokens are on the platform."}</p>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".md,.txt,text/plain,text/markdown"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length) uploadPresets.mutate(files);
+              e.target.value = "";
+            }}
+          />
+          <Button size="sm" variant="secondary" className="shrink-0" disabled={uploadPresets.isPending} onClick={() => fileRef.current?.click()}><Upload />{zh ? "上传文件" : "Upload files"}</Button>
+        </div>
+        {!presets.data?.items.length ? <EmptyState>{presets.isLoading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无预设" : "No presets"}</EmptyState> : (
+          <div className="flex flex-col divide-y divide-border/40">
+            {presets.data.items.map((preset) => (
+              <div key={preset.id} className="flex items-center gap-3 py-2.5 text-xs">
+                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{preset.name}</p>
+                  <p className="truncate text-muted-foreground">{preset.filename} · {(preset.size_bytes / 1024).toFixed(1)} KB</p>
+                </div>
+                <Button variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground hover:text-destructive" onClick={() => removePreset.mutate(preset.id)}><Trash2 /></Button>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
     </div>
   );

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
-import { getSetting, type User } from "../db";
+import { db, getSetting, type User } from "../db";
+import { nowIso } from "../utils/time";
 import { requireUser } from "../middleware/auth";
 import { createApiKey, deleteApiKey, listApiKeysPage, updateApiKey } from "../services/keys";
 import {
@@ -32,8 +33,9 @@ import {
   changeUserPassword,
   getUserByUsername,
 } from "../services/users";
-import { resolveUserTier } from "../services/tiers";
+import { resolveUserTier, listUserTiers } from "../services/tiers";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { getClientIp } from "../utils/client-ip";
 import { createCaptcha, verifyCaptcha } from "../services/captcha";
 import { writeAudit } from "../services/audit";
 import {
@@ -120,7 +122,7 @@ userRouter.post("/login", (req, res) => {
   }
   const body = parseBody(loginSchema, req.body, res);
   if (!body) return;
-  const limiterKey = `user-login:${req.ip || req.socket.remoteAddress || "unknown"}:${body.username.toLowerCase()}`;
+  const limiterKey = `user-login:${getClientIp(req)}:${body.username.toLowerCase()}`;
   const rate = consumeRateLimit(limiterKey, 8, 5 * 60_000);
   if (!rate.allowed) {
     res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
@@ -158,7 +160,7 @@ userRouter.get("/captcha", (req, res) => {
   if (getSetting("registration_enabled") !== "true") {
     return res.status(403).json({ error: "Registration is currently closed", code: "registration_closed" });
   }
-  const limiterKey = `user-captcha:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const limiterKey = `user-captcha:${getClientIp(req)}`;
   const rate = consumeRateLimit(limiterKey, 30, 10 * 60_000);
   if (!rate.allowed) {
     res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
@@ -173,7 +175,7 @@ userRouter.post("/register", (req, res) => {
   }
   const body = parseBody(registerSchema, req.body, res);
   if (!body) return;
-  const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+  const clientIp = getClientIp(req);
   const limiterKey = `user-register:${clientIp}:${body.username.toLowerCase()}`;
   const ipLimiterKey = `user-register-ip:${clientIp}`;
   const rate = consumeRateLimit(limiterKey, 3, 15 * 60_000);
@@ -231,6 +233,7 @@ userRouter.get("/me", (req, res) => {
     user: publicUser(user),
     wallet: getPublicWallet(user.id),
     tier: resolveUserTier(user.id),
+    all_tiers: listUserTiers(true),
     subscription: getActiveSubscription(user.id),
     prices: listModelPrices().filter((price) => price.enabled).map((price) => applyPriceWindows(price)),
   });
@@ -280,6 +283,24 @@ userRouter.patch("/me/password", (req, res) => {
   if (!body) return;
   const ok = changeUserPassword(requestUser(req).id, body.current_password, body.new_password);
   if (!ok) return res.status(400).json({ error: "Current password is incorrect", code: "invalid_current_password" });
+  return res.json({ ok: true });
+});
+
+userRouter.patch("/me/preferences", (req, res) => {
+  const body = parseBody(
+    z.object({ training_consent: z.boolean().optional() }),
+    req.body,
+    res,
+  );
+  if (!body) return;
+  const userId = requestUser(req).id;
+  if (body.training_consent !== undefined) {
+    db.prepare("UPDATE users SET training_consent = ?, updated_at = ? WHERE id = ?").run(
+      body.training_consent ? 1 : 0,
+      nowIso(),
+      userId,
+    );
+  }
   return res.json({ ok: true });
 });
 
@@ -396,7 +417,7 @@ userRouter.patch("/subscription/overage", (req, res) => {
   }
 });
 userRouter.get("/plans", (_req, res) => {
-  return res.json({ items: listPlans(true) });
+  return res.json({ items: listPlans({ enabledOnly: true, visibleOnly: true }) });
 });
 userRouter.get("/plan-orders", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
@@ -475,7 +496,7 @@ userRouter.post("/payments/topups", async (req, res) => {
     const order = await createTopupOrder(user.id, body.amount, {
       channelId: body.channel_id,
       mode: body.mode,
-      clientIp: req.ip || req.socket.remoteAddress || undefined,
+      clientIp: getClientIp(req, "unknown") || undefined,
       clientRequestId: body.client_request_id,
     });
     return res.status(201).json(order);

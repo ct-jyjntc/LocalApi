@@ -5,9 +5,12 @@ import { handleProxyHttp } from "../services/proxy";
 import { lookupCache, storeCache } from "../services/cache";
 import type { ApiKey } from "../db";
 import { isModelAllowedForKey } from "../services/access";
-import { getModelPrice } from "../services/billing";
+import { estimateRequestTokens, getModelPrice } from "../services/billing";
 import { maintainActiveSubscription } from "../services/plans";
 import { normalizeOpenAICompatBody } from "../utils/openai-compat";
+import { applyModelLimits, ModelLimitError } from "../utils/model-limits";
+import { resolveModelPromptInjection } from "../services/prompt-presets";
+import { getClientIp } from "../utils/client-ip";
 
 export const proxyRouter = Router();
 const MAX_BUFFERED_BODY = 20 * 1024 * 1024;
@@ -57,7 +60,7 @@ function ensureStreamUsage(body: unknown, path: string) {
   if (!body || typeof body !== "object") return body;
   const record = body as Record<string, unknown>;
   if (record.stream !== true) return body;
-  if (path !== "/v1/chat/completions" && path !== "/v1/completions") return body;
+  if (path !== "/v1/chat/completions") return body;
   const existing =
     record.stream_options && typeof record.stream_options === "object"
       ? (record.stream_options as Record<string, unknown>)
@@ -68,12 +71,31 @@ function ensureStreamUsage(body: unknown, path: string) {
   };
 }
 
+// Admin-bound prompt presets ride along as a leading system message. They are
+// platform-provided context, so their tokens are estimated here and subtracted
+// from the upstream-reported usage at settlement — users never pay for them.
+function injectPromptPresets(body: unknown, path: string): { body: unknown; tokens: number } {
+  if (path !== "/v1/chat/completions" || !body || typeof body !== "object" || Array.isArray(body)) {
+    return { body, tokens: 0 };
+  }
+  const record = body as Record<string, unknown>;
+  const model = typeof record.model === "string" ? record.model : null;
+  if (!model || !Array.isArray(record.messages)) return { body, tokens: 0 };
+  const injection = resolveModelPromptInjection(model);
+  if (!injection) return { body, tokens: 0 };
+  return {
+    body: { ...record, messages: [{ role: "system", content: injection.text }, ...record.messages] },
+    tokens: injection.estimatedTokens,
+  };
+}
+
 // Only protect API proxy paths — never intercept the admin SPA/static files.
+// Route allow-list first, then authenticate. Unsupported paths get 404
+// without wasting an auth check.
 const v1 = Router();
-v1.use(requireApiKey);
 
 // OpenAI-compatible models list (aggregated)
-v1.get("/models", async (req: Request, res: Response) => {
+v1.get("/models", requireApiKey, async (req: Request, res: Response) => {
   const apiKey = (req as Request & { apiKey?: ApiKey }).apiKey;
   const billingMode = (req as BillingRequest).billingMode ?? "wallet";
   if (billingMode === "coding" && apiKey?.user_id && !maintainActiveSubscription(apiKey.user_id)) {
@@ -176,6 +198,9 @@ async function handleProxy(req: Request, res: Response) {
   let body: unknown;
   let rawBody: Buffer | undefined;
   let bodyStream: NodeJS.ReadableStream | undefined;
+  let injectedPromptTokens = 0;
+  let userPromptTokensEstimate = 0;
+  let preInjectionBody: unknown;
   try {
     if (req.method !== "GET" && req.method !== "HEAD") {
       if (isBufferableContentType(contentType)) {
@@ -188,8 +213,27 @@ async function handleProxy(req: Request, res: Response) {
               // Pi / OpenAI SDK → Z.ai / DeepSeek-style pool compatibility
               // (developer role, boolean thinking, store, prompt_cache_*).
               body = normalizeOpenAICompatBody(body, path).body;
+              body = applyModelLimits(body, path).body;
+              const injected = injectPromptPresets(body, path);
+              if (injected.tokens > 0) {
+                preInjectionBody = body;
+                // Snapshot the user's own prompt estimate BEFORE injection.
+                // The preset estimate (chars/4) can overshoot the upstream's
+                // real token count on large presets; this estimate becomes the
+                // floor when subtracting injected tokens from upstream usage,
+                // so the user's genuine input is never eaten down to 1.
+                userPromptTokensEstimate = estimateRequestTokens(body).prompt;
+                body = injected.body;
+                injectedPromptTokens = injected.tokens;
+              }
               rawBody = Buffer.from(JSON.stringify(body));
-            } catch {
+            } catch (error) {
+              if (error instanceof ModelLimitError) {
+                res.status(error.status).json({
+                  error: { message: error.message, type: error.type, code: error.code },
+                });
+                return;
+              }
               res.status(400).json({ error: { message: "Invalid JSON body", type: "invalid_request_error" } });
               return;
             }
@@ -227,19 +271,22 @@ async function handleProxy(req: Request, res: Response) {
       apiKey,
       billingMode,
       clientPath,
+      clientIp: getClientIp(req, "unknown") || null,
+      injectedPromptTokens,
+      userPromptTokensEstimate,
+      observeBody: preInjectionBody,
     },
     res,
   );
 }
 
-v1.post("/chat/completions", handleProxy);
-v1.post("/completions", handleProxy);
-v1.post("/embeddings", handleProxy);
-v1.post("/images/generations", handleProxy);
-v1.post("/audio/transcriptions", handleProxy);
-v1.post("/audio/speech", handleProxy);
-// Express 5 named wildcard
-v1.all("/{*rest}", handleProxy);
+v1.post("/chat/completions", requireApiKey, handleProxy);
+// Only allow chat/completions and models on the proxy. Other /v1/* paths
+// (responses, messages, completions, embeddings, etc.) are rejected to
+// prevent oversized / unsupported request formats from reaching upstreams.
+v1.all("/{*rest}", (_req, res) => {
+  res.status(404).json({ error: { message: "Not Found", type: "invalid_request_error" } });
+});
 
 function billingMode(mode: BillingMode) {
   return (req: Request, _res: Response, next: () => void) => {

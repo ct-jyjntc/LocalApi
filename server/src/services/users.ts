@@ -35,6 +35,7 @@ export function publicUser(row: User, lifetimeTopupMicros?: number) {
     updated_at: row.updated_at,
     last_login_at: row.last_login_at,
     linuxdo_uid: row.linuxdo_uid ?? null,
+    training_consent: row.training_consent === 1,
     tier: resolveTierForTopup(topup),
   };
 }
@@ -160,18 +161,26 @@ export function listUsers() {
     .map((row) => mapUserListRow(row as Record<string, unknown>));
 }
 
-/** Paginated admin user list with optional search. */
-export function listUsersPage(input: { limit?: number; offset?: number; q?: string } = {}) {
+/** Paginated admin user list with optional search and status filter. */
+export function listUsersPage(input: { limit?: number; offset?: number; q?: string; status?: string } = {}) {
   const limit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 50)));
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
   const q = String(input.q || "").trim();
-  const like = q ? `%${q.replace(/[%_]/g, "")}%` : null;
-  const where = like
-    ? `WHERE u.username LIKE ? COLLATE NOCASE
-         OR u.display_name LIKE ? COLLATE NOCASE
-         OR IFNULL(p.name, '') LIKE ? COLLATE NOCASE`
+  const like = q ? `%${q.replace(/([\\%_])/g, "\\$1")}%` : null;
+  const status = ["active", "suspended", "disabled"].includes(String(input.status || ""))
+    ? String(input.status)
     : "";
-  const params = like ? [like, like, like] : [];
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (like) {
+    clauses.push(`(u.username LIKE ? ESCAPE '\\' COLLATE NOCASE OR u.display_name LIKE ? ESCAPE '\\' COLLATE NOCASE OR IFNULL(p.name, '') LIKE ? ESCAPE '\\' COLLATE NOCASE)`);
+    params.push(like, like, like);
+  }
+  if (status) {
+    clauses.push("u.status = ?");
+    params.push(status);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const total = (
     db
       .prepare(

@@ -90,6 +90,9 @@ const UserCheckinPage = lazy(() =>
 const ModulesPage = lazy(() =>
   import("@/features/ModulesPage").then((m) => ({ default: m.ModulesPage })),
 );
+const RiskRadarPage = lazy(() =>
+  import("@/features/RiskRadarPage").then((m) => ({ default: m.RiskRadarPage })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -129,6 +132,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="proxies" element={<ProxiesPage />} />
               <Route path="keys" element={<KeysPage />} />
               <Route path="users" element={<UsersPage />} />
+              <Route path="risk" element={<RiskRadarPage />} />
               <Route path="pricing" element={<PricingPage />} />
               <Route path="plans" element={<PlansPage />} />
               <Route path="tiers" element={<TiersPage />} />

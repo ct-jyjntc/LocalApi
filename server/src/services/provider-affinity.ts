@@ -200,7 +200,7 @@ export function orderProvidersForConversation(
     : -1;
   const start = preferredIndex >= 0
     ? preferredIndex
-    : Math.min(providers.length - 1, Math.floor(Math.max(0, random()) * providers.length));
+    : 0;
   return providers.map((_, offset) => providers[(start + offset) % providers.length]);
 }
 

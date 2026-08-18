@@ -147,6 +147,8 @@ export type Provider = {
   proxy_ids?: string[];
   enabled: boolean;
   timeout_ms: number;
+  sort_order: number;
+  custom_headers: Record<string, string>;
   created_at: string;
   updated_at: string;
 };
@@ -214,6 +216,8 @@ export type ApiKeyRow = {
   allowed_models: string[];
   expires_at: string | null;
   user_id: string | null;
+  username: string | null;
+  user_display_name: string | null;
   created_at: string;
   last_used_at: string | null;
   key?: string | null;
@@ -284,6 +288,67 @@ export type UserRow = {
   tier?: TierSummary;
 };
 
+export type RiskGroupMember = {
+  user_id: string;
+  username: string;
+  display_name: string;
+  status: string;
+  created_at: string;
+  last_login_at: string | null;
+  lifetime_topup_micros: number;
+  plan_name: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  hit_count: number;
+  preview: string | null;
+  client_ips: string[];
+};
+
+export type RiskGroupEvent = {
+  id: string;
+  created_at: string;
+  actor_user_id: string;
+  actor_username: string;
+  peer_user_id: string;
+  peer_username: string;
+  similarity: number;
+  exact_match: boolean;
+  gap_seconds: number;
+  preview: string;
+  peer_preview: string;
+  client_ip: string | null;
+  user_agent: string | null;
+};
+
+export type RiskGroup = {
+  id: string;
+  model: string;
+  status: string;
+  reason: string;
+  sample_preview: string | null;
+  max_similarity: number;
+  min_gap_seconds: number | null;
+  window_seconds: number | null;
+  member_count: number;
+  hit_count: number;
+  created_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+  resolved_action: string | null;
+  ai_score: number | null;
+  ai_verdict: string | null;
+  ai_analyzed_at: string | null;
+  members: RiskGroupMember[];
+  events: RiskGroupEvent[];
+};
+
+export type RiskRadarReport = {
+  hours: number;
+  generated_at: string;
+  summary: { open_groups: number; members: number; resolved: number };
+  groups: RiskGroup[];
+};
+
 export type UserTier = {
   id: string;
   name: string;
@@ -302,6 +367,23 @@ export type TierSummary = {
   next: UserTier | null;
   lifetime_topup_micros: number;
   next_required_micros: number;
+};
+
+export type UserPublic = {
+  id: string;
+  username: string;
+  display_name: string;
+  status: string;
+  allowed_models: string[];
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+  linuxdo_uid: string | null;
+  training_consent: boolean;
+  tier: TierSummary;
 };
 
 export type PriceWindow = {
@@ -327,10 +409,13 @@ export type ModelPrice = {
   max_output_tokens: number;
   enabled: boolean;
   windows?: PriceWindow[];
+  prompt_preset_ids: string[];
   active_window_index?: number | null;
   created_at: string;
   updated_at: string;
 };
+export type PromptPresetSummary = { id: string; name: string; filename: string; size_bytes: number; created_at: string; updated_at: string };
+export type PromptPreset = PromptPresetSummary & { content: string };
 export type FeedbackAttachment = { name: string; type: string; data: string };
 export type FeedbackMessage = { id: string; sender_type: "user" | "admin"; body: string; attachments: FeedbackAttachment[]; created_at: string };
 export type FeedbackThread = { id: string; user_id: string; username?: string; display_name?: string; subject: string; status: "open" | "resolved"; created_at: string; updated_at: string; messages: FeedbackMessage[] };
@@ -352,6 +437,7 @@ export type PlanRow = {
   stock_available: number | null;
   sort_order: number;
   enabled: boolean;
+  visible: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -594,6 +680,9 @@ export type Settings = {
   admin_entry_path: string;
   registration_enabled: boolean;
   password_login_enabled: boolean;
+  wallet_free_model_topup_required?: boolean;
+  wallet_free_model_min_topup_micros?: number;
+  wallet_free_prompt_claim_required?: boolean;
   linuxdo_registration_enabled?: boolean;
   checkin_enabled: boolean;
   checkin_points_min: number;
@@ -713,6 +802,11 @@ export const api = {
       request<Provider>("/admin/api/providers", {
         method: "POST",
         body: JSON.stringify(body),
+      }),
+    reorder: (ids: string[]) =>
+      request<{ ok: boolean }>("/admin/api/providers/reorder", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
       }),
     update: (
       id: string,
@@ -869,6 +963,9 @@ export const api = {
       admin_entry_path?: string;
       registration_enabled?: boolean;
       password_login_enabled?: boolean;
+      wallet_free_model_topup_required?: boolean;
+      wallet_free_model_min_topup_micros?: number;
+      wallet_free_prompt_claim_required?: boolean;
       linuxdo_registration_enabled?: boolean;
       checkin_enabled?: boolean;
       checkin_points_min?: number;
@@ -927,11 +1024,12 @@ export const api = {
       status: (id: string, status: "open" | "resolved") => request<{ ok: boolean }>(`/admin/api/commercial/feedback/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
     },
     users: {
-      list: (params?: { limit?: number; offset?: number; q?: string }) => {
+      list: (params?: { limit?: number; offset?: number; q?: string; status?: string }) => {
         const search = new URLSearchParams();
         if (params?.limit != null) search.set("limit", String(params.limit));
         if (params?.offset != null) search.set("offset", String(params.offset));
         if (params?.q) search.set("q", params.q);
+        if (params?.status) search.set("status", params.status);
         const qs = search.toString();
         return request<{ items: UserRow[]; total: number; limit: number; offset: number }>(
           `/admin/api/commercial/users${qs ? `?${qs}` : ""}`,
@@ -983,6 +1081,25 @@ export const api = {
       cancelPlan: (id: string) =>
         request<{ ok: boolean }>(`/admin/api/commercial/users/${id}/subscription`, { method: "DELETE" }),
     },
+    riskRadar: (hours = 72) =>
+      request<RiskRadarReport>(`/admin/api/commercial/risk-radar?hours=${hours}`),
+    resolveRiskGroup: (id: string, action: "disabled" | "suspended" | "ignored") =>
+      request<{ ok: boolean; group_id: string; action: string; updated: number; ids: string[] }>(
+        `/admin/api/commercial/risk-radar/groups/${id}/resolve`,
+        { method: "POST", body: JSON.stringify({ action }) },
+      ),
+    getRiskAIModel: () =>
+      request<{ model: string }>(`/admin/api/commercial/risk-radar/ai-model`),
+    setRiskAIModel: (model: string) =>
+      request<{ ok: boolean; model: string }>(
+        `/admin/api/commercial/risk-radar/ai-model`,
+        { method: "POST", body: JSON.stringify({ model }) },
+      ),
+    analyzeRiskGroup: (id: string) =>
+      request<{ score: number; verdict: string; analyzed_at: string }>(
+        `/admin/api/commercial/risk-radar/groups/${id}/analyze`,
+        { method: "POST" },
+      ),
     tiers: {
       list: () => request<{ items: UserTier[] }>("/admin/api/commercial/tiers"),
       create: (body: Omit<UserTier, "id" | "created_at" | "updated_at">) =>
@@ -1000,6 +1117,14 @@ export const api = {
         }),
       remove: (model: string) =>
         request<{ ok: boolean }>(`/admin/api/commercial/prices/${encodeURIComponent(model)}`, { method: "DELETE" }),
+    },
+    promptPresets: {
+      list: () => request<{ items: PromptPresetSummary[] }>("/admin/api/commercial/prompt-presets"),
+      get: (id: string) => request<PromptPreset>(`/admin/api/commercial/prompt-presets/${id}`),
+      create: (body: { name: string; filename?: string; content: string }) =>
+        request<PromptPreset>("/admin/api/commercial/prompt-presets", { method: "POST", body: JSON.stringify(body) }),
+      remove: (id: string) =>
+        request<{ ok: boolean }>(`/admin/api/commercial/prompt-presets/${id}`, { method: "DELETE" }),
     },
     plans: {
       list: () => request<{ items: PlanRow[] }>("/admin/api/commercial/plans"),
@@ -1031,6 +1156,7 @@ export const api = {
         stock_limit: number;
         overage_enabled: boolean;
         enabled: boolean;
+        visible: boolean;
       }>) =>
         request<PlanRow>(`/admin/api/commercial/plans/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
       remove: (id: string) => request<{ ok: boolean }>(`/admin/api/commercial/plans/${id}`, { method: "DELETE" }),
@@ -1137,7 +1263,7 @@ export const userApi = {
       ),
   },
   me: () =>
-    request<{ user: UserRow; wallet: Wallet | null; tier: TierSummary; subscription: SubscriptionRow | null; prices: ModelPrice[] }>(
+    request<{ user: UserPublic; wallet: Wallet | null; tier: TierSummary; all_tiers: UserTier[]; subscription: SubscriptionRow | null; prices: ModelPrice[] }>(
       "/user/api/me",
       {},
       { auth: "user" },
@@ -1172,6 +1298,12 @@ export const userApi = {
     request<{ ok: boolean }>(
       "/user/api/me/password",
       { method: "PATCH", body: JSON.stringify({ current_password, new_password }) },
+      { auth: "user" },
+    ),
+  updatePreferences: (preferences: { training_consent?: boolean }) =>
+    request<{ ok: boolean }>(
+      "/user/api/me/preferences",
+      { method: "PATCH", body: JSON.stringify(preferences) },
       { auth: "user" },
     ),
   usage: (params?: { limit?: number; offset?: number }) => {

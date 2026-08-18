@@ -30,8 +30,9 @@ type FormState = {
   stock: string;
   overage: boolean;
   enabled: boolean;
+  visible: boolean;
 };
-const emptyForm: FormState = { name: "Coding Plan", description: "", cycle: "30", price: "0", credits: "0", models: "", rpm: "0", tpm: "0", concurrency: "0", stock: "0", overage: true, enabled: true };
+const emptyForm: FormState = { name: "Coding Plan", description: "", cycle: "30", price: "0", credits: "0", models: "", rpm: "0", tpm: "0", concurrency: "0", stock: "0", overage: true, enabled: true, visible: true };
 
 export function PlansPage() {
   const { locale } = useI18n();
@@ -47,7 +48,7 @@ export function PlansPage() {
     included_credits_micros: creditsToMicros(form.credits),
     allowed_models: form.models.split(/\r?\n|,/).map((v) => v.trim()).filter(Boolean),
     rpm_limit: Number(form.rpm) || 0, tpm_limit: Number(form.tpm) || 0,
-    concurrency_limit: Number(form.concurrency) || 0, stock_limit: Math.max(0, Number(form.stock) || 0), overage_enabled: form.overage, enabled: form.enabled,
+    concurrency_limit: Number(form.concurrency) || 0, stock_limit: Math.max(0, Number(form.stock) || 0), overage_enabled: form.overage, enabled: form.enabled, visible: form.visible,
   });
   const refresh = () => qc.invalidateQueries({ queryKey: ["commercial", "plans"] });
   const save = useMutation({
@@ -80,6 +81,7 @@ export function PlansPage() {
       stock: String(plan.stock_limit),
       overage: plan.overage_enabled,
       enabled: plan.enabled,
+      visible: plan.visible !== false,
     });
     setFormOpen(true);
   };
@@ -112,6 +114,7 @@ export function PlansPage() {
             <div className="grid gap-2 min-[420px]:grid-cols-3"><Field label="RPM"><Input type="number" value={form.rpm} onChange={(e) => setForm({ ...form, rpm: e.target.value })} /></Field><Field label="TPM"><Input type="number" value={form.tpm} onChange={(e) => setForm({ ...form, tpm: e.target.value })} /></Field><Field label={zh ? "并发" : "Concurrency"}><Input type="number" value={form.concurrency} onChange={(e) => setForm({ ...form, concurrency: e.target.value })} /></Field></div>
             <Toggle label={zh ? "允许超额扣余额" : "Allow wallet overage"} checked={form.overage} onChange={(overage) => setForm({ ...form, overage })} />
             <Toggle label={zh ? "启用套餐" : "Plan enabled"} checked={form.enabled} onChange={(enabled) => setForm({ ...form, enabled })} />
+            <Toggle label={zh ? "购买页显示" : "Show on purchase page"} checked={form.visible} onChange={(visible) => setForm({ ...form, visible })} />
           </section>
           <DialogFooter className="lg:col-span-3"><Button type="button" variant="secondary" onClick={() => setFormOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button type="submit" disabled={!form.name.trim() || save.isPending}>{save.isPending ? (zh ? "保存中…" : "Saving…") : (zh ? "保存" : "Save")}</Button></DialogFooter>
         </form>
@@ -120,7 +123,7 @@ export function PlansPage() {
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {!query.data?.items.length ? <Card className="md:col-span-2 xl:col-span-3"><EmptyState>{query.isLoading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无套餐" : "No plans"}</EmptyState></Card> : query.data.items.map((plan, index) => (
           <Card key={plan.id} className="flex flex-col">
-            <CardHeader><div className="flex items-start justify-between gap-2"><div><CardTitle>{plan.name}</CardTitle><CardDescription>{plan.description || "—"}</CardDescription></div><Badge variant={plan.enabled ? "success" : "secondary"}>{plan.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge></div></CardHeader>
+            <CardHeader><div className="flex items-start justify-between gap-2"><div><CardTitle>{plan.name}</CardTitle><CardDescription>{plan.description || "—"}</CardDescription></div><div className="flex shrink-0 flex-col items-end gap-1"><Badge variant={plan.enabled ? "success" : "secondary"}>{plan.enabled ? (zh ? "启用" : "Active") : (zh ? "关闭" : "Off")}</Badge>{plan.visible === false ? <Badge variant="secondary">{zh ? "购买页隐藏" : "Hidden"}</Badge> : null}</div></div></CardHeader>
             <CardContent className="flex flex-1 flex-col gap-3 text-xs">
               <div className="grid grid-cols-2 gap-2"><Stat label={zh ? "周期价格" : "Cycle price"} value={formatCredits(plan.price_micros || 0)} /><Stat label={zh ? "周期额度" : "Cycle credits"} value={formatCredits(plan.included_credits_micros)} /><Stat label={zh ? "周期" : "Cycle"} value={`${plan.cycle_days}d`} /><Stat label={zh ? "库存" : "Inventory"} value={plan.stock_limit > 0 ? `${plan.stock_available ?? 0} / ${plan.stock_limit}` : "∞"} /><Stat label={zh ? "已分配" : "Assigned"} value={String(plan.stock_used)} /><Stat label="RPM / TPM" value={`${plan.rpm_limit || "∞"} / ${plan.tpm_limit || "∞"}`} /><Stat label={zh ? "并发" : "Concurrency"} value={String(plan.concurrency_limit || "∞")} /></div>
               <p className="line-clamp-2 text-[11px] text-muted-foreground">{plan.allowed_models.length ? plan.allowed_models.join(", ") : (zh ? "全部模型" : "All models")}</p>

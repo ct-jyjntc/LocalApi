@@ -29,6 +29,7 @@ import {
   createProvider,
   deleteProvider,
   listProviders,
+  reorderProviders,
   sanitizeProvider,
   updateProvider,
 } from "../services/providers";
@@ -50,6 +51,7 @@ import {
 } from "../services/proxies";
 import { consumeAdminAuthFailure, requireAdmin, verifyAdminToken } from "../middleware/auth";
 import { consumeRateLimit, resetRateLimit } from "../services/rate-limit";
+import { getClientIp } from "../utils/client-ip";
 import { hashAdminSecret } from "../utils/admin-secret";
 import { DEFAULT_ADMIN_ENTRY_PATH, isValidAdminEntryPath, normalizeAdminEntryPath } from "../utils/admin-entry";
 import { commercialAdminRouter } from "./commercial-admin";
@@ -164,6 +166,9 @@ const settingsSchema = z.object({
   proxy_test_url: z.string().trim().max(255).optional(),
   registration_enabled: z.boolean().optional(),
   password_login_enabled: z.boolean().optional(),
+  wallet_free_model_topup_required: z.boolean().optional(),
+  wallet_free_model_min_topup_micros: z.coerce.number().int().min(0).max(100_000_000_000).optional(),
+  wallet_free_prompt_claim_required: z.boolean().optional(),
   linuxdo_registration_enabled: z.boolean().optional(),
   linuxdo_login_enabled: z.boolean().optional(),
   linuxdo_client_id: z.string().trim().max(256).optional(),
@@ -206,7 +211,7 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: Response): T | n
 // Public entry check and login (must be before requireAdmin)
 adminRouter.post("/entry", (req, res) => {
   const path = typeof req.body?.path === "string" ? req.body.path : "";
-  const limiterKey = `admin-entry:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const limiterKey = `admin-entry:${getClientIp(req)}`;
   const rate = consumeRateLimit(limiterKey, 30, 5 * 60_000);
   if (!rate.allowed) {
     res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
@@ -224,7 +229,7 @@ adminRouter.post("/login", (req, res) => {
     (typeof req.body?.admin_password === "string" && req.body.admin_password) ||
     "";
   const entryPath = typeof req.body?.entry_path === "string" ? req.body.entry_path : "";
-  const limiterKey = `admin-login:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const limiterKey = `admin-login:${getClientIp(req)}`;
   const rate = consumeRateLimit(limiterKey, 5, 5 * 60_000);
   if (!rate.allowed) {
     res.setHeader("retry-after", String(Math.ceil(rate.retryAfterMs / 1000)));
@@ -269,6 +274,13 @@ adminRouter.post("/providers", (req, res) => {
   const provider = createProvider(body);
   clearCache();
   return res.status(201).json(sanitizeProvider(provider));
+});
+
+adminRouter.post("/providers/reorder", (req, res) => {
+  const body = parseBody(z.object({ ids: z.array(z.string()).min(1) }), req.body, res);
+  if (!body) return;
+  reorderProviders(body.ids);
+  return res.json({ ok: true });
 });
 
 adminRouter.post("/providers/:id/test", async (req, res) => {
@@ -497,6 +509,9 @@ function serializeSettings() {
     proxy_test_url: all.proxy_test_url || DEFAULT_PROXY_TEST_URL,
     registration_enabled: all.registration_enabled === "true",
     password_login_enabled: (all.password_login_enabled ?? "true") === "true",
+    wallet_free_model_topup_required: (all.wallet_free_model_topup_required ?? "true") === "true",
+    wallet_free_model_min_topup_micros: Number(all.wallet_free_model_min_topup_micros ?? 1_000_000) || 1_000_000,
+    wallet_free_prompt_claim_required: (all.wallet_free_prompt_claim_required ?? "true") === "true",
     checkin_points_min: checkin.points_min,
     checkin_points_max: checkin.points_max,
     points_balance_cap: checkin.balance_cap,
@@ -595,6 +610,15 @@ adminRouter.patch("/settings", (req, res) => {
   }
   if (body.password_login_enabled !== undefined) {
     setSetting("password_login_enabled", body.password_login_enabled ? "true" : "false");
+  }
+  if (body.wallet_free_model_topup_required !== undefined) {
+    setSetting("wallet_free_model_topup_required", body.wallet_free_model_topup_required ? "true" : "false");
+  }
+  if (body.wallet_free_model_min_topup_micros !== undefined) {
+    setSetting("wallet_free_model_min_topup_micros", String(Math.max(0, Math.floor(body.wallet_free_model_min_topup_micros))));
+  }
+  if (body.wallet_free_prompt_claim_required !== undefined) {
+    setSetting("wallet_free_prompt_claim_required", body.wallet_free_prompt_claim_required ? "true" : "false");
   }
   if (body.linuxdo_registration_enabled !== undefined) {
     setSetting(

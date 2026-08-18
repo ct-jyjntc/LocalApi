@@ -1,8 +1,9 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { KeyRound } from "lucide-react";
+import { KeyRound, Moon, Sun, Languages, ChevronRight } from "lucide-react";
+import { useTheme } from "next-themes";
 import { toast } from "sonner";
-import { userApi } from "@/lib/api";
+import { userApi, type UserTier } from "@/lib/api";
 import { PageHeader } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,8 +18,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { formatCredits } from "@/lib/utils";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
 
 function formatLimit(value: number | null | undefined) {
   if (value == null || value === 0) return "∞";
@@ -26,11 +28,14 @@ function formatLimit(value: number | null | undefined) {
 }
 
 export function UserSettingsPage() {
-  const { locale } = useI18n();
+  const { locale, setLocale, t } = useI18n();
   const zh = locale === "zh";
+  const { theme, setTheme } = useTheme();
+  const qc = useQueryClient();
   const me = useQuery({ queryKey: ["user", "me"], queryFn: userApi.me });
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [password, setPassword] = useState({ current: "", next: "", confirm: "" });
+  const [tierOpen, setTierOpen] = useState(false);
 
   const changePassword = useMutation({
     mutationFn: () => userApi.changePassword(password.current, password.next),
@@ -42,9 +47,18 @@ export function UserSettingsPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const updatePrefs = useMutation({
+    mutationFn: (prefs: { training_consent?: boolean }) => userApi.updatePreferences(prefs),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["user", "me"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   const user = me.data?.user;
   const wallet = me.data?.wallet;
   const tier = me.data?.tier;
+  const allTiers = me.data?.all_tiers ?? [];
   const current = tier?.current;
   const next = tier?.next;
   const rangeStart = current?.threshold_micros || 0;
@@ -67,7 +81,7 @@ export function UserSettingsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={zh ? "个人设置" : "Personal settings"}
-        description={zh ? "账户资料、余额层级与登录安全。" : "Profile, wallet tier, and sign-in security."}
+        description={zh ? "账户资料、余额层级、外观与隐私。" : "Profile, wallet tier, appearance, and privacy."}
       />
 
       <div className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
@@ -123,6 +137,12 @@ export function UserSettingsPage() {
                 {current?.name || (zh ? "未匹配层级" : "No tier")}
               </h2>
             </div>
+            {allTiers.length > 0 ? (
+              <Button size="sm" variant="ghost" onClick={() => setTierOpen(true)}>
+                {zh ? "等级详情" : "Tiers"}
+                <ChevronRight className="size-3.5" />
+              </Button>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-3 gap-2">
@@ -159,6 +179,60 @@ export function UserSettingsPage() {
         </Card>
       </div>
 
+      {/* Appearance & Privacy */}
+      <Card className="flex flex-col gap-4 p-4 sm:p-5">
+        <h2 className="text-sm font-medium">{zh ? "外观与隐私" : "Appearance & privacy"}</h2>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/40 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              {theme === "dark" ? <Moon className="size-4 text-muted-foreground" /> : <Sun className="size-4 text-muted-foreground" />}
+              <div>
+                <p className="text-xs">{zh ? "主题" : "Theme"}</p>
+                <p className="text-[10px] text-muted-foreground">{theme === "dark" ? (zh ? "深色" : "Dark") : (zh ? "浅色" : "Light")}</p>
+              </div>
+            </div>
+            <Switch
+              checked={theme === "dark"}
+              onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
+              aria-label={zh ? "切换主题" : "Toggle theme"}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/40 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <Languages className="size-4 text-muted-foreground" />
+              <div>
+                <p className="text-xs">{zh ? "语言" : "Language"}</p>
+                <p className="text-[10px] text-muted-foreground">{locale === "zh" ? "中文" : "English"}</p>
+              </div>
+            </div>
+            <Switch
+              checked={locale === "zh"}
+              onCheckedChange={(checked) => setLocale(checked ? "zh" : "en" as Locale)}
+              aria-label={zh ? "切换语言" : "Toggle language"}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/40 px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs">{zh ? "允许将使用数据用于模型训练" : "Allow usage data for model training"}</p>
+            <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+              {zh
+                ? "关闭后，你的请求内容不会用于上游模型改进。"
+                : "When off, your request content is not used for upstream model improvement."}
+            </p>
+          </div>
+          <Switch
+            checked={Boolean(user?.training_consent)}
+            disabled={updatePrefs.isPending}
+            onCheckedChange={(checked) => updatePrefs.mutate({ training_consent: checked })}
+            aria-label={zh ? "训练数据授权" : "Training consent"}
+          />
+        </div>
+      </Card>
+
+      {/* Password Dialog */}
       <Dialog
         open={passwordOpen}
         onOpenChange={(open) => {
@@ -219,15 +293,59 @@ export function UserSettingsPage() {
               </Button>
               <Button type="submit" disabled={!canSubmitPassword}>
                 {changePassword.isPending
-                  ? zh
-                    ? "保存中…"
-                    : "Saving…"
-                  : zh
-                    ? "保存密码"
-                    : "Save password"}
+                  ? zh ? "保存中…" : "Saving…"
+                  : zh ? "保存密码" : "Save password"}
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tier Details Dialog */}
+      <Dialog open={tierOpen} onOpenChange={setTierOpen}>
+        <DialogContent className="max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>{zh ? "等级详情" : "Tier details"}</DialogTitle>
+            <DialogDescription>
+              {zh
+                ? "不同充值等级的限速与并发。累计充值达到门槛后自动升级。"
+                : "Rate limits per tier. Upgrade is automatic when lifetime top-up reaches the threshold."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-3 space-y-2">
+            {allTiers.map((tierRow) => {
+              const isCurrent = current?.id === tierRow.id;
+              return (
+                <div
+                  key={tierRow.id}
+                  className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-xs ${
+                    isCurrent ? "bg-secondary/60" : "bg-secondary/30"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{tierRow.name}</span>
+                      {isCurrent ? <Badge variant="success">{zh ? "当前" : "Current"}</Badge> : null}
+                    </div>
+                    {tierRow.description ? (
+                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{tierRow.description}</p>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3 text-[11px] font-mono tabular-nums">
+                    <span title={zh ? "RPM" : "RPM"}>{formatLimit(tierRow.rpm_limit)}</span>
+                    <span title={zh ? "TPM" : "TPM"}>{formatLimit(tierRow.tpm_limit)}</span>
+                    <span title={zh ? "并发" : "Concurrency"}>{formatLimit(tierRow.concurrency_limit)}</span>
+                    <span className="text-muted-foreground">{formatCredits(tierRow.threshold_micros)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setTierOpen(false)}>
+              {zh ? "关闭" : "Close"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

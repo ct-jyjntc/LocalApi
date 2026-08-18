@@ -1,9 +1,11 @@
 import { ApiKey } from "../db";
-import { estimateRequestTokens } from "./billing";
+import { getSetting } from "../db";
+import { estimateRequestTokens, getModelPrice } from "./billing";
 import { consumeRateLimit } from "./rate-limit";
 import { getActiveSubscription, maintainActiveSubscription } from "./plans";
 import { getUser } from "./users";
 import { resolveUserTier } from "./tiers";
+import { observeWalletFreePrompt } from "./free-prompt-claims";
 
 export class AccessError extends Error {
   status: number;
@@ -50,6 +52,30 @@ function parseModels(value: string | string[] | undefined): string[] {
 
 function allows(models: string[], model: string) {
   return models.length === 0 || models.includes("*") || models.includes(model);
+}
+
+/** Wallet-only gate: a free model is one with all listed prices at zero. */
+export const WALLET_FREE_MODEL_MIN_TOPUP_MICROS_DEFAULT = 1_000_000;
+
+export function isWalletFreeModelTopupRequired() {
+  return (getSetting("wallet_free_model_topup_required") ?? "true") === "true";
+}
+
+export function walletFreeModelMinTopupMicros() {
+  const raw = Number(getSetting("wallet_free_model_min_topup_micros") ?? WALLET_FREE_MODEL_MIN_TOPUP_MICROS_DEFAULT);
+  if (!Number.isFinite(raw) || raw <= 0) return WALLET_FREE_MODEL_MIN_TOPUP_MICROS_DEFAULT;
+  return Math.floor(raw);
+}
+
+export function isFreePricedModel(model: string) {
+  const price = getModelPrice(model);
+  if (!price) return false;
+  return (
+    Number(price.input_price_micros || 0) <= 0 &&
+    Number(price.output_price_micros || 0) <= 0 &&
+    Number(price.cache_read_price_micros || 0) <= 0 &&
+    Number(price.cache_write_price_micros || 0) <= 0
+  );
 }
 
 function reserveTokenWindow(scope: string, limit: number, estimated: number) {
@@ -114,7 +140,13 @@ export function beginRequestAccess(
   key: ApiKey,
   model: string | null,
   body: unknown,
-  options: { billingMode?: "wallet" | "coding"; estimatedTokens?: { prompt: number; completion: number } } = {},
+  options: {
+    billingMode?: "wallet" | "coding";
+    estimatedTokens?: { prompt: number; completion: number };
+    clientIp?: string | null;
+    userAgent?: string | null;
+    apiKeyId?: string | null;
+  } = {},
 ): RequestAccess {
   const billingMode = options.billingMode ?? "wallet";
   const user = key.user_id ? getUser(key.user_id) : null;
@@ -133,6 +165,24 @@ export function beginRequestAccess(
   if (model) {
     if (!isModelAllowedForKey(key, model, { includeSubscription: billingMode === "coding" })) {
       throw new AccessError(403, "model_not_allowed", `Model ${model} is not allowed for this account`);
+    }
+    if (billingMode === "wallet" && user && isFreePricedModel(model)) {
+      if (isWalletFreeModelTopupRequired()) {
+        const topup = resolveUserTier(user.id).lifetime_topup_micros;
+        const required = walletFreeModelMinTopupMicros();
+        if (topup < required) {
+          throw new AccessError(
+            402,
+            "free_model_topup_required",
+            `Free models on the API endpoint require a lifetime top-up of at least ¥${(required / 1_000_000).toFixed(required % 1_000_000 === 0 ? 0 : 2)}. Coding Plan users should call /coding instead.`,
+          );
+        }
+      }
+      observeWalletFreePrompt(user.id, model, body, {
+        clientIp: options.clientIp,
+        userAgent: options.userAgent,
+        apiKeyId: options.apiKeyId ?? key.id,
+      });
     }
   }
 

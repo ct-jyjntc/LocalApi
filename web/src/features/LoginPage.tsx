@@ -53,13 +53,15 @@ export function LoginPage({
     void loadCaptcha();
   }, [loadCaptcha]);
 
+  const configReady = mode !== "user" || !registration.isLoading;
   const passwordLoginEnabled = mode !== "user" || registration.data?.password_login_enabled !== false;
   const linuxdoLoginEnabled = Boolean(registration.data?.linuxdo_enabled);
   const passwordRegistrationEnabled = Boolean(registration.data?.registration_enabled);
-  const showPasswordForm = mode === "admin" || isRegistering || passwordLoginEnabled;
-  const showLinuxdo = mode === "user" && linuxdoLoginEnabled && !isRegistering;
+  const showPasswordForm =
+    mode === "admin" || (configReady && (isRegistering || passwordLoginEnabled));
+  const showLinuxdo = mode === "user" && configReady && linuxdoLoginEnabled && !isRegistering;
   const noUserLoginMethods =
-    mode === "user" && !isRegistering && !passwordLoginEnabled && !linuxdoLoginEnabled;
+    mode === "user" && configReady && !isRegistering && !passwordLoginEnabled && !linuxdoLoginEnabled;
 
   async function submit(e?: FormEvent) {
     e?.preventDefault();
@@ -114,7 +116,7 @@ export function LoginPage({
       ? t("login.registerDesc")
       : noUserLoginMethods
         ? (zh ? "当前未开放任何登录方式，请联系管理员。" : "No login methods are currently enabled. Contact the administrator.")
-        : (zh ? "登录后查看余额、套餐、用量与 API Key。" : "Sign in to view balance, plan, usage and API keys.");
+        : (zh ? "登录后即可享用最先进的中国大模型" : "Sign in to use the most advanced Chinese foundation models.");
 
   const submitLabel = loading
     ? t("common.loading")
@@ -129,6 +131,10 @@ export function LoginPage({
           <BrandMark name={brandName} tagline={tagline} iconUrl={iconUrl} size="hero" />
           <p className="mx-auto max-w-[280px] text-sm leading-6 text-muted-foreground">{description}</p>
         </div>
+
+        {mode === "user" && !configReady ? (
+          <div className="h-10" aria-hidden="true" />
+        ) : null}
 
         {showPasswordForm ? (
           <form className="space-y-4" onSubmit={submit}>
@@ -176,14 +182,14 @@ export function LoginPage({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    className="h-14 w-[180px] shrink-0 overflow-hidden rounded-2xl border border-border bg-card transition-opacity hover:opacity-90 disabled:opacity-60"
+                    className="h-10 w-[148px] shrink-0 overflow-hidden rounded-full border-0 bg-card px-3 transition-opacity hover:opacity-90 disabled:opacity-60"
                     onClick={() => void loadCaptcha()}
                     disabled={captchaLoading}
                     title={t("login.captchaRefresh")}
                     aria-label={t("login.captchaRefresh")}
                   >
                     {captchaImage ? (
-                      <img src={captchaImage} alt={t("login.captcha")} className="h-full w-full object-cover" />
+                      <img src={captchaImage} alt={t("login.captcha")} className="h-full w-full object-contain" />
                     ) : (
                       <span className="text-xs text-muted-foreground">{captchaLoading ? t("common.loading") : t("login.captchaRefresh")}</span>
                     )}

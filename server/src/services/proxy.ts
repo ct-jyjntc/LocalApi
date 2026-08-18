@@ -79,6 +79,13 @@ export type ProxyContext = {
   apiKey?: ApiKey | null;
   billingMode?: "wallet" | "coding";
   clientPath?: string;
+  clientIp?: string | null;
+  /** Estimated tokens of admin-bound prompt presets injected into body; excluded from billing. */
+  injectedPromptTokens?: number;
+  /** Pre-injection estimate of the user's own prompt tokens; floor for usage rewrites/settlement. */
+  userPromptTokensEstimate?: number;
+  /** Pre-injection body used for anti-abuse prompt observation (avoids clustering on the shared preset). */
+  observeBody?: unknown;
 };
 
 type ProxyResult = {
@@ -206,6 +213,13 @@ function isRetryableStatus(status: number): boolean {
   return isNormalRetryableStatus(status) || [404, 409].includes(status);
 }
 
+function formatUpstreamError(status: number, attempts: number, detail?: string | null) {
+  const head = attempts > 1 ? `Upstream HTTP ${status} after ${attempts} attempt(s)` : `Upstream HTTP ${status}`;
+  const body = (detail || "").replace(/\s+/g, " ").trim();
+  if (!body) return head;
+  return `${head}: ${body.slice(0, 1500)}`;
+}
+
 function isRetryableError(err: unknown): boolean {
   if (!err || typeof err !== "object") return true;
   const e = err as { name?: string; type?: string; code?: string };
@@ -267,15 +281,22 @@ function buildUpstreamHeaders(
   ctx: ProxyContext,
 ): Record<string, string> {
   const headers = headersToObject(ctx.headers);
-  // Never forward the client-facing Host header upstream; it would point at
-  // this relay (e.g. 127.0.0.1:5555) and strict upstreams (Cloudflare/nginx)
-  // reject the request. Let node-fetch derive Host from the upstream URL.
   delete headers.host;
   const upstreamKey = pickProviderKey(provider);
   if (upstreamKey) headers.authorization = `Bearer ${upstreamKey}`;
   if (!headers.accept) {
     headers.accept = isStreamBody(ctx.body) ? "text/event-stream" : "application/json";
   }
+  // Inject custom headers from provider config (e.g. User-Agent, X-Custom-Header).
+  // Authorization and Host are excluded by sanitizeCustomHeaders.
+  try {
+    const customHeaders = JSON.parse(provider.custom_headers || "{}") as Record<string, string>;
+    for (const [k, v] of Object.entries(customHeaders)) {
+      const key = k.trim();
+      if (!key || key.toLowerCase() === "authorization" || key.toLowerCase() === "host") continue;
+      if (typeof v === "string" && v.length > 0) headers[key] = v;
+    }
+  } catch { /* ignore */ }
   return headers;
 }
 
@@ -595,21 +616,39 @@ export async function testProviderConnection(
   };
 }
 
+// Headers that leak relay/proxy internals — never forward to client.
+const STRIP_RESPONSE_HEADERS = new Set([
+  "x-provider",
+  "x-retry-attempts",
+  "x-client-request-id",
+  "x-request-id",
+  "x-envoy-upstream-service-time",
+  "x-envoy-decorator-operation",
+  "x-served-by",
+  "x-cache",
+  "x-cache-hits",
+  "cf-ray",
+  "cf-cache-status",
+  "via",
+  "x-amz-cf-id",
+  "x-amz-cf-pop",
+]);
+
 function applyUpstreamHeaders(
   res: ExpressResponse,
   upstream: FetchResponse,
-  providerLabel: string,
+  _providerLabel: string,
 ) {
   upstream.headers.forEach((value, key) => {
     const lk = key.toLowerCase();
     if (HOP_BY_HOP.has(lk)) return;
+    if (STRIP_RESPONSE_HEADERS.has(lk)) return;
     try {
       res.setHeader(key, value);
     } catch {
       // Ignore invalid upstream header values.
     }
   });
-  res.setHeader("x-provider", providerLabel.replace(/[^\x20-\x7E]/g, "_"));
 }
 
 function requestBytes(ctx: ProxyContext) {
@@ -636,7 +675,32 @@ async function pipeResponseToClient(params: {
   baseIo: ReturnType<typeof extractIO>;
   clientSignal?: AbortSignal;
 }): Promise<ProxyResult> {
-  const { res, handle, provider, attempts, stream, baseIo, clientSignal, started } = params;
+  const { ctx, res, handle, provider, model: clientModel, stream, baseIo, clientSignal, started } = params;
+  const injected = Math.max(0, ctx.injectedPromptTokens ?? 0);
+  // Floor for client-visible prompt tokens: the user's own pre-injection
+  // estimate. The preset estimate (chars/4) can overshoot the upstream's
+  // real token count on large presets — without this floor the estimation
+  // error silently eats the user's genuine input tokens down to 1.
+  const userFloor = Math.max(1, Math.floor(ctx.userPromptTokensEstimate ?? 0) || 1);
+  // Subtract injected preset tokens from an upstream-reported prompt count,
+  // never below the user's own estimated input, never above the upstream total.
+  const adjustPromptTokens = (upstreamPrompt: number): number =>
+    Math.max(Math.min(userFloor, upstreamPrompt), upstreamPrompt - injected);
+  // Self-correcting cached deduction: derive the actual injected size from
+  // this very response (upstream prompt minus what we attribute to the
+  // user). The chars/4 preset estimate can overshoot by thousands of tokens
+  // on large presets; subtracting it directly from cached_tokens would zero
+  // out the user's genuine cache hits. Anchoring on the adjusted prompt
+  // absorbs the estimate error exactly.
+  const adjustCachedTokens = (
+    upstreamCached: number,
+    upstreamPrompt: number,
+    adjustedPrompt: number,
+  ): number =>
+    Math.min(
+      Math.max(0, upstreamCached - (upstreamPrompt - adjustedPrompt)),
+      adjustedPrompt,
+    );
   const upstream = handle.response;
   const streamingResponse =
     stream || /\btext\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
@@ -644,8 +708,8 @@ async function pipeResponseToClient(params: {
   const commitHeaders = () => {
     if (headersCommitted) return;
     headersCommitted = true;
+    // Forward upstream headers but strip any that leak relay internals.
     applyUpstreamHeaders(res, upstream, `${provider.id}:${provider.name}`);
-    if (attempts > 1) res.setHeader("x-retry-attempts", String(attempts));
     if (stream) {
       res.setHeader("cache-control", "no-cache");
       res.setHeader("connection", "keep-alive");
@@ -713,56 +777,208 @@ async function pipeResponseToClient(params: {
     else clientSignal.addEventListener("abort", onClientSignalAbort, { once: true });
   }
   try {
-    if (clientClosed) throw new Error("Client disconnected");
-    for await (const value of body) {
-      if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
-      if (Date.now() - started > REQUEST_MAX_MS) {
-        forceCloseUpstream("Request max duration exceeded");
-        throw new Error("Request max duration exceeded");
-      }
-      // Not idle: this chunk is in hand. Writing it (and waiting out client
-      // backpressure) must not arm the stall timer — a paused reader is not
-      // an upstream stall.
-      clearIdle();
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      if (responseBytes === 0) {
-        // TTFB timeout ends once the body starts; the idle timer takes over
-        // for stalls (streaming and buffered responses alike).
-        handle.onBodyChunk(streamingResponse);
-        commitHeaders();
-      }
-      responseBytes += chunk.length;
-      responseCollector.push(chunk);
-      if (!res.write(chunk)) {
-        await Promise.race([once(res, "drain"), once(res, "close")]);
+  // For non-streaming JSON responses, buffer and rewrite usage to strip
+  // injected prompt preset tokens so the client sees only their own usage.
+  const isJson = !streamingResponse && /json/i.test(upstream.headers.get("content-type") || "");
+  if (isJson && injected > 0) {
+    const chunks: Buffer[] = [];
+    try {
+      for await (const value of body) {
         if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
+        clearIdle();
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        chunks.push(chunk);
+        responseBytes += chunk.length;
+        responseCollector.push(chunk);
+        armIdle();
       }
-      // Idle again: waiting for the next upstream chunk. The stream ends
-      // (for await completes) before this timer can fire.
-      armIdle();
-    }
-    handle.clearTimeout();
-    clearIdle();
-    if (!clientClosed) {
-      commitHeaders();
-      res.end();
-    }
-  } catch (error) {
-    handle.abort();
-    clearIdle();
-    if (clientClosed || clientSignal?.aborted || (error instanceof Error && /Client disconnected/i.test(error.message))) {
-      streamError = "Client disconnected";
-    } else if (responseBytes === 0 && !res.headersSent) {
-      if (handle.didTimeout() || (error instanceof Error && /timeout|aborted/i.test(error.message))) {
-        throw upstreamTimeoutError(error);
+      handle.clearTimeout();
+      clearIdle();
+      let responseBuffer = Buffer.concat(chunks);
+      // Rewrite model field to match client's requested model name
+      // and fix usage to hide injected tokens
+      try {
+        const json = JSON.parse(responseBuffer.toString("utf8"));
+        // Fix model field: always echo back the client's requested model
+      if (clientModel && typeof json.model === "string" && json.model !== clientModel) {
+        json.model = clientModel;
       }
-      throw error;
-    } else {
-      streamError = handle.didTimeout()
-        ? "Upstream response timed out"
-        : error instanceof Error ? error.message : String(error);
-      if (!res.writableEnded) res.destroy(error instanceof Error ? error : undefined);
+      // Rewrite usage to subtract injected tokens
+      if (json.usage && typeof json.usage === "object") {
+          const u = json.usage;
+          const originalPrompt = typeof u.prompt_tokens === "number" ? u.prompt_tokens : null;
+          if (originalPrompt !== null) {
+            u.prompt_tokens = adjustPromptTokens(originalPrompt);
+          }
+          if (u.total_tokens !== undefined && typeof u.total_tokens === "number") {
+            u.total_tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
+          }
+          if (u.prompt_tokens_details && typeof u.prompt_tokens_details === "object") {
+            if (typeof u.prompt_tokens_details.cached_tokens === "number" && originalPrompt !== null) {
+              u.prompt_tokens_details.cached_tokens = adjustCachedTokens(
+                u.prompt_tokens_details.cached_tokens,
+                originalPrompt,
+                u.prompt_tokens as number,
+              );
+            }
+          }
+      }
+      responseBuffer = Buffer.from(JSON.stringify(json), "utf8");
+      } catch { /* not valid JSON, pass through */ }
+      if (!clientClosed) {
+        commitHeaders();
+        res.setHeader("content-length", String(responseBuffer.length));
+        res.write(responseBuffer);
+        res.end();
+      }
+    } catch (error) {
+      handle.abort();
+      clearIdle();
+      if (clientClosed || clientSignal?.aborted || (error instanceof Error && /Client disconnected/i.test(error.message))) {
+        streamError = "Client disconnected";
+      } else {
+        throw error;
+      }
     }
+  } else {
+    // Original streaming/binary path — pipe chunks through directly.
+    // For SSE streams with injected tokens, rewrite each complete data line.
+    const isSseWithInjection = streamingResponse && injected > 0;
+    // Chunks may split anywhere — mid-line or mid-multibyte-character — so
+    // buffer through a streaming TextDecoder and only rewrite complete lines.
+    const sseDecoder = new TextDecoder();
+    let ssePending = "";
+    // Regexes can't reliably match usage because prompt_tokens_details and
+    // completion_tokens_details nest braces; parse each SSE frame as JSON.
+    const rewriteSseLine = (line: string): string => {
+      if (!line.startsWith("data:")) return line;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") return line;
+      let frame: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(payload);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return line;
+        frame = parsed as Record<string, unknown>;
+      } catch {
+        return line;
+      }
+      let changed = false;
+      // Echo back the client's requested model so the upstream's real model
+      // name never leaks.
+      if (clientModel && typeof frame.model === "string" && frame.model !== clientModel) {
+        frame.model = clientModel;
+        changed = true;
+      }
+      const usage = frame.usage;
+      if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+        const u = usage as Record<string, unknown>;
+        const originalPrompt = typeof u.prompt_tokens === "number" ? u.prompt_tokens : null;
+        if (originalPrompt !== null) {
+          u.prompt_tokens = adjustPromptTokens(originalPrompt);
+          changed = true;
+        }
+        const promptDetails = u.prompt_tokens_details;
+        if (promptDetails && typeof promptDetails === "object" && !Array.isArray(promptDetails)) {
+          const d = promptDetails as Record<string, unknown>;
+          if (typeof d.cached_tokens === "number" && originalPrompt !== null) {
+            d.cached_tokens = adjustCachedTokens(
+              d.cached_tokens,
+              originalPrompt,
+              u.prompt_tokens as number,
+            );
+            changed = true;
+          }
+        }
+        if (typeof u.total_tokens === "number") {
+          u.total_tokens =
+            (typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0) +
+            (typeof u.completion_tokens === "number" ? u.completion_tokens : 0);
+          changed = true;
+        }
+      }
+      return changed ? `data: ${JSON.stringify(frame)}` : line;
+    };
+    const rewriteSseChunk = (chunk: Buffer, flush = false): Buffer => {
+      ssePending += sseDecoder.decode(chunk, { stream: !flush });
+      if (!ssePending) return Buffer.alloc(0);
+      const lines = ssePending.split("\n");
+      if (flush) {
+        ssePending = "";
+      } else {
+        // Keep the last (possibly incomplete) line for the next chunk.
+        ssePending = lines.pop() ?? "";
+      }
+      if (lines.length === 0) return Buffer.alloc(0);
+      const out = lines.map(rewriteSseLine).join("\n");
+      // Non-flush: every processed line was newline-terminated in the source.
+      return Buffer.from(flush ? out : `${out}\n`, "utf8");
+    };
+    try {
+      if (clientClosed) throw new Error("Client disconnected");
+      for await (const value of body) {
+        if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
+        if (Date.now() - started > REQUEST_MAX_MS) {
+          forceCloseUpstream("Request max duration exceeded");
+          throw new Error("Request max duration exceeded");
+        }
+        clearIdle();
+        const rawChunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        // Collector gets the ORIGINAL chunk for accurate billing/logging;
+        // the rewritten chunk is only sent to the client.
+        responseCollector.push(rawChunk);
+        const chunk = isSseWithInjection ? rewriteSseChunk(rawChunk) : rawChunk;
+        if (chunk.length === 0) {
+          // Entire chunk buffered as an incomplete SSE line; nothing to send yet.
+          armIdle();
+          continue;
+        }
+        if (responseBytes === 0) {
+          handle.onBodyChunk(streamingResponse);
+          commitHeaders();
+        }
+        responseBytes += chunk.length;
+        if (!res.write(chunk)) {
+          await Promise.race([once(res, "drain"), once(res, "close")]);
+          if (clientClosed || clientSignal?.aborted) throw new Error("Client disconnected");
+        }
+        armIdle();
+      }
+      if (isSseWithInjection && !clientClosed) {
+        // Flush any trailing partial line (final frame without newline).
+        const tail = rewriteSseChunk(Buffer.alloc(0), true);
+        if (tail.length > 0) {
+          if (responseBytes === 0) {
+            handle.onBodyChunk(streamingResponse);
+            commitHeaders();
+          }
+          responseBytes += tail.length;
+          res.write(tail);
+        }
+      }
+      handle.clearTimeout();
+      clearIdle();
+      if (!clientClosed) {
+        commitHeaders();
+        res.end();
+      }
+    } catch (error) {
+      handle.abort();
+      clearIdle();
+      if (clientClosed || clientSignal?.aborted || (error instanceof Error && /Client disconnected/i.test(error.message))) {
+        streamError = "Client disconnected";
+      } else if (responseBytes === 0 && !res.headersSent) {
+        if (handle.didTimeout() || (error instanceof Error && /timeout|aborted/i.test(error.message))) {
+          throw upstreamTimeoutError(error);
+        }
+        throw error;
+      } else {
+        streamError = handle.didTimeout()
+          ? "Upstream response timed out"
+          : error instanceof Error ? error.message : String(error);
+        if (!res.writableEnded) res.destroy(error instanceof Error ? error : undefined);
+      }
+    }
+  }
   } finally {
     clearIdle();
     res.off("close", onClientClose);
@@ -781,10 +997,8 @@ async function pipeResponseToClient(params: {
     io,
     error:
       streamError ||
-      (attempts > 1
-        ? upstream.status >= 200 && upstream.status < 400
-          ? null
-          : `Upstream HTTP ${upstream.status} after ${attempts} attempt(s)`
+      (upstream.status >= 400
+        ? formatUpstreamError(upstream.status, params.attempts, io.output_text)
         : null),
   };
 }
@@ -806,12 +1020,37 @@ function writeCompletedRequest(params: {
   if (
     result.statusCode >= 200 && result.statusCode < 400 &&
     logIo.total_tokens === 0 &&
-    (logIo.output_text || logIo.reasoning_text)
+    (logIo.output_text || logIo.reasoning_text || result.responseBytes > 0)
   ) {
     const estimate = estimateRequestTokens(ctx.body, requestBytes(ctx));
-    const completion = Math.max(1, Math.ceil(((logIo.output_text?.length || 0) + (logIo.reasoning_text?.length || 0)) / 4));
+    const outputLen = (logIo.output_text?.length || 0) + (logIo.reasoning_text?.length || 0);
+    const completion = outputLen > 0
+      ? Math.max(1, Math.ceil(outputLen / 4))
+      : Math.max(1, Math.ceil(result.responseBytes / 4));
     logIo = { ...logIo, prompt_tokens: estimate.prompt, completion_tokens: completion, total_tokens: estimate.prompt + completion };
     usageEstimated = true;
+  }
+  // Relay-injected prompt presets are platform context, not user usage: strip
+  // their estimated tokens from the upstream-reported prompt count before
+  // billing and TPM accounting. The estimate errs high (chars/4), so the
+  // deduction is floored at the user's own pre-injection estimate — large
+  // presets must not eat the user's genuine input tokens.
+  const injected = Math.max(0, ctx.injectedPromptTokens ?? 0);
+  if (injected > 0) {
+    const userFloor = Math.max(1, Math.floor(ctx.userPromptTokensEstimate ?? 0) || 1);
+    const rawPrompt = logIo.prompt_tokens;
+    const promptTokens = Math.max(Math.min(userFloor, rawPrompt), rawPrompt - injected);
+    // Self-correcting cached deduction: derive the actual injected size from
+    // this response (raw prompt minus what we attribute to the user) instead
+    // of trusting the chars/4 preset estimate, whose error would otherwise
+    // zero out the user's genuine cache hits.
+    const effectiveInjected = rawPrompt - promptTokens;
+    logIo = {
+      ...logIo,
+      prompt_tokens: promptTokens,
+      cached_tokens: Math.min(Math.max(0, (logIo.cached_tokens ?? 0) - effectiveInjected), promptTokens),
+      total_tokens: promptTokens + logIo.completion_tokens,
+    };
   }
   let usageId: string | null = null;
   let costMicros = 0;
@@ -849,12 +1088,15 @@ function writeCompletedRequest(params: {
     cost_micros: costMicros,
     status_code: result.statusCode,
     latency_ms: Date.now() - started,
-    cached: (result.io.cached_tokens ?? 0) > 0,
+    cached: (logIo.cached_tokens ?? 0) > 0,
     request_bytes: requestBytes(ctx),
     response_bytes: result.responseBytes,
     input_text: logIo.input_text,
     output_text: logIo.output_text,
     reasoning_text: logIo.reasoning_text,
+    input_file: logIo.input_file,
+    output_file: logIo.output_file,
+    reasoning_file: logIo.reasoning_file,
     prompt_tokens: logIo.prompt_tokens,
     completion_tokens: logIo.completion_tokens,
     reasoning_tokens: logIo.reasoning_tokens,
@@ -876,7 +1118,17 @@ export async function handleProxyHttp(
   const logPath = ctx.clientPath || path;
   const stream = isStreamBody(ctx.body);
   const baseIo = extractIO({ path, body: ctx.body, stream });
-  const estimatedTokens = estimateRequestTokens(ctx.body, requestBytes(ctx));
+  const rawEstimate = estimateRequestTokens(ctx.body, requestBytes(ctx));
+  // Prompt presets are platform context injected by the relay: reserve TPM /
+  // wallet only for the user's own tokens, otherwise a large preset would
+  // inflate every hold by its (often huge) estimated size.
+  const injectedEst = Math.max(0, ctx.injectedPromptTokens ?? 0);
+  const estimatedTokens = injectedEst > 0
+    ? {
+        prompt: Math.max(1, ctx.userPromptTokensEstimate ?? (rawEstimate.prompt - injectedEst)),
+        completion: rawEstimate.completion,
+      }
+    : rawEstimate;
   const normalMaxRetries = getMaxRetries();
   const otherMaxRetries = getOtherMaxRetries();
   const maxRetries = normalMaxRetries + otherMaxRetries;
@@ -915,6 +1167,7 @@ export async function handleProxyHttp(
       cached: false,
       error: message,
       input_text: baseIo.input_text,
+      input_file: baseIo.input_file,
       stream,
     });
     res.status(statusCode).json({
@@ -966,7 +1219,13 @@ export async function handleProxyHttp(
 
   try {
     try {
-      if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.body, { billingMode: ctx.billingMode, estimatedTokens });
+      if (ctx.apiKey) access = beginRequestAccess(ctx.apiKey, model, ctx.observeBody ?? ctx.body, {
+        billingMode: ctx.billingMode,
+        estimatedTokens,
+        clientIp: ctx.clientIp,
+        userAgent: Array.isArray(ctx.headers["user-agent"]) ? ctx.headers["user-agent"][0] : ctx.headers["user-agent"],
+        apiKeyId: ctx.apiKey.id,
+      });
     } catch (error) {
       const accessError = error instanceof AccessError ? error : new AccessError(403, "access_denied", String(error));
       if (accessError.retryAfterSeconds) res.setHeader("retry-after", String(accessError.retryAfterSeconds));
@@ -981,6 +1240,7 @@ export async function handleProxyHttp(
         latency_ms: Date.now() - started,
         error: accessError.message,
         input_text: baseIo.input_text,
+        input_file: baseIo.input_file,
         stream,
       });
       res.status(accessError.status).json({ error: { message: accessError.message, type: accessError.code } });
@@ -1016,6 +1276,7 @@ export async function handleProxyHttp(
         latency_ms: Date.now() - started,
         error: billingError.message,
         input_text: baseIo.input_text,
+        input_file: baseIo.input_file,
         stream,
       });
       res.status(billingError.status).json({ error: { message: billingError.message, type: billingError.code } });
@@ -1149,6 +1410,7 @@ export async function handleProxyHttp(
       cached: false,
       error: lastError || "Upstream request failed",
       input_text: baseIo.input_text,
+      input_file: baseIo.input_file,
       stream,
       request_bytes: requestBytes(ctx),
     });

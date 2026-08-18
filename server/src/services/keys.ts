@@ -71,8 +71,15 @@ export function listApiKeysPage(input: { userId?: string; limit?: number; offset
     db.prepare(`SELECT COUNT(*) AS c FROM api_keys ${where}`).get(...params) as { c: number }
   ).c;
   const rows = db
-    .prepare(`SELECT * FROM api_keys ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset) as ApiKey[];
+    .prepare(
+      `SELECT k.*, u.username AS username, u.display_name AS user_display_name
+       FROM api_keys k
+       LEFT JOIN users u ON u.id = k.user_id
+       ${where}
+       ORDER BY k.created_at DESC, k.id DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limit, offset) as (ApiKey & { username: string | null; user_display_name: string | null })[];
   return { items: rows.map((row) => publicKey(row)), total, limit, offset };
 }
 
@@ -225,6 +232,8 @@ function publicKey(row: ApiKey, oneTimeSecret?: string) {
     })(),
     expires_at: row.expires_at,
     user_id: row.user_id,
+    username: row.username ?? null,
+    user_display_name: row.user_display_name ?? null,
     created_at: row.created_at,
     last_used_at: row.last_used_at,
   };

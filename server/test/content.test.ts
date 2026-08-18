@@ -1,20 +1,25 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   createResponseLogCollector,
   extractFromResponse,
   extractInput,
+  extractInputToDisk,
 } from "../src/utils/content";
+import { persistLogBodies, readLogBodies } from "../src/services/log-bodies";
 
-test("request and non-stream response content are not truncated", () => {
+test("request and non-stream response previews stay bounded", () => {
   const input = "input-".repeat(5000);
   const output = "output-".repeat(5000);
   const reasoning = "reasoning-".repeat(5000);
 
-  assert.equal(
-    extractInput({ messages: [{ role: "user", content: input }] }, "/v1/chat/completions"),
-    `user: ${input}`,
-  );
+  const extractedInput = extractInput({ messages: [{ role: "user", content: input }] }, "/v1/chat/completions");
+  assert.ok(extractedInput);
+  assert.ok(extractedInput!.startsWith("user: input-"));
+  assert.ok(extractedInput!.length <= 8_000);
 
   const extracted = extractFromResponse(
     JSON.stringify({
@@ -22,11 +27,14 @@ test("request and non-stream response content are not truncated", () => {
       usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
     }),
   );
-  assert.equal(extracted.output_text, output);
-  assert.equal(extracted.reasoning_text, reasoning);
+  assert.ok(extracted.output_text?.startsWith("output-"));
+  assert.ok((extracted.output_text || "").length <= 8_000);
+  assert.ok(extracted.reasoning_text?.startsWith("reasoning-"));
 });
 
-test("stream collector keeps content and reasoning beyond the former 64KiB limit", () => {
+test("stream collector writes full body to disk and keeps a short preview", () => {
+  const prev = process.env.LOCALAPI_DATA_DIR;
+  process.env.LOCALAPI_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "localapi-log-bodies-"));
   const outputA = "a".repeat(70_000);
   const outputB = "b".repeat(25_000);
   const reasoning = "r".repeat(30_000);
@@ -56,12 +64,21 @@ test("stream collector keeps content and reasoning beyond the former 64KiB limit
   }
 
   const extracted = collector.finish();
-  assert.equal(extracted.output_text, outputA + outputB);
-  assert.equal(extracted.reasoning_text, reasoning);
+  assert.equal(extracted.output_text, "a".repeat(8_000));
+  assert.equal(extracted.reasoning_text, "r".repeat(8_000));
   assert.equal(extracted.prompt_tokens, 1234);
   assert.equal(extracted.completion_tokens, 5678);
   assert.equal(extracted.reasoning_tokens, 321);
   assert.equal(extracted.total_tokens, 6912);
+  assert.ok(extracted.output_file);
+  assert.equal(fs.readFileSync(extracted.output_file!, "utf8"), outputA + outputB);
+  assert.equal(fs.readFileSync(extracted.reasoning_file!, "utf8"), reasoning);
+  persistLogBodies("log-test-1", { output: extracted.output_file, reasoning: extracted.reasoning_file });
+  const stored = readLogBodies("log-test-1");
+  assert.equal(stored?.output_text, outputA + outputB);
+  assert.equal(stored?.reasoning_text, reasoning);
+  if (prev === undefined) delete process.env.LOCALAPI_DATA_DIR;
+  else process.env.LOCALAPI_DATA_DIR = prev;
 });
 
 test("stream collector captures OpenAI tool calls as output", () => {
@@ -74,9 +91,11 @@ test("stream collector captures OpenAI tool calls as output", () => {
   const collector = createResponseLogCollector({ stream: true, contentType: "text/event-stream" });
   collector.push(Buffer.from(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")));
   const extracted = collector.finish();
-  assert.equal(extracted.output_text, '[tool] search\n{"query":"hello"}');
+  assert.equal(extracted.output_text, '\n[tool] search\n{"query":"hello"}');
   assert.equal(extracted.reasoning_text, "thinking");
   assert.equal(extracted.total_tokens, 181);
+  if (extracted.output_file) fs.unlinkSync(extracted.output_file);
+  if (extracted.reasoning_file) fs.unlinkSync(extracted.reasoning_file);
 });
 
 test("stream collector captures Anthropic text, thinking and split usage", () => {
@@ -95,4 +114,15 @@ test("stream collector captures Anthropic text, thinking and split usage", () =>
   assert.equal(extracted.completion_tokens, 25);
   assert.equal(extracted.cached_tokens, 5);
   assert.equal(extracted.total_tokens, 33);
+  if (extracted.output_file) fs.unlinkSync(extracted.output_file);
+  if (extracted.reasoning_file) fs.unlinkSync(extracted.reasoning_file);
+});
+
+test("extractInputToDisk writes the full prompt off-heap", () => {
+  const input = "prompt-".repeat(4000);
+  const result = extractInputToDisk({ messages: [{ role: "user", content: input }] }, "/v1/chat/completions");
+  assert.ok(result.preview && result.preview.length <= 8_000);
+  assert.ok(result.file);
+  assert.match(fs.readFileSync(result.file!, "utf8"), /user: prompt-/);
+  fs.unlinkSync(result.file!);
 });

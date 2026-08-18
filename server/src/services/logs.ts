@@ -1,6 +1,13 @@
 import { v4 as uuid } from "uuid";
 import { db, reclaimSqliteSpace, type RequestLog } from "../db";
 import { nowIso } from "../utils/time";
+import {
+  clearAllLogBodies,
+  persistLogBodies,
+  persistLogBodiesFromText,
+  pruneLogBodies,
+  readLogBodies,
+} from "./log-bodies";
 
 type LogInput = {
   method: string;
@@ -19,6 +26,9 @@ type LogInput = {
   input_text?: string | null;
   output_text?: string | null;
   reasoning_text?: string | null;
+  input_file?: string | null;
+  output_file?: string | null;
+  reasoning_file?: string | null;
   prompt_tokens?: number;
   completion_tokens?: number;
   reasoning_tokens?: number;
@@ -33,8 +43,6 @@ type LogInput = {
 
 const pendingLogs: Array<LogInput & { id: string }> = [];
 const MAX_PENDING_LOGS = 10_000;
-const STORE_LOG_CONTENT = process.env.LOG_CONTENT === "true";
-const MAX_LOG_ROWS = Number(process.env.MAX_LOG_ROWS || 5_000);
 let insertLogStatement: ReturnType<typeof db.prepare> | null = null;
 let logsSincePrune = 0;
 
@@ -77,9 +85,9 @@ export function flushLogs(limit = 500) {
           input.response_bytes ?? 0,
           input.error ?? null,
           nowIso(),
-          input.input_text ?? null,
-          input.output_text ?? null,
-          input.reasoning_text ?? null,
+          null,
+          null,
+          null,
           input.prompt_tokens ?? 0,
           input.completion_tokens ?? 0,
           input.reasoning_tokens ?? 0,
@@ -94,14 +102,8 @@ export function flushLogs(limit = 500) {
       }
       logsSincePrune += rows.length;
       if (logsSincePrune >= 500) {
-        const keep = Number.isFinite(MAX_LOG_ROWS) && MAX_LOG_ROWS > 0 ? MAX_LOG_ROWS : 5_000;
-        db.prepare(
-          `DELETE FROM request_logs WHERE id IN (
-            SELECT id FROM request_logs ORDER BY created_at DESC LIMIT -1 OFFSET ?
-          )`,
-        ).run(keep);
         logsSincePrune = 0;
-        reclaimSqliteSpace();
+        pruneLogBodies(14);
       }
     })();
     invalidateDashboardCache();
@@ -129,6 +131,20 @@ function sanitizeLogText(value: string | null | undefined, max = 2_000): string 
 
 export function writeLog(input: LogInput) {
   const id = uuid();
+  const createdAt = nowIso();
+  if (input.input_file || input.output_file || input.reasoning_file) {
+    persistLogBodies(id, {
+      input: input.input_file,
+      output: input.output_file,
+      reasoning: input.reasoning_file,
+    }, createdAt);
+  } else {
+    persistLogBodiesFromText(id, {
+      input: input.input_text,
+      output: input.output_text,
+      reasoning: input.reasoning_text,
+    }, createdAt);
+  }
   pendingLogs.push({
     ...input,
     id,
@@ -137,10 +153,10 @@ export function writeLog(input: LogInput) {
     model: sanitizeLogText(input.model, 200),
     provider_name: sanitizeLogText(input.provider_name, 200),
     api_key_name: sanitizeLogText(input.api_key_name, 200),
-    error: sanitizeLogText(input.error, 1_000),
-    input_text: STORE_LOG_CONTENT ? sanitizeLogText(input.input_text, 8_000) : null,
-    output_text: STORE_LOG_CONTENT ? sanitizeLogText(input.output_text, 8_000) : null,
-    reasoning_text: STORE_LOG_CONTENT ? sanitizeLogText(input.reasoning_text, 8_000) : null,
+    error: sanitizeLogText(input.error, 2_000),
+    input_text: null,
+    output_text: null,
+    reasoning_text: null,
   });
   if (pendingLogs.length > MAX_PENDING_LOGS) {
     pendingLogs.splice(0, pendingLogs.length - MAX_PENDING_LOGS);
@@ -299,13 +315,22 @@ export function getLog(id: string, userId?: string) {
        WHERE l.id = ? ${userId ? "AND l.user_id = ?" : ""}`,
     )
     .get(...(userId ? [id, userId] : [id])) as RequestLogWithUser | undefined;
-  return row ? mapLog(row) : null;
+  if (!row) return null;
+  const mapped = mapLog(row);
+  const bodies = readLogBodies(id, row.created_at);
+  if (bodies) {
+    mapped.input_text = bodies.input_text;
+    mapped.output_text = bodies.output_text;
+    mapped.reasoning_text = bodies.reasoning_text;
+  }
+  return mapped;
 }
 
 export function clearLogs() {
   flushLogs(Number.MAX_SAFE_INTEGER);
   invalidateDashboardCache();
   const removed = db.prepare("DELETE FROM request_logs").run().changes;
+  clearAllLogBodies();
   reclaimSqliteSpace();
   return removed;
 }
@@ -320,6 +345,7 @@ export function stripLogContent() {
        WHERE input_text IS NOT NULL OR output_text IS NOT NULL OR reasoning_text IS NOT NULL`,
     )
     .run();
+  clearAllLogBodies();
   invalidateDashboardCache();
   reclaimSqliteSpace();
   return result.changes;

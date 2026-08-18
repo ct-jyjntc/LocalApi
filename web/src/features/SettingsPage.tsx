@@ -63,6 +63,8 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const [linuxdoClientSecret, setLinuxdoClientSecret] = useState("");
   const [linuxdoRelayUrl, setLinuxdoRelayUrl] = useState("");
   const [linuxdoRelaySecret, setLinuxdoRelaySecret] = useState("");
+  const [walletFreeTopupRequired, setWalletFreeTopupRequired] = useState(true);
+  const [walletFreePromptClaim, setWalletFreePromptClaim] = useState(true);
 
   useEffect(() => {
     document.documentElement.style.removeProperty("font-size");
@@ -98,6 +100,8 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
     setLinuxdoClientSecret("");
     setLinuxdoRelayUrl(data.linuxdo_relay_url || "");
     setLinuxdoRelaySecret("");
+    setWalletFreeTopupRequired(data.wallet_free_model_topup_required !== false);
+    setWalletFreePromptClaim(data.wallet_free_prompt_claim_required !== false);
   }, [data]);
 
   const savePassword = useMutation({
@@ -264,6 +268,19 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
       toast.success(t("settings.checkinSaved"));
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["user", "checkin"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveWalletFreeGate = useMutation({
+    mutationFn: async () =>
+      api.settings.update({
+        wallet_free_model_topup_required: walletFreeTopupRequired,
+        wallet_free_prompt_claim_required: walletFreePromptClaim,
+      }),
+    onSuccess: () => {
+      toast.success(t("settings.walletFreeGateSaved"));
+      qc.invalidateQueries({ queryKey: ["settings"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -799,6 +816,36 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
         <div className="flex justify-end">
           <Button size="sm" disabled={saveProxyHealth.isPending} onClick={() => saveProxyHealth.mutate()}>
             {saveProxyHealth.isPending ? t("common.loading") : t("common.save")}
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="space-y-4 p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-medium">{t("settings.walletFreeGate")}</h2>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.walletFreeGateHint")}</p>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+          <div>
+            <p className="text-xs">{t("settings.walletFreeGateToggle")}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {walletFreeTopupRequired ? t("settings.walletFreeGateOn") : t("settings.walletFreeGateOff")}
+            </p>
+          </div>
+          <Switch checked={walletFreeTopupRequired} onCheckedChange={setWalletFreeTopupRequired} />
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-md bg-secondary/55 px-3 py-2">
+          <div>
+            <p className="text-xs">{t("settings.walletFreePromptClaimToggle")}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {walletFreePromptClaim ? t("settings.walletFreePromptClaimOn") : t("settings.walletFreePromptClaimOff")}
+            </p>
+          </div>
+          <Switch checked={walletFreePromptClaim} onCheckedChange={setWalletFreePromptClaim} />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" disabled={saveWalletFreeGate.isPending} onClick={() => saveWalletFreeGate.mutate()}>
+            {saveWalletFreeGate.isPending ? t("common.loading") : t("common.save")}
           </Button>
         </div>
       </Card>

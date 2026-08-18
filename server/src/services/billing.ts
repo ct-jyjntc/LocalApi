@@ -12,10 +12,18 @@ function toModelPriceView(row: ModelPrice): ModelPriceView {
   } catch {
     // malformed stored value — fall back to the empty list
   }
-  const { price_windows: rawWindows, ...rest } = row;
+  const { price_windows: rawWindows, prompt_preset_ids: rawPresetIds, ...rest } = row;
+  let presetIds: string[] = [];
+  try {
+    const parsed = JSON.parse(rawPresetIds);
+    if (Array.isArray(parsed)) presetIds = parsed.filter((v): v is string => typeof v === "string");
+  } catch {
+    // malformed stored value — fall back to the empty list
+  }
   return {
     ...rest,
     windows: parsePriceWindows(rawWindows),
+    prompt_preset_ids: presetIds,
     reasoning_enabled: row.reasoning_enabled === 1,
     reasoning_effort: effort,
     image_input: row.image_input === 1,
@@ -58,6 +66,7 @@ export function upsertModelPrice(input: {
   max_output_tokens?: number;
   enabled?: boolean;
   windows?: PriceWindow[];
+  prompt_preset_ids?: string[];
 }) {
   const now = nowIso();
   const existing = getModelPrice(input.model.trim());
@@ -67,8 +76,8 @@ export function upsertModelPrice(input: {
       model, input_price_micros, output_price_micros, cache_read_price_micros,
       cache_write_price_micros, reasoning_enabled, reasoning_effort,
       image_input, context_window, max_output_tokens,
-      enabled, price_windows, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      enabled, price_windows, prompt_preset_ids, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(model) DO UPDATE SET
       input_price_micros = excluded.input_price_micros,
       output_price_micros = excluded.output_price_micros,
@@ -81,6 +90,7 @@ export function upsertModelPrice(input: {
       max_output_tokens = excluded.max_output_tokens,
       enabled = excluded.enabled,
       price_windows = excluded.price_windows,
+      prompt_preset_ids = excluded.prompt_preset_ids,
       updated_at = excluded.updated_at`,
   ).run(
     input.model.trim(),
@@ -95,6 +105,7 @@ export function upsertModelPrice(input: {
     input.max_output_tokens ?? 0,
     input.enabled === false ? 0 : 1,
     windowsJson,
+    JSON.stringify(input.prompt_preset_ids ?? existing?.prompt_preset_ids ?? []),
     now,
     now,
   );
@@ -169,8 +180,9 @@ function estimateTokenizableChars(value: unknown, depth = 0): number {
  * max_tokens up to 1,000,000; reserving the full amount would make every
  * such request fail with 429 (TPM window) or 402 (wallet hold) even though
  * the actual generation is usually far smaller. SettleUsage charges the
- * real token count afterwards and suspends on uncovered cost, so a capped
- * reservation never loses money — it only stops over-reserving.
+ * real token count afterwards; any leftover uncovered cost is recorded on
+ * the usage row. The next request already fails with 402 if the wallet or
+ * plan cannot cover the new hold, so we do not auto-suspend the account.
  */
 export const RESERVATION_COMPLETION_CAP = 4096;
 
@@ -410,12 +422,6 @@ export function settleUsage(
       walletCost = Math.min(remainder, availableWallet);
     }
     uncoveredCost = Math.max(0, remainder - walletCost);
-    if (uncoveredCost > 0) {
-      db.prepare("UPDATE users SET status = 'suspended', updated_at = ? WHERE id = ?").run(
-        nowIso(),
-        reservation.userId,
-      );
-    }
     if (!holdAlreadyReleased) {
       db.prepare(
         `UPDATE wallet_accounts SET reserved_micros = MAX(0, reserved_micros - ?), updated_at = ?

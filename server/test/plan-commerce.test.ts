@@ -111,6 +111,20 @@ test("plan purchase, prorated upgrade and renewal are atomic and idempotent", as
     assert.equal(commerceOrders.some((order) => order.kind === "plan_purchase"), true);
     assert.equal(commerceOrders.filter((order) => order.kind === "plan_renewal").length, 2);
 
+    const hidden = createPlan({
+      name: "Hidden Commerce",
+      price_micros: 8_000_000,
+      included_credits_micros: 8_000_000,
+      visible: false,
+    });
+    assert.equal(hidden.visible, false);
+    assert.ok(listPlans({ enabledOnly: true, visibleOnly: true }).every((plan) => plan.id !== hidden.id));
+    assert.ok(listPlans({ enabledOnly: true }).some((plan) => plan.id === hidden.id));
+    const hiddenBuyer = createUser({ username: "hidden-buyer", password: "password-123" });
+    adjustWallet(hiddenBuyer.id, 20_000_000, "hidden plan purchase");
+    const hiddenPurchase = purchasePlan(hiddenBuyer.id, hidden.id, "66666666-6666-4666-8666-666666666666");
+    assert.equal(hiddenPurchase.subscription?.plan_id, hidden.id);
+
     const poorUser = createUser({ username: "poor-buyer", password: "password-123" });
     assert.throws(
       () => purchasePlan(poorUser.id, basic.id, "44444444-4444-4444-8444-444444444444"),

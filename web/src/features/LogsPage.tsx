@@ -396,8 +396,9 @@ function LogDetailDialog({
         </div>
 
         {log.error ? (
-          <div className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
-            {log.error}
+          <div className="mt-3 space-y-1 rounded-md bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+            <p className="font-medium">{zh ? "上游错误" : "Upstream error"}</p>
+            <p className="whitespace-pre-wrap break-words font-mono">{log.error}</p>
           </div>
         ) : null}
 
@@ -440,7 +441,7 @@ function TextBlock({ label, empty, value }: { label: string; empty: string; valu
   return (
     <div className="space-y-1.5">
       <p className="text-[11px] text-muted-foreground">{label}</p>
-      <div className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/55 px-3 py-2.5 font-mono text-[11px] leading-5">
+      <div className="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/55 px-3 py-2.5 font-mono text-[11px] leading-5">
         {value?.trim() ? value : <span className="text-muted-foreground">{empty}</span>}
       </div>
     </div>

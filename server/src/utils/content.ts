@@ -1,9 +1,14 @@
 import { StringDecoder } from "string_decoder";
+import fs from "fs";
+import { DiskTextWriter, LOG_PREVIEW_CHARS } from "../services/log-bodies";
 
 export type ExtractedIO = {
   input_text: string | null;
   output_text: string | null;
   reasoning_text: string | null;
+  input_file?: string | null;
+  output_file?: string | null;
+  reasoning_file?: string | null;
   prompt_tokens: number;
   completion_tokens: number;
   reasoning_tokens: number;
@@ -12,11 +17,11 @@ export type ExtractedIO = {
   stream: boolean;
 };
 
-function clamp(text: string | null | undefined): string | null {
+function clamp(text: string | null | undefined, max = LOG_PREVIEW_CHARS): string | null {
   if (text == null) return null;
   const s = String(text);
   if (!s) return null;
-  return s;
+  return s.length > max ? s.slice(0, max) : s;
 }
 
 function asText(value: unknown): string | null {
@@ -58,6 +63,32 @@ function messageContent(msg: unknown): string | null {
   return null;
 }
 
+export function extractInputToDisk(body: unknown, pathName: string) {
+  const preview = extractInput(body, pathName);
+  if (!preview) return { preview: null as string | null, file: null as string | null };
+  const writer = new DiskTextWriter("input");
+  if (typeof body === "string") {
+    writer.push(body);
+  } else if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    if (Array.isArray(b.messages)) {
+      for (const msg of b.messages as unknown[]) {
+        if (!msg || typeof msg !== "object") continue;
+        const m = msg as Record<string, unknown>;
+        const role = typeof m.role === "string" ? m.role : "unknown";
+        const content = messageContent(m);
+        if (!content) continue;
+        writer.push(`${role}: ${content}\n`);
+      }
+    } else {
+      writer.push(preview);
+    }
+  } else {
+    writer.push(preview);
+  }
+  return { preview: writer.preview || preview, file: writer.close() };
+}
+
 export function extractInput(body: unknown, path: string): string | null {
   if (!body) return null;
   if (typeof body === "string") return clamp(body);
@@ -67,16 +98,19 @@ export function extractInput(body: unknown, path: string): string | null {
 
   // Chat completions
   if (Array.isArray(b.messages)) {
-    const lines = (b.messages as unknown[])
-      .map((msg) => {
-        if (!msg || typeof msg !== "object") return null;
-        const m = msg as Record<string, unknown>;
-        const role = typeof m.role === "string" ? m.role : "unknown";
-        const content = messageContent(m);
-        if (!content) return null;
-        return `${role}: ${content}`;
-      })
-      .filter(Boolean) as string[];
+    const lines: string[] = [];
+    let used = 0;
+    for (const msg of b.messages as unknown[]) {
+      if (used >= LOG_PREVIEW_CHARS) break;
+      if (!msg || typeof msg !== "object") continue;
+      const m = msg as Record<string, unknown>;
+      const role = typeof m.role === "string" ? m.role : "unknown";
+      const content = messageContent(m);
+      if (!content) continue;
+      const line = `${role}: ${content}`;
+      lines.push(line);
+      used += line.length + 1;
+    }
     if (lines.length) return clamp(lines.join("\n"));
   }
 
@@ -86,12 +120,6 @@ export function extractInput(body: unknown, path: string): string | null {
     if (p) return clamp(p);
   }
   if (b.input !== undefined) {
-    const input = asText(b.input);
-    if (input) return clamp(input);
-  }
-
-  // Responses API style
-  if (b.input !== undefined || path.includes("/responses")) {
     const input = asText(b.input);
     if (input) return clamp(input);
   }
@@ -216,34 +244,6 @@ function extractFromJson(
     } else if (first?.b64_json) {
       output = "[image b64]";
     }
-  }
-
-  // responses API
-  if (!output && typeof data.output_text === "string") {
-    output = data.output_text;
-  }
-  if (!output && Array.isArray(data.output)) {
-    const texts: string[] = [];
-    const reasons: string[] = [];
-    for (const item of data.output as unknown[]) {
-      if (!item || typeof item !== "object") continue;
-      const it = item as Record<string, unknown>;
-      if (Array.isArray(it.content)) {
-        for (const c of it.content) {
-          if (!c || typeof c !== "object") continue;
-          const part = c as Record<string, unknown>;
-          if (typeof part.text === "string") {
-            if (part.type === "reasoning" || part.type === "thinking") {
-              reasons.push(part.text);
-            } else {
-              texts.push(part.text);
-            }
-          }
-        }
-      }
-    }
-    if (texts.length) output = texts.join("\n");
-    if (reasons.length) reasoning = reasons.join("\n");
   }
 
   // Anthropic Messages API
@@ -385,13 +385,18 @@ function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
         if (typeof delta.text === "string") contents.push(delta.text);
         if (typeof delta.thinking === "string") reasons.push(delta.thinking);
       }
+      if (data.error && typeof data.error === "object") {
+        const err = data.error as Record<string, unknown>;
+        const message = typeof err.message === "string" ? err.message : JSON.stringify(err);
+        if (message) contents.push(message);
+      }
     } catch {
       // ignore bad chunks
     }
   }
 
   return {
-    output_text: clamp(contents.join("") || null),
+    output_text: clamp(contents.join("") || (text.includes("{") ? text.slice(0, 2000) : null)),
     reasoning_text: clamp(reasons.join("") || null),
     ...parseUsage(usageRaw),
   };
@@ -399,7 +404,10 @@ function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
 
 export type ResponseLogCollector = {
   push: (chunk: Buffer) => void;
-  finish: () => ReturnType<typeof extractFromResponse>;
+  finish: () => ReturnType<typeof extractFromResponse> & {
+    output_file?: string | null;
+    reasoning_file?: string | null;
+  };
 };
 
 function isTextualResponse(contentType: string): boolean {
@@ -421,20 +429,34 @@ export function createResponseLogCollector(params: {
   const sse = params.stream || /\btext\/event-stream\b/.test(contentType);
 
   if (!sse) {
-    const chunks: Buffer[] = [];
+    const writer = new DiskTextWriter("output");
     const textual = isTextualResponse(contentType);
     return {
       push: (chunk) => {
-        if (textual) chunks.push(Buffer.from(chunk));
+        if (textual) writer.push(chunk.toString("utf8"));
       },
-      finish: () =>
-        textual ? extractFromResponse(Buffer.concat(chunks)) : extractFromResponse(null),
+      finish: () => {
+        const file = writer.close();
+        let extracted = extractFromResponse(null);
+        if (textual && writer.bytes > 0) {
+          try {
+            extracted = extractFromResponse(fs.readFileSync(file, "utf8"));
+          } catch {
+            extracted = extractFromResponse(writer.preview);
+          }
+        }
+        return {
+          ...extracted,
+          output_text: extracted.output_text || writer.preview || null,
+          output_file: file,
+        };
+      },
     };
   }
 
   const decoder = new StringDecoder("utf8");
-  const contents: string[] = [];
-  const reasons: string[] = [];
+  const outputWriter = new DiskTextWriter("output");
+  const reasonWriter = new DiskTextWriter("reasoning");
   let usageRaw: unknown = null;
   const toolCalls = new Map<number, { name: string; arguments: string }>();
   let pending = "";
@@ -452,12 +474,6 @@ export function createResponseLogCollector(params: {
         const billing = (data.usage as Record<string, unknown>).billing_usage as Record<string, unknown> | undefined;
         if (billing?.openai_usage) usageRaw = mergeUsage(usageRaw, billing.openai_usage);
       }
-      if (data.response && typeof data.response === "object") {
-        const response = data.response as Record<string, unknown>;
-        if (response.usage && typeof response.usage === "object") {
-          usageRaw = mergeUsage(usageRaw, response.usage);
-        }
-      }
       if (data.message && typeof data.message === "object") {
         const message = data.message as Record<string, unknown>;
         if (message.usage && typeof message.usage === "object") usageRaw = mergeUsage(usageRaw, message.usage);
@@ -470,10 +486,10 @@ export function createResponseLogCollector(params: {
           (choice.message as Record<string, unknown> | undefined) ||
           {};
         const content = messageContent(delta);
-        if (content) contents.push(content);
+        if (content) outputWriter.push(content);
         const reasoning = collectReasoningFromMessage(delta);
-        if (reasoning) reasons.push(reasoning);
-        if (typeof choice.text === "string") contents.push(choice.text);
+        if (reasoning) reasonWriter.push(reasoning);
+        if (typeof choice.text === "string") outputWriter.push(choice.text);
         const calls = Array.isArray(delta.tool_calls) ? delta.tool_calls : Array.isArray((choice.message as Record<string, unknown> | undefined)?.tool_calls) ? (choice.message as Record<string, unknown>).tool_calls as unknown[] : [];
         for (const rawCall of calls) {
           if (!rawCall || typeof rawCall !== "object") continue;
@@ -482,24 +498,28 @@ export function createResponseLogCollector(params: {
           const fn = call.function && typeof call.function === "object" ? call.function as Record<string, unknown> : {};
           const current = toolCalls.get(index) || { name: "", arguments: "" };
           if (typeof fn.name === "string" && fn.name) current.name = fn.name;
-          if (typeof fn.arguments === "string") current.arguments += fn.arguments;
+          if (typeof fn.arguments === "string" && current.arguments.length < LOG_PREVIEW_CHARS) {
+            current.arguments += fn.arguments.slice(0, LOG_PREVIEW_CHARS - current.arguments.length);
+          }
           toolCalls.set(index, current);
         }
       }
 
       const eventType = typeof data.type === "string" ? data.type : "";
       if (typeof data.delta === "string") {
-        if (/reasoning|thinking/.test(eventType)) reasons.push(data.delta);
-        else if (/output_text|content/.test(eventType)) contents.push(data.delta);
+        if (/reasoning|thinking/.test(eventType)) reasonWriter.push(data.delta);
+        else outputWriter.push(data.delta);
       }
       if (data.delta && typeof data.delta === "object") {
         const delta = data.delta as Record<string, unknown>;
-        if (typeof delta.text === "string") contents.push(delta.text);
-        if (typeof delta.thinking === "string") reasons.push(delta.thinking);
+        if (typeof delta.text === "string") outputWriter.push(delta.text);
+        if (typeof delta.thinking === "string") reasonWriter.push(delta.thinking);
         if (typeof delta.partial_json === "string") {
           const index = Number(data.index ?? 0) || 0;
           const current = toolCalls.get(index) || { name: "tool", arguments: "" };
-          current.arguments += delta.partial_json;
+          if (current.arguments.length < LOG_PREVIEW_CHARS) {
+            current.arguments += delta.partial_json.slice(0, LOG_PREVIEW_CHARS - current.arguments.length);
+          }
           toolCalls.set(index, current);
         }
       }
@@ -514,6 +534,7 @@ export function createResponseLogCollector(params: {
 
   const consumeText = (text: string, flush = false) => {
     pending += text;
+    if (pending.length > 256 * 1024) pending = pending.slice(-64 * 1024);
     const lines = pending.split(/\r?\n/);
     pending = flush ? "" : (lines.pop() ?? "");
     for (const line of lines) consumeLine(line);
@@ -525,9 +546,12 @@ export function createResponseLogCollector(params: {
     finish: () => {
       consumeText(decoder.end(), true);
       const tools = [...toolCalls.values()].map((call) => `[tool] ${call.name || "unknown"}\n${call.arguments}`).join("\n");
+      if (tools) outputWriter.push(`\n${tools}`);
       return {
-        output_text: clamp([contents.join(""), tools].filter(Boolean).join("\n") || null),
-        reasoning_text: clamp(reasons.join("") || null),
+        output_text: outputWriter.preview || null,
+        reasoning_text: reasonWriter.preview || null,
+        output_file: outputWriter.close(),
+        reasoning_file: reasonWriter.close(),
         ...parseUsage(usageRaw),
       };
     },
@@ -540,10 +564,11 @@ export function extractIO(params: {
   responseBody?: string | Buffer | null;
   stream?: boolean;
 }): ExtractedIO {
-  const input_text = extractInput(params.body, params.path);
+  const input = extractInputToDisk(params.body, params.path);
   const fromRes = extractFromResponse(params.responseBody);
   return {
-    input_text,
+    input_text: input.preview,
+    input_file: input.file,
     stream: Boolean(params.stream),
     ...fromRes,
   };

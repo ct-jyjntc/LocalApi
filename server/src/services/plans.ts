@@ -32,6 +32,7 @@ function publicPlan(row: Plan) {
     ...row,
     allowed_models: parseModels(row.allowed_models),
     enabled: row.enabled === 1,
+    visible: (row.visible ?? 1) === 1,
     overage_enabled: row.overage_enabled === 1,
     stock_available: row.stock_limit > 0 ? Math.max(0, row.stock_limit - row.stock_used) : null,
   };
@@ -46,9 +47,15 @@ export function maintainDueSubscriptions() {
   return rows.length;
 }
 
-export function listPlans(enabledOnly = false) {
+export function listPlans(filter: boolean | { enabledOnly?: boolean; visibleOnly?: boolean } = false) {
+  const enabledOnly = typeof filter === "boolean" ? filter : Boolean(filter.enabledOnly);
+  const visibleOnly = typeof filter === "boolean" ? false : Boolean(filter.visibleOnly);
+  const clauses: string[] = [];
+  if (enabledOnly) clauses.push("enabled = 1");
+  if (visibleOnly) clauses.push("visible = 1");
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = db
-    .prepare(`SELECT * FROM plans ${enabledOnly ? "WHERE enabled = 1" : ""} ORDER BY sort_order ASC, created_at DESC`)
+    .prepare(`SELECT * FROM plans ${where} ORDER BY sort_order ASC, created_at DESC`)
     .all() as Plan[];
   return rows.map(publicPlan);
 }
@@ -85,6 +92,7 @@ export function createPlan(input: {
   overage_enabled?: boolean;
   stock_limit?: number;
   enabled?: boolean;
+  visible?: boolean;
 }) {
   const id = uuid();
   const now = nowIso();
@@ -93,8 +101,8 @@ export function createPlan(input: {
     `INSERT INTO plans (
       id, name, description, cycle_days, price_micros, included_credits_micros, allowed_models,
       rpm_limit, tpm_limit, concurrency_limit, overage_enabled, stock_limit, stock_used, sort_order,
-      enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      enabled, visible, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name.trim(),
@@ -110,6 +118,7 @@ export function createPlan(input: {
     Math.max(0, Math.floor(input.stock_limit ?? 0)),
     nextOrder,
     input.enabled === false ? 0 : 1,
+    input.visible === false ? 0 : 1,
     now,
     now,
   );
@@ -129,13 +138,14 @@ export function updatePlan(id: string, input: Partial<{
   overage_enabled: boolean;
   stock_limit: number;
   enabled: boolean;
+  visible: boolean;
 }>) {
   const plan = getPlan(id);
   if (!plan) return null;
   db.prepare(
     `UPDATE plans SET name = ?, description = ?, cycle_days = ?, price_micros = ?, included_credits_micros = ?,
       allowed_models = ?, rpm_limit = ?, tpm_limit = ?, concurrency_limit = ?,
-      overage_enabled = ?, stock_limit = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+      overage_enabled = ?, stock_limit = ?, enabled = ?, visible = ?, updated_at = ? WHERE id = ?`,
   ).run(
     input.name?.trim() || plan.name,
     input.description?.trim() ?? plan.description,
@@ -149,6 +159,7 @@ export function updatePlan(id: string, input: Partial<{
     input.overage_enabled !== undefined ? (input.overage_enabled ? 1 : 0) : plan.overage_enabled,
     input.stock_limit !== undefined ? Math.max(0, Math.floor(input.stock_limit)) : plan.stock_limit,
     input.enabled !== undefined ? (input.enabled ? 1 : 0) : plan.enabled,
+    input.visible !== undefined ? (input.visible ? 1 : 0) : plan.visible ?? 1,
     nowIso(),
     id,
   );

@@ -61,7 +61,7 @@ function rebuildProviderRuntime(rows: Provider[]) {
 
 function loadProviders() {
   const rows = db
-    .prepare("SELECT * FROM providers ORDER BY created_at DESC")
+    .prepare("SELECT * FROM providers ORDER BY sort_order ASC, created_at ASC")
     .all() as Provider[];
   const update = db.prepare("UPDATE providers SET api_key = ? WHERE id = ?");
   for (const row of rows) {
@@ -131,6 +131,44 @@ export function pickProviderProxy(provider: Provider): string | null {
   return picked;
 }
 
+/** Sanitize custom headers: only allow string values, drop empty keys. */
+function sanitizeCustomHeaders(input?: Record<string, string>): Record<string, string> {
+  if (!input || typeof input !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input)) {
+    const key = k.trim();
+    if (!key || key.toLowerCase() === "authorization" || key.toLowerCase() === "host") continue;
+    if (typeof v === "string" && v.length > 0) out[key] = v;
+  }
+  return out;
+}
+
+function safeParseCustomHeaders(raw?: string): Record<string, string> {
+  if (!raw) return {};
+  try {
+    return sanitizeCustomHeaders(JSON.parse(raw) as Record<string, string>);
+  } catch {
+    return {};
+  }
+}
+
+/** Next sort_order value for a new provider (appends to the end). */
+function nextSortOrder(): number {
+  const row = db.prepare("SELECT MAX(sort_order) AS m FROM providers").get() as { m: number | null } | undefined;
+  return (row?.m ?? -1) + 1;
+}
+
+/** Reorder providers by dragging. Accepts an ordered list of provider ids. */
+export function reorderProviders(orderedIds: string[]) {
+  const now = nowIso();
+  const update = db.prepare("UPDATE providers SET sort_order = ?, updated_at = ? WHERE id = ?");
+  db.transaction(() => {
+    orderedIds.forEach((id, idx) => update.run(idx, now, id));
+  })();
+  refreshProviderCache();
+  return true;
+}
+
 export function listProviders(): Provider[] {
   ensureProviderCache();
   return providerCache!;
@@ -152,6 +190,7 @@ export function createProvider(input: {
   proxy_ids?: string[];
   enabled?: boolean;
   timeout_ms?: number;
+  custom_headers?: Record<string, string>;
 }): Provider {
   const now = nowIso();
   const id = uuid();
@@ -164,8 +203,8 @@ export function createProvider(input: {
   const proxyIds = normalizeProxyIds(input.proxy_ids ?? []);
   db.prepare(
     `INSERT INTO providers (
-      id, name, base_url, api_key, models, model_mappings, proxy_ids, enabled, timeout_ms, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, name, base_url, api_key, models, model_mappings, proxy_ids, enabled, timeout_ms, sort_order, custom_headers, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name,
@@ -176,6 +215,8 @@ export function createProvider(input: {
     JSON.stringify(proxyIds),
     input.enabled === false ? 0 : 1,
     input.timeout_ms ?? 60000,
+    nextSortOrder(),
+    JSON.stringify(sanitizeCustomHeaders(input.custom_headers)),
     now,
     now,
   );
@@ -193,8 +234,9 @@ export function updateProvider(
     models: string[];
     model_mappings: Record<string, string>;
     proxy_ids: string[];
-    enabled: boolean;
-    timeout_ms: number;
+    enabled?: boolean;
+    timeout_ms?: number;
+    custom_headers?: Record<string, string>;
   }>,
 ): Provider | null {
   const existing = getProvider(id);
@@ -236,11 +278,15 @@ export function updateProvider(
         : 0
       : existing.enabled;
   const timeout_ms = input.timeout_ms ?? existing.timeout_ms;
+  const customHeaders =
+    input.custom_headers !== undefined
+      ? sanitizeCustomHeaders(input.custom_headers)
+      : safeParseCustomHeaders(existing.custom_headers);
 
   db.prepare(
     `UPDATE providers SET
       name = ?, base_url = ?, api_key = ?, models = ?, model_mappings = ?, proxy_ids = ?,
-      enabled = ?, timeout_ms = ?, updated_at = ?
+      enabled = ?, timeout_ms = ?, custom_headers = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     name,
@@ -251,6 +297,7 @@ export function updateProvider(
     JSON.stringify(proxyIds),
     enabled,
     timeout_ms,
+    JSON.stringify(customHeaders),
     nowIso(),
     id,
   );
@@ -289,6 +336,7 @@ export function sanitizeProvider(p: Provider) {
   const models = runtime?.models ?? safeParseModels(p.models);
   const model_mappings = runtime?.mappings ?? safeParseMappings(p.model_mappings);
   const proxy_ids = runtime?.proxyIds ?? safeParseProxyIds(p.proxy_ids);
+  const custom_headers = safeParseCustomHeaders(p.custom_headers);
   return {
     id: p.id,
     name: p.name,
@@ -302,6 +350,8 @@ export function sanitizeProvider(p: Provider) {
     proxy_ids,
     enabled: p.enabled === 1,
     timeout_ms: p.timeout_ms,
+    sort_order: p.sort_order,
+    custom_headers,
     created_at: p.created_at,
     updated_at: p.updated_at,
   };
