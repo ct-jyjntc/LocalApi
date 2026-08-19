@@ -245,6 +245,8 @@ export function authenticateOAuthToken(raw: string | null | undefined): ApiKey |
     key_plain: null,
     enabled: 1,
     rate_limit: 0,
+    daily_quota_micros: 0,
+    monthly_quota_micros: 0,
     created_at: row.created_at,
     last_used_at: null,
     user_id: row.user_id,

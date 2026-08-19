@@ -33,6 +33,7 @@ import {
   reserveUsage,
   settleUsage,
 } from "./billing";
+import { getActiveSubscription } from "./plans";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -1265,6 +1266,19 @@ export async function handleProxyHttp(
       const billingError = error instanceof BillingError
         ? error
         : new BillingError(402, "billing_error", error instanceof Error ? error.message : String(error));
+      // A Coding Plan holder hitting the wallet endpoint (/v1) with an empty
+      // wallet reads "Insufficient account balance" and can't tell why. Say so.
+      if (
+        billingError.code === "insufficient_balance" &&
+        ctx.billingMode === "wallet" &&
+        ctx.apiKey?.user_id &&
+        getActiveSubscription(ctx.apiKey.user_id)
+      ) {
+        billingError.message =
+          "Insufficient account balance. This account has an active Coding Plan — " +
+          "plan billing only applies on the coding endpoint; set the base URL to " +
+          "`/coding/v1` instead of `/v1`.";
+      }
       writeLog({
         method: ctx.method,
         path: logPath,

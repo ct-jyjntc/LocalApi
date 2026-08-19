@@ -694,6 +694,8 @@ export function initDb() {
   addKeyCol("tpm_limit", "tpm_limit INTEGER NOT NULL DEFAULT 0");
   addKeyCol("concurrency_limit", "concurrency_limit INTEGER NOT NULL DEFAULT 0");
   addKeyCol("expires_at", "expires_at TEXT");
+  addKeyCol("daily_quota_micros", "daily_quota_micros INTEGER NOT NULL DEFAULT 0");
+  addKeyCol("monthly_quota_micros", "monthly_quota_micros INTEGER NOT NULL DEFAULT 0");
   db.exec(`
     DELETE FROM api_keys
     WHERE user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM users WHERE users.id = api_keys.user_id);
@@ -1199,6 +1201,8 @@ export type ApiKey = {
   tpm_limit: number;
   concurrency_limit: number;
   expires_at: string | null;
+  daily_quota_micros: number;
+  monthly_quota_micros: number;
   username?: string | null;
   user_display_name?: string | null;
 };

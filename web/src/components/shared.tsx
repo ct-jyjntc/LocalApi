@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function PageHeader({
@@ -68,6 +69,47 @@ export function EmptyState({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Page-level group header (model-catalog style): small semibold title with a
+ * muted hint on the same baseline, separated from content by a light border.
+ */
+export function SectionHeader({
+  title,
+  hint,
+  className,
+}: {
+  title: string;
+  hint?: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex items-baseline gap-3 border-b border-border/50 pb-2", className)}>
+      <h3 className="text-xs font-semibold">{title}</h3>
+      {hint ? <p className="min-w-0 truncate text-[11px] text-muted-foreground">{hint}</p> : null}
+    </div>
+  );
+}
+
+/** Leading icon chip for list entries (model-catalog style). */
+export function EntryIcon({
+  icon: Icon,
+  className,
+}: {
+  icon: LucideIcon;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary/60 text-muted-foreground",
+        className,
+      )}
+    >
+      <Icon className="size-4" strokeWidth={1.6} />
+    </span>
+  );
+}
+
 /** Compact footer for server-paginated lists. */
 export function PaginationBar({
   page,
@@ -94,6 +136,8 @@ export function PaginationBar({
   if (safePage !== page) {
     queueMicrotask(() => onPageChange(safePage));
   }
+  // Hide the bar entirely when everything fits on one page.
+  if (pageCount <= 1) return null;
   const from = total === 0 ? 0 : safePage * pageSize + 1;
   const to = Math.min(total, (safePage + 1) * pageSize);
   return (

@@ -262,6 +262,7 @@ export function listRiskRadar(hours = 72): RiskRadarReport {
 export function resolveRiskGroup(
   groupId: string,
   action: "disabled" | "suspended" | "ignored",
+  opts: { auto?: boolean } = {},
 ) {
   const group = db.prepare("SELECT id, status FROM risk_groups WHERE id = ?").get(groupId) as
     | { id: string; status: string }
@@ -277,7 +278,7 @@ export function resolveRiskGroup(
   db.prepare("UPDATE risk_groups SET status = ?, resolved_at = ?, resolved_action = ? WHERE id = ?").run(
     action === "ignored" ? "ignored" : "actioned",
     nowIso(),
-    action,
+    opts.auto ? `auto_${action}` : action,
     groupId,
   );
   return { ok: true, group_id: groupId, action, ...updated };

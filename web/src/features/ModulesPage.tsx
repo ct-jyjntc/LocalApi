@@ -96,7 +96,7 @@ export function ModulesPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <PageHeader
         title="模块"
         description="安装、启用或卸载 zip 功能模块。LinuxDo 登录与 Credit 支付已拆分为可装卸模块。"

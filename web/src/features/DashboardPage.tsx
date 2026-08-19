@@ -23,7 +23,7 @@ export function DashboardPage() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <PageHeader title={t("dash.title")} description={t("dash.desc")} />
 
       {error ? (

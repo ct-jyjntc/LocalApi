@@ -243,7 +243,10 @@ export function reserveUsage(input: {
   const planModels = parseAllowedModels(subscription?.plan.allowed_models);
   const planEligible = Boolean(subscription && modelAllowed(planModels, input.model));
   if (billingMode === "coding" && !planEligible) {
-    throw new BillingError(403, "model_not_allowed", `Model ${input.model} is not included in the active Coding Plan`);
+    const hint = planModels.length > 0 && !planModels.includes("*")
+      ? ` Plan models: ${planModels.join(", ")}.`
+      : "";
+    throw new BillingError(403, "model_not_allowed", `Model ${input.model} is not included in the active Coding Plan.${hint}`);
   }
   const overageEnabled = billingMode === "coding"
     ? Boolean(subscription?.plan.overage_enabled && subscription.overage_enabled)
@@ -724,8 +727,7 @@ function shanghaiDayKey(date: Date) {
 }
 
 export function listDailyUsage(userId: string, days = 30) {
-  const safeDays = Math.max(1, Math.min(90, Math.floor(days)));
-  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60_000).toISOString();
+  const safeDays = Math.max(1, Math.min(90, Math.floor(days)));  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60_000).toISOString();
   const rows = db.prepare(
     `SELECT strftime('%Y-%m-%d', created_at, '+8 hours') AS date,
       COUNT(*) AS requests,
@@ -746,6 +748,31 @@ export function listDailyUsage(userId: string, days = 30) {
     const date = shanghaiDayKey(new Date(now - (safeDays - 1 - index) * 24 * 60 * 60_000));
     return byDate.get(date) ?? { date, requests: 0, cost_micros: 0, total_tokens: 0 };
   });
+}
+
+/**
+ * Per-day, per-model usage for the dashboard breakdown. Only rows with
+ * actual traffic are returned — the frontend zero-fills as needed.
+ */
+export function listDailyUsageByModel(userId: string, days = 30) {
+  const safeDays = Math.max(1, Math.min(90, Math.floor(days)));
+  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60_000).toISOString();
+  return db.prepare(
+    `SELECT strftime('%Y-%m-%d', created_at, '+8 hours') AS date,
+      model,
+      COUNT(*) AS requests,
+      COALESCE(SUM(cost_micros), 0) AS cost_micros,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens
+     FROM usage_records
+     WHERE user_id = ? AND created_at >= ?
+     GROUP BY date, model ORDER BY date`,
+  ).all(userId, cutoff) as Array<{
+    date: string;
+    model: string;
+    requests: number;
+    cost_micros: number;
+    total_tokens: number;
+  }>;
 }
 
 /**

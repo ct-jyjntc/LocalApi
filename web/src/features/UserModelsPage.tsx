@@ -1,15 +1,12 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import { Layers, Search } from "lucide-react";
 import { userApi, type ModelPrice, type PriceWindow } from "@/lib/api";
-import { EmptyState, PageHeader } from "@/components/shared";
-import { Card } from "@/components/ui/card";
+import { EmptyState, EntryIcon, PageHeader, SectionHeader } from "@/components/shared";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { formatCredits } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
-
-const GRID =
-  "grid grid-cols-[minmax(10rem,1.5fr)_3rem_minmax(12.5rem,1.2fr)_4.75rem_4.75rem_4.75rem_4.75rem] items-center gap-x-3";
 
 export function UserModelsPage() {
   const { locale } = useI18n();
@@ -22,6 +19,17 @@ export function UserModelsPage() {
       .filter((price) => price.enabled && (!query || price.model.toLowerCase().includes(query)))
       .sort((a, b) => a.model.localeCompare(b.model));
   }, [me.data?.prices, search]);
+
+  const groups = useMemo(() => {
+    const reasoning = prices.filter((price) => price.reasoning_enabled);
+    const vision = prices.filter((price) => !price.reasoning_enabled && price.image_input);
+    const general = prices.filter((price) => !price.reasoning_enabled && !price.image_input);
+    return [
+      { key: "reasoning", title: zh ? "深度思考" : "Reasoning", hint: zh ? "支持 reasoning_effort 思考强度调节的模型" : "Models with adjustable reasoning effort", items: reasoning },
+      { key: "vision", title: zh ? "多模态" : "Multimodal", hint: zh ? "支持图片输入的模型" : "Models with image input", items: vision },
+      { key: "general", title: zh ? "通用模型" : "General", hint: zh ? "面向通用文本任务" : "General-purpose text models", items: general },
+    ].filter((group) => group.items.length > 0);
+  }, [prices, zh]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -37,83 +45,62 @@ export function UserModelsPage() {
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" strokeWidth={1.8} />
         <Input className="pl-8" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={zh ? "搜索模型" : "Search models"} />
       </div>
-      <Card className="overflow-hidden">
-        <div className="hidden overflow-x-auto md:block">
-          <div className="min-w-[760px]">
-            <div className={`${GRID} border-b border-border/60 px-3 py-2 text-xs text-muted-foreground`}>
-              <span>{zh ? "模型" : "Model"}</span>
-              <span>{zh ? "图片" : "Image"}</span>
-              <span>{zh ? "思考" : "Thinking"}</span>
-              <span className="text-right">{zh ? "输入" : "Input"}</span>
-              <span className="text-right">{zh ? "输出" : "Output"}</span>
-              <span className="text-right">{zh ? "缓存读" : "Cache R"}</span>
-              <span className="text-right">{zh ? "缓存写" : "Cache W"}</span>
+
+      <section className="flex flex-col gap-5">
+        {groups.map((group) => (
+          <div key={group.key} className="flex flex-col gap-2">
+            <SectionHeader title={group.title} hint={group.hint} />
+            <div className="grid gap-x-6 gap-y-1 md:grid-cols-2">
+              {group.items.map((price) => (
+                <ModelEntry key={price.model} price={price} zh={zh} />
+              ))}
             </div>
-            {prices.map((price) => (
-              <div className={`${GRID} border-b border-border/40 px-3 py-2 text-xs hover:bg-secondary/40`} key={price.model} title={scheduleTitle(price, zh)}>
-                <span className="min-w-0 truncate font-mono" title={price.model}>{price.model}</span>
-                <span>{price.image_input ? (zh ? "是" : "Yes") : "—"}</span>
-                <span className="whitespace-normal break-words font-mono text-[11px] leading-4">{thinkingLabel(price, zh)}</span>
-                <Price value={price.input_price_micros} />
-                <Price value={price.output_price_micros} />
-                <Price value={price.cache_read_price_micros} />
-                <Price value={price.cache_write_price_micros} />
-              </div>
-            ))}
           </div>
-        </div>
-        <div className="divide-y divide-border/40 md:hidden">
-          {prices.map((price) => (
-            <div key={price.model} className="space-y-2.5 p-3 text-xs">
-              <p className="break-all font-mono">{price.model}</p>
-              <div className="grid grid-cols-2 gap-2 rounded-md bg-secondary/35 p-2.5 text-[11px]">
-                <div>
-                  <p className="text-muted-foreground">{zh ? "图片" : "Image"}</p>
-                  <p className="mt-1">{price.image_input ? (zh ? "支持" : "Yes") : (zh ? "不支持" : "No")}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">{zh ? "思考" : "Thinking"}</p>
-                  <p className="mt-1 break-words font-mono">{thinkingLabel(price, zh)}</p>
-                </div>
-                <MobilePrice label={zh ? "输入" : "Input"} value={price.input_price_micros} />
-                <MobilePrice label={zh ? "输出" : "Output"} value={price.output_price_micros} />
-                <MobilePrice label={zh ? "缓存读取" : "Cache read"} value={price.cache_read_price_micros} />
-                <MobilePrice label={zh ? "缓存写入" : "Cache write"} value={price.cache_write_price_micros} />
-              </div>
-              {price.windows?.length ? (
-                <p className="text-[11px] leading-5 text-muted-foreground">{scheduleTitle(price, zh)}</p>
-              ) : null}
-            </div>
-          ))}
-        </div>
-        {!prices.length ? <EmptyState>{me.isLoading ? (zh ? "加载中…" : "Loading…") : search ? (zh ? "没有匹配的模型" : "No matching models") : (zh ? "暂无开放模型" : "No models available")}</EmptyState> : null}
-      </Card>
+        ))}
+        {!prices.length ? (
+          <EmptyState>
+            {me.isLoading ? (zh ? "加载中…" : "Loading…") : search ? (zh ? "没有匹配的模型" : "No matching models") : (zh ? "暂无开放模型" : "No models available")}
+          </EmptyState>
+        ) : null}
+      </section>
+
       <p className="text-[11px] leading-5 text-muted-foreground">
         {zh
-          ? "价格单位为账户额度 / 100 万 Token。思考列是该模型允许的 reasoning_effort。实际费用按请求发起时的时段价计算；推理 Token 默认计入输出。时区 Asia/Shanghai。"
-          : "Prices are account credits per 1M tokens. Thinking lists allowed reasoning_effort values. Charges use the window in effect when the request starts; reasoning tokens are included in output by default. Timezone Asia/Shanghai."}
+          ? "价格单位为账户额度 / 100 万 Token。实际费用按请求发起时的时段价计算；推理 Token 默认计入输出。时区 Asia/Shanghai。"
+          : "Prices are account credits per 1M tokens. Charges use the window in effect when the request starts; reasoning tokens are included in output by default. Timezone Asia/Shanghai."}
       </p>
     </div>
   );
 }
 
-function Price({ value }: { value: number }) {
-  return <span className="text-right font-mono tabular-nums">{formatCredits(value)}</span>;
-}
-
-function MobilePrice({ label, value }: { label: string; value: number }) {
+function ModelEntry({ price, zh }: { price: ModelPrice; zh: boolean }) {
   return (
-    <div>
-      <p className="text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono tabular-nums">{formatCredits(value)}</p>
+    <div className="flex items-start gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-secondary/40" title={scheduleTitle(price, zh)}>
+      <EntryIcon icon={Layers} />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className="truncate font-mono text-xs font-medium" title={price.model}>{price.model}</p>
+          {price.reasoning_enabled ? <Badge variant="default">{zh ? "思考" : "Thinking"}</Badge> : null}
+          {price.image_input ? <Badge variant="secondary">{zh ? "图片" : "Image"}</Badge> : null}
+        </div>
+        <p className="mt-1 truncate text-[11px] text-muted-foreground">{modelSummary(price, zh)}</p>
+      </div>
     </div>
   );
 }
 
-function thinkingLabel(price: ModelPrice, zh: boolean) {
-  if (!price.reasoning_enabled) return zh ? "不支持" : "No";
-  const efforts = (price.reasoning_effort || []).map((item) => item.trim()).filter(Boolean);
-  return efforts.length ? efforts.join(" / ") : zh ? "支持（未限定强度）" : "On (any)";
+function modelSummary(price: ModelPrice, zh: boolean) {
+  const context = price.context_window ? formatContext(price.context_window) : null;
+  const pricePart = `${zh ? "输入" : "in"} ${formatCredits(price.input_price_micros)} / ${zh ? "输出" : "out"} ${formatCredits(price.output_price_micros)}`;
+  return context
+    ? `${zh ? `上下文 ${context}` : `${context} context`} · ${pricePart}`
+    : pricePart;
+}
+
+function formatContext(tokens: number) {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 ? 1 : 0)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
 }
 
 const DAY_ZH = ["日", "一", "二", "三", "四", "五", "六"];
@@ -126,9 +113,17 @@ function formatWindow(window: PriceWindow, zh: boolean) {
 }
 
 function scheduleTitle(price: ModelPrice, zh: boolean) {
-  if (!price.windows?.length) return undefined;
-  return price.windows.map((window, index) => {
+  const thinking = zh ? `思考：${thinkingLabel(price, true)}` : `Thinking: ${thinkingLabel(price, false)}`;
+  if (!price.windows?.length) return thinking;
+  const schedule = price.windows.map((window, index) => {
     const mark = price.active_window_index === index ? (zh ? "当前 " : "now ") : "";
     return `${mark}${formatWindow(window, zh)} ${formatCredits(window.input_price_micros)}/${formatCredits(window.output_price_micros)}`;
   }).join(" · ");
+  return `${thinking}\n${schedule}`;
+}
+
+function thinkingLabel(price: ModelPrice, zh: boolean) {
+  if (!price.reasoning_enabled) return zh ? "不支持" : "No";
+  const efforts = (price.reasoning_effort || []).map((item) => item.trim()).filter(Boolean);
+  return efforts.length ? efforts.join(" / ") : zh ? "支持（未限定强度）" : "On (any)";
 }

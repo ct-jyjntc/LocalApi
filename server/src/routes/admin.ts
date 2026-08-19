@@ -126,6 +126,8 @@ const keySchema = z.object({
   expires_at: z.string().datetime().nullable().optional(),
   user_id: z.string().uuid().nullable().optional(),
   enabled: z.boolean().optional(),
+  daily_quota_micros: z.coerce.number().int().min(0).max(1_000_000_000_000).optional(),
+  monthly_quota_micros: z.coerce.number().int().min(0).max(1_000_000_000_000).optional(),
 });
 const keyPatchSchema = keySchema.partial();
 const cacheConfigSchema = z.object({

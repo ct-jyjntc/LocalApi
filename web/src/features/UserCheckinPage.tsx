@@ -211,7 +211,7 @@ export function UserCheckinPage() {
             {!data?.recent_checkins?.length ? (
               <EmptyState>{status.isLoading ? (zh ? "加载中…" : "Loading…") : (zh ? "暂无签到记录" : "No check-ins yet")}</EmptyState>
             ) : (
-              <div className="divide-y divide-border/45">
+              <div className="divide-y divide-border/40">
                 {data.recent_checkins.map((row) => (
                   <div key={row.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
                     <span className="font-mono text-muted-foreground">{row.checkin_date}</span>
@@ -231,7 +231,7 @@ export function UserCheckinPage() {
             {!data?.recent_ledger?.length ? (
               <EmptyState>{status.isLoading ? (zh ? "加载中…" : "Loading…") : (zh ? "暂无积分流水" : "No points activity")}</EmptyState>
             ) : (
-              <div className="divide-y divide-border/45">
+              <div className="divide-y divide-border/40">
                 {data.recent_ledger.map((row) => (
                   <div key={row.id} className="grid gap-1 px-4 py-2.5 text-xs sm:grid-cols-[minmax(0,1fr)_80px_90px]">
                     <div className="min-w-0">

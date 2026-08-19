@@ -92,6 +92,8 @@ export function createApiKey(input: {
   expires_at?: string | null;
   user_id?: string | null;
   enabled?: boolean;
+  daily_quota_micros?: number;
+  monthly_quota_micros?: number;
 }) {
   const raw = generateApiKey();
   const id = uuid();
@@ -99,8 +101,9 @@ export function createApiKey(input: {
   db.prepare(
     `INSERT INTO api_keys (
       id, name, key_hash, key_prefix, key_plain, enabled, rate_limit, created_at, last_used_at,
-      user_id, allowed_models, tpm_limit, concurrency_limit, expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+      user_id, allowed_models, tpm_limit, concurrency_limit, expires_at,
+      daily_quota_micros, monthly_quota_micros
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name,
@@ -115,6 +118,8 @@ export function createApiKey(input: {
     input.tpm_limit ?? 0,
     input.concurrency_limit ?? 0,
     input.expires_at ?? null,
+    input.daily_quota_micros ?? 0,
+    input.monthly_quota_micros ?? 0,
   );
   refreshApiKeyCache();
   return publicKey(
@@ -133,6 +138,8 @@ export function updateApiKey(
     concurrency_limit: number;
     allowed_models: string[];
     expires_at: string | null;
+    daily_quota_micros: number;
+    monthly_quota_micros: number;
   }>,
   userId?: string,
 ) {
@@ -143,14 +150,22 @@ export function updateApiKey(
     | undefined;
   if (!existing) return null;
 
+  // Key owners may throttle themselves (RPM / daily / monthly budget) but not
+  // touch billing-relevant or scoping fields (tpm, models, expiry).
   const safeInput = userId
-    ? { name: input.name, enabled: input.enabled }
+    ? {
+        name: input.name,
+        enabled: input.enabled,
+        rate_limit: input.rate_limit,
+        daily_quota_micros: input.daily_quota_micros,
+        monthly_quota_micros: input.monthly_quota_micros,
+      }
     : input;
 
   db.prepare(
     `UPDATE api_keys SET
       name = ?, enabled = ?, rate_limit = ?, tpm_limit = ?, concurrency_limit = ?,
-      allowed_models = ?, expires_at = ?
+      allowed_models = ?, expires_at = ?, daily_quota_micros = ?, monthly_quota_micros = ?
      WHERE id = ?`,
   ).run(
     safeInput.name ?? existing.name,
@@ -160,6 +175,8 @@ export function updateApiKey(
     safeInput.concurrency_limit ?? existing.concurrency_limit,
     safeInput.allowed_models ? JSON.stringify(safeInput.allowed_models) : existing.allowed_models,
     safeInput.expires_at !== undefined ? safeInput.expires_at : existing.expires_at,
+    Math.max(0, Math.floor(safeInput.daily_quota_micros ?? existing.daily_quota_micros ?? 0)),
+    Math.max(0, Math.floor(safeInput.monthly_quota_micros ?? existing.monthly_quota_micros ?? 0)),
     id,
   );
 
@@ -223,6 +240,8 @@ function publicKey(row: ApiKey, oneTimeSecret?: string) {
     rate_limit: row.rate_limit,
     tpm_limit: row.tpm_limit,
     concurrency_limit: row.concurrency_limit,
+    daily_quota_micros: row.daily_quota_micros ?? 0,
+    monthly_quota_micros: row.monthly_quota_micros ?? 0,
     allowed_models: (() => {
       try {
         return JSON.parse(row.allowed_models || "[]") as string[];

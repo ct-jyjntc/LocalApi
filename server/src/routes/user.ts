@@ -19,6 +19,7 @@ import {
   getPublicWallet,
   getUsageTotals,
   listDailyUsage,
+  listDailyUsageByModel,
   listModelPrices,
   listUsageRecordsPage,
   listWalletLedgerPage,
@@ -83,7 +84,13 @@ const registerSchema = z.object({
 const userKeyCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
 });
-const userKeyPatchSchema = z.object({ name: z.string().trim().min(1).max(120).optional(), enabled: z.boolean().optional() });
+const userKeyPatchSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  enabled: z.boolean().optional(),
+  rate_limit: z.coerce.number().int().min(0).max(100_000).optional(),
+  daily_quota_micros: z.coerce.number().int().min(0).max(1_000_000_000_000).optional(),
+  monthly_quota_micros: z.coerce.number().int().min(0).max(1_000_000_000_000).optional(),
+});
 // L21: the number branch used to accept 1.234 via z.coerce.number().positive()
 // while the string branch only allowed 2 decimals. Force the same 2-decimal
 // rule for both so client rounding cannot disagree with the server.
@@ -312,6 +319,7 @@ userRouter.get("/dashboard", (req, res) => {
     subscription: getActiveSubscription(user.id),
     totals: getUsageTotals(user.id),
     trend: listDailyUsage(user.id, 30),
+    trendByModel: listDailyUsageByModel(user.id, 30),
   });
 });
 

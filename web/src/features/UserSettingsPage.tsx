@@ -3,7 +3,7 @@ import { useState } from "react";
 import { KeyRound, Moon, Sun, Languages, ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
-import { userApi, type UserTier } from "@/lib/api";
+import { userApi } from "@/lib/api";
 import { PageHeader } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { formatCredits } from "@/lib/utils";
+import { formatCredits, cn } from "@/lib/utils";
 import { useI18n, type Locale } from "@/lib/i18n";
 
 function formatLimit(value: number | null | undefined) {
@@ -28,7 +28,7 @@ function formatLimit(value: number | null | undefined) {
 }
 
 export function UserSettingsPage() {
-  const { locale, setLocale, t } = useI18n();
+  const { locale, setLocale } = useI18n();
   const zh = locale === "zh";
   const { theme, setTheme } = useTheme();
   const qc = useQueryClient();
@@ -186,30 +186,33 @@ export function UserSettingsPage() {
           <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/40 px-3 py-2.5">
             <div className="flex items-center gap-2">
               {theme === "dark" ? <Moon className="size-4 text-muted-foreground" /> : <Sun className="size-4 text-muted-foreground" />}
-              <div>
-                <p className="text-xs">{zh ? "主题" : "Theme"}</p>
-                <p className="text-[10px] text-muted-foreground">{theme === "dark" ? (zh ? "深色" : "Dark") : (zh ? "浅色" : "Light")}</p>
-              </div>
+              <p className="text-xs">{zh ? "主题" : "Theme"}</p>
             </div>
-            <Switch
-              checked={theme === "dark"}
-              onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
-              aria-label={zh ? "切换主题" : "Toggle theme"}
+            <SegmentedControl
+              ariaLabel={zh ? "主题" : "Theme"}
+              value={theme === "dark" || theme === "light" ? theme : "system"}
+              options={[
+                { value: "light", label: zh ? "浅色" : "Light" },
+                { value: "dark", label: zh ? "深色" : "Dark" },
+                { value: "system", label: zh ? "自动" : "Auto" },
+              ]}
+              onChange={setTheme}
             />
           </div>
 
           <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/40 px-3 py-2.5">
             <div className="flex items-center gap-2">
               <Languages className="size-4 text-muted-foreground" />
-              <div>
-                <p className="text-xs">{zh ? "语言" : "Language"}</p>
-                <p className="text-[10px] text-muted-foreground">{locale === "zh" ? "中文" : "English"}</p>
-              </div>
+              <p className="text-xs">{zh ? "语言" : "Language"}</p>
             </div>
-            <Switch
-              checked={locale === "zh"}
-              onCheckedChange={(checked) => setLocale(checked ? "zh" : "en" as Locale)}
-              aria-label={zh ? "切换语言" : "Toggle language"}
+            <SegmentedControl
+              ariaLabel={zh ? "语言" : "Language"}
+              value={locale}
+              options={[
+                { value: "zh", label: "中文" },
+                { value: "en", label: "English" },
+              ]}
+              onChange={(value) => setLocale(value as Locale)}
             />
           </div>
         </div>
@@ -366,6 +369,37 @@ function SoftStat({ label, value }: { label: string; value: string }) {
     <div className="min-w-0 rounded-lg bg-secondary/45 px-3 py-2.5 text-center">
       <p className="text-[10px] text-muted-foreground">{label}</p>
       <p className="mt-1 font-mono text-sm font-medium tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+function SegmentedControl({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="inline-flex h-7 items-center rounded-md border border-border/50 bg-background p-0.5" role="group" aria-label={ariaLabel}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={cn(
+            "flex h-full items-center rounded-[5px] px-2.5 text-[11px] text-muted-foreground transition-colors",
+            value === option.value && "bg-secondary font-medium text-foreground shadow-sm",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }

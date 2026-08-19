@@ -20,6 +20,8 @@ import { cleanupStaleReservations } from "./services/billing";
 import { maintainDueSubscriptions } from "./services/plans";
 import { migratePointsScaleIfNeeded } from "./services/checkin";
 import { startProxyScheduler } from "./services/proxy-scheduler";
+import { startLogBodyArchiver } from "./services/log-bodies";
+import { startRiskAutoAnalysis } from "./services/risk-ai";
 import { moduleRegistry } from "./modules/registry";
 import { checkSecretsHealth } from "./utils/secrets-health";
 import { applyBrandingToHtml, getPublicBrandingPayload, readBrandIcon } from "./services/branding";
@@ -247,6 +249,8 @@ const server = app.listen(SINGLE_PORT, LISTEN_HOST, () => {
   console.log(`  Proxy    : http://${LISTEN_HOST}:${SINGLE_PORT}/v1/*`);
 });
 startProxyScheduler();
+startLogBodyArchiver();
+startRiskAutoAnalysis();
 
 const configuredKeepAlive = Number(process.env.CLIENT_KEEP_ALIVE_MS || 65_000);
 const keepAliveMs = Number.isFinite(configuredKeepAlive)

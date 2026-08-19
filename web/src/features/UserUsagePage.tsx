@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Ban, ChartNoAxesCombined, ChevronDown, ChevronRight, ReceiptText, RefreshCw, Trash2, WalletCards } from "lucide-react";
+import { ArrowUpRight, Ban, ChevronDown, ChevronRight, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { userApi, type CommerceOrder, type UsageRow, type WalletLedgerRow } from "@/lib/api";
 import { EmptyState, PageHeader, PaginationBar, TABLE_HEAD_CLASS } from "@/components/shared";
@@ -9,46 +9,25 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { formatCredits, shortTime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
 import { useAppDialog } from "@/components/app-dialog-context";
 
-type BillingTab = "orders" | "usage" | "ledger";
+const PAGE_SIZE = 50;
 
-export function UserUsagePage() {
+/** 订单：充值与套餐订单记录（原"账单与订单"页的订单 Tab，已拆为独立页面）。 */
+export function UserOrdersPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
   const qc = useQueryClient();
   const dialogs = useAppDialog();
-  const [tab, setTab] = useState<BillingTab>("orders");
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [ordersPage, setOrdersPage] = useState(0);
-  const [usagePage, setUsagePage] = useState(0);
-  const [ledgerPage, setLedgerPage] = useState(0);
-  const pageSize = 50;
+  const [page, setPage] = useState(0);
 
   const orders = useQuery({
-    queryKey: ["user", "commerce-orders", ordersPage, pageSize],
-    queryFn: () => userApi.commerce.orders({ limit: pageSize, offset: ordersPage * pageSize }),
+    queryKey: ["user", "commerce-orders", page, PAGE_SIZE],
+    queryFn: () => userApi.commerce.orders({ limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
     staleTime: 10_000,
     placeholderData: (prev) => prev,
-    enabled: tab === "orders",
-  });
-  const usage = useQuery({
-    queryKey: ["user", "usage", usagePage, pageSize],
-    queryFn: () => userApi.usage({ limit: pageSize, offset: usagePage * pageSize }),
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: false,
-    staleTime: 10_000,
-    placeholderData: (prev) => prev,
-    enabled: tab === "usage",
-  });
-  const ledger = useQuery({
-    queryKey: ["user", "commerce-ledger", ledgerPage, pageSize],
-    queryFn: () => userApi.commerce.ledger({ limit: pageSize, offset: ledgerPage * pageSize }),
-    placeholderData: (prev) => prev,
-    enabled: tab === "ledger",
   });
 
   const refreshOrders = () => {
@@ -87,110 +66,114 @@ export function UserUsagePage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={zh ? "账单与订单" : "Billing and orders"}
-        description={zh ? "订单、API 用量和钱包资金流水统一在这里查看。" : "Review orders, API usage and wallet ledger in one place."}
+        title={zh ? "订单" : "Orders"}
+        description={zh ? "充值与套餐订单记录。" : "Top-up and plan order history."}
       />
-      <div className="flex w-full gap-1 overflow-x-auto rounded-md bg-secondary/45 p-1 sm:w-fit">
-        <TabButton active={tab === "orders"} onClick={() => setTab("orders")} icon={ReceiptText}>
-          {zh ? "订单" : "Orders"}
-        </TabButton>
-        <TabButton active={tab === "usage"} onClick={() => setTab("usage")} icon={ChartNoAxesCombined}>
-          {zh ? "用量明细" : "Usage"}
-        </TabButton>
-        <TabButton active={tab === "ledger"} onClick={() => setTab("ledger")} icon={WalletCards}>
-          {zh ? "钱包流水" : "Wallet"}
-        </TabButton>
-      </div>
-
-      {tab === "orders" ? (
-        <OrdersPanel
-          items={orders.data?.items || []}
-          loading={orders.isLoading}
-          busy={busy}
-          zh={zh}
-          page={ordersPage}
-          pageSize={pageSize}
-          total={orders.data?.total ?? 0}
-          fetching={orders.isFetching}
-          onPageChange={setOrdersPage}
-          onSync={(id) => sync.mutate(id)}
-          onCancel={async (id) => {
-            if (
-              await dialogs.confirm({
-                title: zh ? "取消充值订单" : "Cancel payment order",
-                description: zh ? "订单取消后不能继续支付。" : "The order cannot be paid after cancellation.",
-                confirmText: zh ? "取消订单" : "Cancel order",
-                destructive: true,
-              })
-            )
-              cancel.mutate(id);
-          }}
-          onDelete={async (id) => {
-            if (
-              await dialogs.confirm({
-                title: zh ? "删除订单记录" : "Delete order record",
-                description: zh ? "只会删除失败、过期或已取消的订单记录。" : "Only the failed order record will be removed.",
-                confirmText: zh ? "删除" : "Delete",
-                destructive: true,
-              })
-            )
-              remove.mutate(id);
-          }}
-        />
-      ) : null}
-      {tab === "usage" ? (
-        <UsagePanel
-          items={usage.data?.items || []}
-          loading={usage.isLoading}
-          expanded={expanded}
-          setExpanded={setExpanded}
-          zh={zh}
-          page={usagePage}
-          pageSize={pageSize}
-          total={usage.data?.total ?? 0}
-          fetching={usage.isFetching}
-          onPageChange={setUsagePage}
-        />
-      ) : null}
-      {tab === "ledger" ? (
-        <LedgerPanel
-          items={ledger.data?.items || []}
-          loading={ledger.isLoading}
-          zh={zh}
-          page={ledgerPage}
-          pageSize={pageSize}
-          total={ledger.data?.total ?? 0}
-          fetching={ledger.isFetching}
-          onPageChange={setLedgerPage}
-        />
-      ) : null}
+      <OrdersPanel
+        items={orders.data?.items || []}
+        loading={orders.isLoading}
+        busy={busy}
+        zh={zh}
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={orders.data?.total ?? 0}
+        fetching={orders.isFetching}
+        onPageChange={setPage}
+        onSync={(id) => sync.mutate(id)}
+        onCancel={async (id) => {
+          if (
+            await dialogs.confirm({
+              title: zh ? "取消充值订单" : "Cancel payment order",
+              description: zh ? "订单取消后不能继续支付。" : "The order cannot be paid after cancellation.",
+              confirmText: zh ? "取消订单" : "Cancel order",
+              destructive: true,
+            })
+          )
+            cancel.mutate(id);
+        }}
+        onDelete={async (id) => {
+          if (
+            await dialogs.confirm({
+              title: zh ? "删除订单记录" : "Delete order record",
+              description: zh ? "只会删除失败、过期或已取消的订单记录。" : "Only the failed order record will be removed.",
+              confirmText: zh ? "删除" : "Delete",
+              destructive: true,
+            })
+          )
+            remove.mutate(id);
+        }}
+      />
     </div>
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  icon: Icon,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: typeof ReceiptText;
-  children: ReactNode;
-}) {
+/** 用量明细：逐次 API 调用记录。 */
+export function UserUsageDetailPage() {
+  const { locale } = useI18n();
+  const zh = locale === "zh";
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [page, setPage] = useState(0);
+
+  const usage = useQuery({
+    queryKey: ["user", "usage", page, PAGE_SIZE],
+    queryFn: () => userApi.usage({ limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    staleTime: 10_000,
+    placeholderData: (prev) => prev,
+  });
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex h-8 shrink-0 items-center gap-2 rounded-md px-3 text-xs text-muted-foreground transition-colors",
-        active ? "bg-background text-foreground shadow-sm" : "hover:text-foreground",
-      )}
-    >
-      <Icon className="size-3.5" strokeWidth={1.8} />
-      {children}
-    </button>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={zh ? "用量明细" : "Usage details"}
+        description={zh ? "每一次 API 调用的模型、Token 与费用。" : "Per-request model, token and cost records."}
+      />
+      <UsagePanel
+        items={usage.data?.items || []}
+        loading={usage.isLoading}
+        expanded={expanded}
+        setExpanded={setExpanded}
+        zh={zh}
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={usage.data?.total ?? 0}
+        fetching={usage.isFetching}
+        onPageChange={setPage}
+      />
+    </div>
+  );
+}
+
+/** 钱包流水：余额变动记录。 */
+export function UserWalletLedgerPage() {
+  const { locale } = useI18n();
+  const zh = locale === "zh";
+  const [page, setPage] = useState(0);
+
+  const ledger = useQuery({
+    queryKey: ["user", "commerce-ledger", page, PAGE_SIZE],
+    queryFn: () => userApi.commerce.ledger({ limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    placeholderData: (prev) => prev,
+  });
+
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={zh ? "钱包流水" : "Wallet ledger"}
+        description={zh ? "余额的每一笔变动记录。" : "Every wallet balance change."}
+      />
+      <LedgerPanel
+        items={ledger.data?.items || []}
+        loading={ledger.isLoading}
+        zh={zh}
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={ledger.data?.total ?? 0}
+        fetching={ledger.isFetching}
+        onPageChange={setPage}
+      />
+    </div>
   );
 }
 
@@ -226,7 +209,7 @@ function OrdersPanel({
       {!items.length ? (
         <EmptyState>{loading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无订单" : "No orders"}</EmptyState>
       ) : (
-        <div className="divide-y divide-border/45">
+        <div className="divide-y divide-border/40">
           {items.map((order) => (
             <div key={`${order.source}:${order.id}`} className="p-3 text-xs sm:px-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -415,7 +398,7 @@ function LedgerPanel({
       {!items.length ? (
         <EmptyState>{loading ? (zh ? "加载中…" : "Loading…") : zh ? "暂无钱包流水" : "No wallet activity"}</EmptyState>
       ) : (
-        <div className="divide-y divide-border/45">
+        <div className="divide-y divide-border/40">
           {items.map((row) => (
             <div
               key={row.id}

@@ -339,7 +339,7 @@ export function SettingsPage({ onLogout }: { onLogout?: () => void }) {
   const adminEntryPreview = `${data?.public_base_url?.trim() || window.location.origin}${adminEntryPath.startsWith("/") ? adminEntryPath : `/${adminEntryPath}`}`;
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <PageHeader
         title={t("settings.title")}
         description={t("settings.desc")}

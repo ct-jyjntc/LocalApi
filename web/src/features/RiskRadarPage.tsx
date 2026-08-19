@@ -27,6 +27,17 @@ function scoreVariant(score: number | null) {
   return "success" as const;
 }
 
+function actionLabel(action: string, zh: boolean) {
+  switch (action) {
+    case "auto_suspended": return zh ? "AI 自动封禁" : "AI auto-suspended";
+    case "auto_ignored": return zh ? "AI 自动忽略" : "AI auto-ignored";
+    case "suspended": return zh ? "整组暂停" : "Suspended";
+    case "disabled": return zh ? "整组禁用" : "Disabled";
+    case "ignored": return zh ? "已忽略" : "Ignored";
+    default: return action;
+  }
+}
+
 export function RiskRadarPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
@@ -60,15 +71,6 @@ export function RiskRadarPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const analyze = useMutation({
-    mutationFn: (id: string) => api.commercial.analyzeRiskGroup(id),
-    onSuccess: (result) => {
-      toast.success(zh ? `AI打分: ${result.score}分` : `AI score: ${result.score}`);
-      qc.invalidateQueries({ queryKey: ["commercial", "risk-radar"] });
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
   // AI model selection
   const aiModel = useQuery({
     queryKey: ["commercial", "risk-radar", "ai-model"],
@@ -95,8 +97,8 @@ export function RiskRadarPage() {
         title={zh ? "风控雷达" : "Risk radar"}
         description={
           zh
-            ? "只观察、不自动封。点开一组对照提示词、相似度和账号背景，再决定整组处理。"
-            : "Observe only. Open a group to compare prompts and decide together."
+            ? "AI 自动研判：高分自动整组封禁，低分自动忽略，中间分段留待人工复核。"
+            : "AI auto-judges every group: high scores are auto-suspended, low scores auto-ignored, the rest wait for manual review."
         }
         actions={
           <div className="flex items-center gap-2">
@@ -195,10 +197,8 @@ export function RiskRadarPage() {
         group={selected}
         zh={zh}
         pending={resolve.isPending}
-        analyzing={analyze.isPending}
         onClose={() => setSelectedId(null)}
         onResolve={(action) => selected && resolve.mutate({ id: selected.id, action })}
-        onAnalyze={() => selected && analyze.mutate(selected.id)}
       />
 
       {/* AI Model Selection Dialog */}
@@ -240,18 +240,14 @@ function RiskGroupDialog({
   group,
   zh,
   pending,
-  analyzing,
   onClose,
   onResolve,
-  onAnalyze,
 }: {
   group: RiskGroup | null;
   zh: boolean;
   pending: boolean;
-  analyzing: boolean;
   onClose: () => void;
   onResolve: (action: "disabled" | "suspended" | "ignored") => void;
-  onAnalyze: () => void;
 }) {
   if (!group) return null;
   return (
@@ -287,13 +283,14 @@ function RiskGroupDialog({
               <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5">{group.ai_verdict}</p>
             ) : null}
           </div>
+        ) : group.status === "open" ? (
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            {zh ? "等待 AI 自动研判（组静默几分钟后自动打分）…" : "Waiting for automatic AI scoring once the group goes quiet…"}
+          </p>
         ) : null}
 
         {group.status === "open" ? (
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" variant="secondary" disabled={analyzing} onClick={onAnalyze}>
-              {analyzing ? (zh ? "分析中…" : "Analyzing…") : zh ? "AI分析" : "AI analyze"}
-            </Button>
             <Button size="sm" variant="destructive" disabled={pending} onClick={() => onResolve("disabled")}>
               {zh ? "整组禁用" : "Disable group"}
             </Button>
@@ -306,7 +303,7 @@ function RiskGroupDialog({
           </div>
         ) : (
           <div className="mt-3">
-            <Badge variant="secondary">{group.resolved_action || group.status}</Badge>
+            <Badge variant="secondary">{actionLabel(group.resolved_action || group.status, zh)}</Badge>
           </div>
         )}
 

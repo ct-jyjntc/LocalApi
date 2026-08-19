@@ -1,5 +1,6 @@
 import { db, getSetting, setSetting } from "../db";
-import { listRiskRadar } from "./risk-radar";
+import { listRiskRadar, resolveRiskGroup } from "./risk-radar";
+import { writeAudit } from "./audit";
 import { listProvidersForModel } from "./providers";
 import { pickProviderKey } from "./providers";
 import { mapProviderModel } from "./providers";
@@ -167,4 +168,90 @@ export async function analyzeRiskGroup(groupId: string): Promise<{ score: number
   ).run(result.score, result.verdict, now, groupId);
 
   return { score: result.score, verdict: result.verdict, analyzed_at: now };
+}
+
+export function getRiskRadarAutoBanScore(): number {
+  const raw = Number(getSetting("risk_radar_auto_ban_score") ?? "90");
+  if (!Number.isFinite(raw)) return 90;
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+export function getRiskRadarAutoIgnoreScore(): number {
+  const raw = Number(getSetting("risk_radar_auto_ignore_score") ?? "50");
+  if (!Number.isFinite(raw)) return 50;
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+// Groups keep gathering hits inside the observation window; only analyze once
+// they have been quiet for a few minutes so the AI sees the full evidence.
+const AUTO_QUIET_MS = 3 * 60_000;
+const AUTO_BATCH_LIMIT = 5;
+const AUTO_RETRY_COOLDOWN_MS = 10 * 60_000;
+const autoRetryAfter = new Map<string, number>();
+
+/**
+ * Auto-judge quiet open risk groups with the configured AI model.
+ * score >= ban threshold: suspend the whole group without human review.
+ * score < ignore threshold: mark the group ignored without human review.
+ * In between: leave the group open with the score attached for manual review.
+ */
+export async function runAutoRiskAnalysis(now = Date.now()): Promise<void> {
+  if (!getRiskRadarAIModel()) return;
+  const quietBefore = new Date(now - AUTO_QUIET_MS).toISOString();
+  const candidates = db
+    .prepare(
+      `SELECT id FROM risk_groups
+       WHERE status = 'open' AND last_seen_at < ?
+         AND (ai_analyzed_at IS NULL OR last_seen_at > ai_analyzed_at)
+       ORDER BY created_at ASC
+       LIMIT ${AUTO_BATCH_LIMIT}`,
+    )
+    .all(quietBefore) as Array<{ id: string }>;
+
+  const banScore = getRiskRadarAutoBanScore();
+  const ignoreScore = getRiskRadarAutoIgnoreScore();
+
+  for (const { id } of candidates) {
+    if ((autoRetryAfter.get(id) ?? 0) > now) continue;
+    let result: { score: number; verdict: string; analyzed_at: string } | null;
+    try {
+      result = await analyzeRiskGroup(id);
+    } catch (error) {
+      autoRetryAfter.set(id, now + AUTO_RETRY_COOLDOWN_MS);
+      console.error("[risk-auto] analysis failed for group", id, error instanceof Error ? error.message : error);
+      continue;
+    }
+    if (!result) continue;
+    if (result.score >= banScore) {
+      resolveRiskGroup(id, "suspended", { auto: true });
+      writeAudit({
+        action: "risk.group.auto_suspend",
+        target_type: "risk_group",
+        target_id: id,
+        detail: { score: result.score, verdict: result.verdict, threshold: banScore },
+      });
+    } else if (result.score < ignoreScore) {
+      resolveRiskGroup(id, "ignored", { auto: true });
+      writeAudit({
+        action: "risk.group.auto_ignore",
+        target_type: "risk_group",
+        target_id: id,
+        detail: { score: result.score, verdict: result.verdict, threshold: ignoreScore },
+      });
+    }
+  }
+}
+
+let autoAnalysisStarted = false;
+export function startRiskAutoAnalysis() {
+  if (autoAnalysisStarted) return;
+  autoAnalysisStarted = true;
+  const timer = setInterval(() => {
+    runAutoRiskAnalysis().catch(() => undefined);
+  }, 60_000);
+  timer.unref?.();
+  const boot = setTimeout(() => {
+    runAutoRiskAnalysis().catch(() => undefined);
+  }, 60_000);
+  boot.unref?.();
 }

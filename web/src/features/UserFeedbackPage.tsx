@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ImagePlus, MessageSquareText, Plus, Send } from "lucide-react";
 import { toast } from "sonner";
 import { userApi, type FeedbackAttachment, type FeedbackThread } from "@/lib/api";
-import { EmptyState, PageHeader } from "@/components/shared";
+import { EmptyState, EntryIcon, PageHeader } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -20,7 +20,7 @@ export function UserFeedbackPage() {
   const refresh = () => qc.invalidateQueries({ queryKey: ["user", "feedback"] });
   const create = useMutation({ mutationFn: () => userApi.feedback.create(subject, body, files), onSuccess: () => { setCreateOpen(false); setSubject(""); setBody(""); setFiles([]); refresh(); toast.success(zh ? "反馈已提交" : "Feedback sent"); }, onError: (e: Error) => toast.error(e.message) });
   return <div className="flex flex-col gap-6"><PageHeader title={zh ? "我的反馈" : "My feedback"} description={zh ? "查看历史反馈，或提交新的问题。" : "Review previous feedback or report a new issue."} actions={<Button size="sm" onClick={() => setCreateOpen(true)}><Plus />{zh ? "新建反馈" : "New feedback"}</Button>} />
-    <Card className="overflow-hidden">{!query.data?.items.length ? <EmptyState>{query.isLoading ? (zh ? "加载中…" : "Loading…") : (zh ? "暂无反馈" : "No feedback yet")}</EmptyState> : query.data.items.map(thread => <button key={thread.id} className="flex min-h-14 w-full items-center gap-3 border-b border-border/40 px-4 py-3 text-left text-xs transition-colors last:border-0 hover:bg-secondary/40" onClick={() => setSelected(thread)}><MessageSquareText className="size-4 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><p className="truncate font-medium">{thread.subject}</p><p className="mt-1 truncate text-[11px] text-muted-foreground">{thread.messages.at(-1)?.body || (zh ? "图片附件" : "Image attachment")} · {new Date(thread.updated_at).toLocaleString()}</p></div><Badge variant={thread.status === "open" ? "success" : "secondary"}>{thread.status === "open" ? (zh ? "处理中" : "Open") : (zh ? "已解决" : "Resolved")}</Badge></button>)}</Card>
+    <Card className="overflow-hidden">{!query.data?.items.length ? <EmptyState>{query.isLoading ? (zh ? "加载中…" : "Loading…") : (zh ? "暂无反馈" : "No feedback yet")}</EmptyState> : query.data.items.map(thread => <button key={thread.id} className="flex min-h-14 w-full items-center gap-3 border-b border-border/40 px-4 py-3 text-left text-xs transition-colors last:border-0 hover:bg-secondary/40" onClick={() => setSelected(thread)}><EntryIcon icon={MessageSquareText} /><div className="min-w-0 flex-1"><p className="truncate font-medium">{thread.subject}</p><p className="mt-1 truncate text-[11px] text-muted-foreground">{thread.messages.at(-1)?.body || (zh ? "图片附件" : "Image attachment")} · {new Date(thread.updated_at).toLocaleString()}</p></div><Badge variant={thread.status === "open" ? "success" : "secondary"}>{thread.status === "open" ? (zh ? "处理中" : "Open") : (zh ? "已解决" : "Resolved")}</Badge></button>)}</Card>
     <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent><DialogHeader><DialogTitle>{zh ? "新建反馈" : "New feedback"}</DialogTitle><DialogDescription>{zh ? "请简洁描述问题；需要时可附加截图。" : "Describe the issue and attach screenshots if needed."}</DialogDescription></DialogHeader><div className="mt-4 space-y-3"><Input placeholder={zh ? "反馈标题" : "Subject"} value={subject} onChange={e => setSubject(e.target.value)} /><Textarea className="min-h-28" placeholder={zh ? "请描述遇到的问题" : "Describe the issue"} value={body} onChange={e => setBody(e.target.value)} /><AttachmentInput files={files} onChange={setFiles} /></div><DialogFooter><Button variant="secondary" onClick={() => setCreateOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={!subject.trim() || !body.trim() || create.isPending} onClick={() => create.mutate()}><Send />{zh ? "提交" : "Send"}</Button></DialogFooter></DialogContent></Dialog>
     {selected ? <ThreadDialog thread={selected} zh={zh} onClose={() => setSelected(null)} onDone={() => { refresh(); query.refetch().then(result => setSelected(result.data?.items.find(x => x.id === selected.id) || null)); }} /> : null}
   </div>;
@@ -35,4 +35,23 @@ function ThreadDialog({ thread, zh, onClose, onDone }: { thread: FeedbackThread;
 function MessageBubble({ message, own }: { message: FeedbackThread["messages"][number]; own: boolean }) { return <div className={`max-w-[88%] rounded-md px-3 py-2 text-xs ${own ? "ml-auto bg-foreground text-background" : "bg-secondary/55"}`}><p className="whitespace-pre-wrap">{message.body}</p><Images items={message.attachments} /></div>; }
 function AttachmentInput({ files, onChange }: { files: FeedbackAttachment[]; onChange: (value: FeedbackAttachment[]) => void }) { return <div className="flex flex-wrap items-center gap-2"><label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-full bg-secondary px-3 text-xs text-muted-foreground hover:text-foreground"><ImagePlus className="size-3.5" />添加图片<input className="hidden" type="file" accept="image/*" multiple onChange={async e => onChange(await Promise.all(Array.from(e.target.files || []).slice(0, 3).map(toAttachment)))} /></label>{files.map(file => <span key={file.name} className="max-w-40 truncate text-[11px] text-muted-foreground">{file.name}</span>)}</div>; }
 const toAttachment = (file: File) => new Promise<FeedbackAttachment>((resolve, reject) => { if (file.size > 2_000_000) return reject(new Error("Image too large")); const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, type: file.type, data: String(reader.result) }); reader.onerror = reject; reader.readAsDataURL(file); });
-function Images({ items }: { items: FeedbackAttachment[] }) { return items?.length ? <div className="mt-2 flex flex-wrap gap-2">{items.map((item, index) => <a key={index} href={item.data} target="_blank" rel="noreferrer"><img src={item.data} alt={item.name} className="h-20 max-w-32 rounded-md object-cover" /></a>)}</div> : null; }
+function Images({ items }: { items: FeedbackAttachment[] }) {
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  if (!items?.length) return null;
+  return <>
+    <div className="mt-2 flex flex-wrap gap-2">
+      {items.map((item, index) => (
+        <button key={index} type="button" onClick={() => setPreviewSrc(item.data)} className="block overflow-hidden rounded-md transition-opacity hover:opacity-80">
+          <img src={item.data} alt={item.name} className="h-20 max-w-32 rounded-md object-cover" />
+        </button>
+      ))}
+    </div>
+    {previewSrc && (
+      <Dialog open onOpenChange={(v) => { if (!v) setPreviewSrc(null); }}>
+        <DialogContent className="max-w-[90vw] max-h-[90vh] p-2 sm:max-w-[800px]" onCloseAutoFocus={() => setPreviewSrc(null)}>
+          <img src={previewSrc} alt="preview" className="max-h-[85vh] w-full rounded-md object-contain" onClick={() => setPreviewSrc(null)} />
+        </DialogContent>
+      </Dialog>
+    )}
+  </>;
+}

@@ -213,6 +213,8 @@ export type ApiKeyRow = {
   rate_limit: number;
   tpm_limit: number;
   concurrency_limit: number;
+  daily_quota_micros: number;
+  monthly_quota_micros: number;
   allowed_models: string[];
   expires_at: string | null;
   user_id: string | null;
@@ -652,6 +654,8 @@ export type UsageTrendPoint = {
   total_tokens: number;
 };
 
+export type ModelTrendPoint = UsageTrendPoint & { model: string };
+
 export type Settings = {
   admin_password_set?: boolean;
   admin_password_hint?: string;
@@ -890,14 +894,14 @@ export const api = {
         `/admin/api/keys${qs ? `?${qs}` : ""}`,
       );
     },
-    create: (body: { name: string; rate_limit?: number; enabled?: boolean }) =>
+    create: (body: { name: string; rate_limit?: number; enabled?: boolean; daily_quota_micros?: number; monthly_quota_micros?: number }) =>
       request<ApiKeyRow>("/admin/api/keys", {
         method: "POST",
         body: JSON.stringify(body),
       }),
     update: (
       id: string,
-      body: Partial<{ name: string; enabled: boolean; rate_limit: number }>,
+      body: Partial<{ name: string; enabled: boolean; rate_limit: number; daily_quota_micros: number; monthly_quota_micros: number }>,
     ) =>
       request<ApiKeyRow>(`/admin/api/keys/${id}`, {
         method: "PATCH",
@@ -1275,6 +1279,7 @@ export const userApi = {
       subscription: SubscriptionRow | null;
       totals: { requests: number; cost_micros: number; prompt_tokens: number; completion_tokens: number; cached_tokens: number; total_tokens: number };
       trend: UsageTrendPoint[];
+      trendByModel: ModelTrendPoint[];
     }>("/user/api/dashboard", {}, { auth: "user" }),
   keys: {
     list: (params?: { limit?: number; offset?: number }) => {

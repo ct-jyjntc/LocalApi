@@ -257,7 +257,7 @@ export function PaymentsPage() {
   const requestDelete = async (order: PaymentOrder) => { if (await dialogs.confirm({ title: "删除订单记录", description: `确认删除订单 ${order.order_no}？`, confirmText: "删除", destructive: true })) remove.mutate(order.id); };
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <PageHeader title="支付与订单" description="配置收款渠道、核对充值订单并处理全额退款。" />
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

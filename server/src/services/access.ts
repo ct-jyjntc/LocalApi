@@ -1,5 +1,4 @@
-import { ApiKey } from "../db";
-import { getSetting } from "../db";
+import { ApiKey, db, getSetting } from "../db";
 import { estimateRequestTokens, getModelPrice } from "./billing";
 import { consumeRateLimit } from "./rate-limit";
 import { getActiveSubscription, maintainActiveSubscription } from "./plans";
@@ -122,6 +121,66 @@ function activeConcurrency(scope: string, now = Date.now()) {
   return count;
 }
 
+function yuan(micros: number) {
+  return `¥${(micros / 1_000_000).toFixed(2)}`;
+}
+
+function secondsUntilNextShanghaiMidnight() {
+  const shifted = Date.now() + 8 * 3600_000;
+  const nextShifted = Math.ceil(shifted / 86_400_000) * 86_400_000;
+  return Math.max(1, Math.ceil((nextShifted - 8 * 3600_000 - Date.now()) / 1000));
+}
+
+function secondsUntilNextShanghaiMonth() {
+  const shifted = new Date(Date.now() + 8 * 3600_000);
+  const nextUtc = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 1) - 8 * 3600_000;
+  return Math.max(1, Math.ceil((nextUtc - Date.now()) / 1000));
+}
+
+/**
+ * Per-key spend budgets (day / month, UTC+8 boundaries). Counts completed
+ * charges plus in-flight reservations so a burst of parallel requests cannot
+ * blow past the cap before the first request settles.
+ */
+function enforceKeyQuotas(key: ApiKey) {
+  const daily = Math.max(0, key.daily_quota_micros || 0);
+  const monthly = Math.max(0, key.monthly_quota_micros || 0);
+  if (daily <= 0 && monthly <= 0) return;
+  const shifted = new Date(Date.now() + 8 * 3600_000);
+  const monthStartUtc = new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), 1) - 8 * 3600_000,
+  ).toISOString();
+  const row = db.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN day = strftime('%Y-%m-%d', 'now', '+8 hours') THEN v ELSE 0 END), 0) AS used_today,
+       COALESCE(SUM(v), 0) AS used_month
+     FROM (
+       SELECT strftime('%Y-%m-%d', created_at, '+8 hours') AS day,
+              CASE WHEN status = 'completed' THEN cost_micros
+                   WHEN status = 'pending' THEN reserved_plan_micros + reserved_wallet_micros
+                   ELSE 0 END AS v
+       FROM usage_records
+       WHERE api_key_id = ? AND created_at >= ?
+     )`,
+  ).get(key.id, monthStartUtc) as { used_today: number; used_month: number };
+  if (daily > 0 && row.used_today >= daily) {
+    throw new AccessError(
+      429,
+      "daily_quota_exceeded",
+      `Daily quota exceeded for this API key: used ${yuan(row.used_today)} of ${yuan(daily)} (resets at 00:00 UTC+8)`,
+      secondsUntilNextShanghaiMidnight(),
+    );
+  }
+  if (monthly > 0 && row.used_month >= monthly) {
+    throw new AccessError(
+      429,
+      "monthly_quota_exceeded",
+      `Monthly quota exceeded for this API key: used ${yuan(row.used_month)} of ${yuan(monthly)} (resets on the 1st, UTC+8)`,
+      secondsUntilNextShanghaiMonth(),
+    );
+  }
+}
+
 export type RequestAccess = {
   userId: string | null;
   release: (actualTokens: number) => void;
@@ -164,7 +223,13 @@ export function beginRequestAccess(
   }
   if (model) {
     if (!isModelAllowedForKey(key, model, { includeSubscription: billingMode === "coding" })) {
-      throw new AccessError(403, "model_not_allowed", `Model ${model} is not allowed for this account`);
+      const allowedSource = billingMode === "coding"
+        ? parseModels(subscription?.plan.allowed_models)
+        : parseModels(key.allowed_models);
+      const hint = allowedSource.length > 0 && !allowedSource.includes("*")
+        ? ` Allowed models for this account: ${allowedSource.join(", ")}.`
+        : "";
+      throw new AccessError(403, "model_not_allowed", `Model ${model} is not allowed for this account.${hint}`);
     }
     if (billingMode === "wallet" && user && isFreePricedModel(model)) {
       if (isWalletFreeModelTopupRequired()) {
@@ -186,9 +251,16 @@ export function beginRequestAccess(
     }
   }
 
-  const rpm = user
+  enforceKeyQuotas(key);
+
+  const planRpm = user
     ? (billingMode === "coding" ? subscription?.plan.rpm_limit || 0 : tier?.rpm_limit || 0)
-    : key.rate_limit;
+    : 0;
+  const keyRpm = Math.max(0, key.rate_limit || 0);
+  // A key-level RPM cap can only tighten the plan/tier limit, never raise it.
+  const rpm = user
+    ? (planRpm > 0 && keyRpm > 0 ? Math.min(planRpm, keyRpm) : planRpm || keyRpm)
+    : keyRpm;
   const accessScope = `${billingMode}:${user?.id || key.id}`;
   const rpmState = consumeRateLimit(`commercial:rpm:${accessScope}`, rpm);
   if (!rpmState.allowed) {

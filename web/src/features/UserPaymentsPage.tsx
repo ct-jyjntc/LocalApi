@@ -101,7 +101,7 @@ const me = useQuery({ queryKey: ["user", "me"], queryFn: userApi.me });
   );
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <PageHeader title="账户充值" description="选择支付渠道为账户余额充值；订单记录统一在“账单与订单”中查看。" />
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,.85fr)]">

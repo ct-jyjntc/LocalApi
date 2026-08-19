@@ -63,8 +63,14 @@ const FeedbackPage = lazy(() =>
 const UserKeysPage = lazy(() =>
   import("@/features/UserKeysPage").then((m) => ({ default: m.UserKeysPage })),
 );
-const UserUsagePage = lazy(() =>
-  import("@/features/UserUsagePage").then((m) => ({ default: m.UserUsagePage })),
+const UserUsageDetailPage = lazy(() =>
+  import("@/features/UserUsagePage").then((m) => ({ default: m.UserUsageDetailPage })),
+);
+const UserOrdersPage = lazy(() =>
+  import("@/features/UserUsagePage").then((m) => ({ default: m.UserOrdersPage })),
+);
+const UserWalletLedgerPage = lazy(() =>
+  import("@/features/UserUsagePage").then((m) => ({ default: m.UserWalletLedgerPage })),
 );
 const CommercialUsagePage = lazy(() =>
   import("@/features/CommercialUsagePage").then((m) => ({ default: m.CommercialUsagePage })),
@@ -86,6 +92,9 @@ const UserSettingsPage = lazy(() =>
 );
 const UserCheckinPage = lazy(() =>
   import("@/features/UserCheckinPage").then((m) => ({ default: m.UserCheckinPage })),
+);
+const UserDocsPage = lazy(() =>
+  import("@/features/UserDocsPage").then((m) => ({ default: m.UserDocsPage })),
 );
 const ModulesPage = lazy(() =>
   import("@/features/ModulesPage").then((m) => ({ default: m.ModulesPage })),
@@ -149,9 +158,12 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="models" element={<UserModelsPage />} />
               <Route path="keys" element={<UserKeysPage />} />
               <Route path="plan" element={<UserPlanPage />} />
-              <Route path="usage" element={<UserUsagePage />} />
+              <Route path="orders" element={<UserOrdersPage />} />
+              <Route path="usage" element={<UserUsageDetailPage />} />
+              <Route path="ledger" element={<UserWalletLedgerPage />} />
               <Route path="payments" element={<UserPaymentsPage />} />
               <Route path="checkin" element={<UserCheckinPage />} />
+              <Route path="docs" element={<UserDocsPage />} />
               <Route path="feedback" element={<UserFeedbackPage />} />
               <Route path="settings" element={<UserSettingsPage />} />
             </>
