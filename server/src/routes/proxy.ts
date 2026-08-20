@@ -213,7 +213,6 @@ async function handleProxy(req: Request, res: Response) {
               // Pi / OpenAI SDK → Z.ai / DeepSeek-style pool compatibility
               // (developer role, boolean thinking, store, prompt_cache_*).
               body = normalizeOpenAICompatBody(body, path).body;
-              body = applyModelLimits(body, path).body;
               const injected = injectPromptPresets(body, path);
               if (injected.tokens > 0) {
                 preInjectionBody = body;
@@ -226,6 +225,10 @@ async function handleProxy(req: Request, res: Response) {
                 body = injected.body;
                 injectedPromptTokens = injected.tokens;
               }
+              // Limits apply to the FINAL body: injected preset tokens also
+              // occupy the context window, so the hard cap guards what we
+              // actually send upstream, not just what the user typed.
+              body = applyModelLimits(body, path).body;
               rawBody = Buffer.from(JSON.stringify(body));
             } catch (error) {
               if (error instanceof ModelLimitError) {

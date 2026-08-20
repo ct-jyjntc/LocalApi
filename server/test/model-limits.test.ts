@@ -74,6 +74,32 @@ test("model limits: clamp max output and reject oversized context", async () => 
     assert.equal(responsesDefault.max_output_tokens, 32);
     assert.equal(responsesDefault.max_tokens, undefined);
 
+    // CJK prompts cost ~1 token per ideograph; the old chars/4 estimate
+    // undercounted them ~4x and let this 120-char Chinese prompt (≈130
+    // tokens) through a 100-token window.
+    assert.throws(
+      () =>
+        applyModelLimits(
+          {
+            model: "capped-model",
+            messages: [{ role: "user", content: "汉".repeat(120) }],
+            max_tokens: 10,
+          },
+          "/v1/chat/completions",
+        ),
+      (error: unknown) => error instanceof ModelLimitError && error.code === "context_length_exceeded",
+    );
+    // A small CJK prompt still passes — the estimator is not just "reject all CJK".
+    const cjkOk = applyModelLimits(
+      {
+        model: "capped-model",
+        messages: [{ role: "user", content: "你好，世界" }],
+        max_tokens: 10,
+      },
+      "/v1/chat/completions",
+    );
+    assert.ok(cjkOk.body);
+
     const unlimited = applyModelLimits(
       {
         model: "unknown-model",

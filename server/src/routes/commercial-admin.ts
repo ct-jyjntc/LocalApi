@@ -38,7 +38,7 @@ import {
   updatePaymentChannel,
 } from "../services/payments";
 import { createUserTier, deleteUserTier, listUserTiers, TierError, updateUserTier } from "../services/tiers";
-import { listAllFeedback, replyFeedback, setFeedbackStatus } from "../services/feedback";
+import { listAllFeedback, replyFeedback, setFeedbackStatus, createAdminTicket, adminUnreadCount, markThreadRead } from "../services/feedback";
 import {
   createPromptPreset,
   deletePromptPreset,
@@ -231,8 +231,17 @@ commercialAdminRouter.post("/risk-radar/groups/:id/analyze", async (req, res) =>
 // base64 attachments into memory — unbounded as users file feedback. Default
 // 100/page, capped at 500; the web panel can page through with limit/offset.
 commercialAdminRouter.get("/feedback", (req,res)=>{const limit=Number(req.query.limit??100);const offset=Number(req.query.offset??0);return res.json(listAllFeedback(Number.isFinite(limit)?Math.min(500,Math.max(1,Math.trunc(limit))):100,Number.isFinite(offset)?Math.max(0,Math.trunc(offset)):0));});
-commercialAdminRouter.post("/feedback/:id/replies",(req,res)=>{const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(feedbackAttachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"admin",body.body,body.attachments);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
-commercialAdminRouter.patch("/feedback/:id",(req,res)=>{const body=parseBody(z.object({status:z.enum(["open","resolved"])}),req.body,res);if(!body)return;return setFeedbackStatus(req.params.id,body.status)?res.json({ok:true}):res.status(404).json({error:"Feedback not found"});});
+commercialAdminRouter.get("/feedback/unread", (_req, res) => { return res.json({ count: adminUnreadCount() }); });
+commercialAdminRouter.post("/feedback", (req, res) => {
+  const body = parseBody(z.object({ user_id: z.string(), subject: z.string().trim().min(2).max(160), body: z.string().trim().min(1).max(5000), attachments: z.array(feedbackAttachmentSchema).max(3).default([]) }), req.body, res);
+  if (!body) return;
+  const thread = createAdminTicket(body.user_id, body.subject, body.body, body.attachments);
+  writeAudit({ action: "feedback.create", target_type: "feedback", target_id: thread.id, detail: { user_id: body.user_id, subject: body.subject } });
+  return res.status(201).json(thread);
+});
+commercialAdminRouter.post("/feedback/:id/replies", (req,res)=>{const body=parseBody(z.object({body:z.string().trim().max(5000).default(""),attachments:z.array(feedbackAttachmentSchema).max(3).default([])}).refine(v=>v.body||v.attachments.length,{message:"Reply is empty"}),req.body,res);if(!body)return;const result=replyFeedback(req.params.id,"admin",body.body,body.attachments);return result?res.json({messages:result}):res.status(404).json({error:"Feedback not found"});});
+commercialAdminRouter.patch("/feedback/:id", (req,res)=>{const body=parseBody(z.object({status:z.enum(["open","resolved"])}),req.body,res);if(!body)return;return setFeedbackStatus(req.params.id,body.status)?res.json({ok:true}):res.status(404).json({error:"Feedback not found"});});
+commercialAdminRouter.post("/feedback/:id/read", (req, res) => { markThreadRead(req.params.id, "admin"); return res.json({ ok: true }); });
 commercialAdminRouter.post("/users", (req, res) => {
   const body = parseBody(userSchema, req.body, res);
   if (!body) return;
@@ -521,7 +530,12 @@ commercialAdminRouter.get("/usage", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 500);
   const offset = Math.max(0, Number(req.query.offset) || 0);
   const userId = typeof req.query.user_id === "string" ? req.query.user_id : undefined;
-  return res.json(listUsageRecordsPage({ userId, limit, offset }));
+  const userQuery = typeof req.query.user_query === "string" ? req.query.user_query.trim() : undefined;
+  const model = typeof req.query.model === "string" ? req.query.model.trim() : undefined;
+  const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  const dateFrom = typeof req.query.date_from === "string" ? req.query.date_from : undefined;
+  const dateTo = typeof req.query.date_to === "string" ? req.query.date_to : undefined;
+  return res.json(listUsageRecordsPage({ userId, userQuery, model, status, dateFrom, dateTo, limit, offset }));
 });
 commercialAdminRouter.get("/audit", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 1000);

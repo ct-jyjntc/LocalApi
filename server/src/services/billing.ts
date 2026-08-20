@@ -665,34 +665,61 @@ export function listUsageRecords(userId?: string, limit = 200) {
 
 export function listUsageRecordsPage(input: {
   userId?: string;
+  userQuery?: string;
+  model?: string;
+  status?: string;
+  dateFrom?: string;
+  dateTo?: string;
   limit?: number;
   offset?: number;
 } = {}) {
   const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 50)));
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
-  const total = input.userId
-    ? (db.prepare("SELECT COUNT(*) AS c FROM usage_records WHERE user_id = ?").get(input.userId) as {
-        c: number;
-      }).c
-    : (db.prepare("SELECT COUNT(*) AS c FROM usage_records").get() as { c: number }).c;
-  const rows = input.userId
-    ? db
-        .prepare(
-          `SELECT ur.*, u.username AS username, u.display_name AS display_name
-           FROM usage_records ur
-           LEFT JOIN users u ON u.id = ur.user_id
-           WHERE ur.user_id = ?
-           ORDER BY ur.created_at DESC, ur.id DESC LIMIT ? OFFSET ?`,
-        )
-        .all(input.userId, limit, offset)
-    : db
-        .prepare(
-          `SELECT ur.*, u.username AS username, u.display_name AS display_name
-           FROM usage_records ur
-           LEFT JOIN users u ON u.id = ur.user_id
-           ORDER BY ur.created_at DESC, ur.id DESC LIMIT ? OFFSET ?`,
-        )
-        .all(limit, offset);
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+  if (input.userId) {
+    conditions.push("ur.user_id = ?");
+    params.push(input.userId);
+  }
+  if (input.userQuery) {
+    conditions.push("(u.username LIKE ? OR u.display_name LIKE ?)");
+    const like = `%${input.userQuery.replace(/[%_]/g, "\\$&")}%`;
+    params.push(like, like);
+  }
+  if (input.model) {
+    conditions.push("ur.model LIKE ?");
+    params.push(`%${input.model.replace(/[%_]/g, "\\$&")}%`);
+  }
+  if (input.status && input.status !== "all") {
+    conditions.push("ur.status = ?");
+    params.push(input.status);
+  }
+  // created_at is a UTC ISO string ("2026-08-20T02:00:44.000Z"). Compare in
+  // +8 (consistent with the dashboard's daily stats) and via datetime() so
+  // both sides share the "YYYY-MM-DD HH:MM:SS" shape — a raw ISO string with
+  // its "T" separator sorts AFTER "date 23:59:59", silently excluding the
+  // entire end day.
+  if (input.dateFrom) {
+    conditions.push("datetime(ur.created_at, '+8 hours') >= ?");
+    params.push(`${input.dateFrom} 00:00:00`);
+  }
+  if (input.dateTo) {
+    conditions.push("datetime(ur.created_at, '+8 hours') <= ?");
+    params.push(input.dateTo + " 23:59:59");
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS c FROM usage_records ur LEFT JOIN users u ON u.id = ur.user_id ${where}`).get(...params) as { c: number }
+  ).c;
+  const rows = db
+    .prepare(
+      `SELECT ur.*, u.username AS username, u.display_name AS display_name
+       FROM usage_records ur
+       LEFT JOIN users u ON u.id = ur.user_id
+       ${where}
+       ORDER BY ur.created_at DESC, ur.id DESC LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limit, offset);
   return {
     items: (rows as Array<Record<string, unknown>>).map(mapUsageRow),
     total,

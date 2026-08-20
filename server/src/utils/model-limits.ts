@@ -21,9 +21,30 @@ function isObject(value: unknown): value is JsonObject {
 
 function estimatePromptTokens(body: JsonObject): number {
   // Estimate the entire request body, not just messages/prompt/input.
-  // Fields like instructions, system, tools, functions all consume context.
-  const chars = JSON.stringify(body).length;
-  return Math.max(1, Math.ceil(chars / 4));
+  // Fields like instructions, system, tools, functions all consume context —
+  // including content the upstream will later serve as cache reads (cached
+  // tokens are part of the prompt, so they must count toward the window).
+  // chars/4 works for ASCII, but CJK ideographs cost ~1 token EACH; a
+  // mostly-Chinese prompt would be undercounted ~4x and sail past the
+  // context window. Count CJK code points individually.
+  const text = JSON.stringify(body);
+  let cjk = 0;
+  let other = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (
+      (cp >= 0x2e80 && cp <= 0x9fff) || // radicals … CJK unified ideographs
+      (cp >= 0x3000 && cp <= 0x303f) || // CJK punctuation
+      (cp >= 0xff00 && cp <= 0xffef) || // fullwidth forms
+      (cp >= 0xf900 && cp <= 0xfaff) || // compatibility ideographs
+      (cp >= 0x20000 && cp <= 0x2a6df)  // ideographs extension B
+    ) {
+      cjk += 1;
+    } else {
+      other += 1;
+    }
+  }
+  return Math.max(1, cjk + Math.ceil(other / 4));
 }
 
 function clampPositiveInt(value: unknown, cap: number): number | undefined {

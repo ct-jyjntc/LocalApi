@@ -66,9 +66,32 @@ function renderSvg(question: string) {
     const opacity = (randomInt(15, 40) / 100).toFixed(2);
     return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#64748b" opacity="${opacity}" />`;
   }).join("");
-  const rotate = randomInt(-6, 6);
-  const textX = randomInt(18, 28);
-  const textY = randomInt(34, 40);
+
+  // Anti-bot: emit each character as its own <text> with per-glyph jitter and
+  // rotation, and shuffle the markup order. A regex over the SVG source sees
+  // isolated glyphs in random sequence — the expression only exists in visual
+  // (x-sorted) order, so solving it requires layout parsing/OCR, not string
+  // matching. Humans are unaffected.
+  const chars = [...question];
+  const step = Math.min(17, (width - 32) / Math.max(chars.length, 1));
+  const startX = (width - step * (chars.length - 1)) / 2;
+  const glyphs = chars.map((ch, i) => {
+    if (ch === " ") return null;
+    const x = startX + i * step + randomInt(-25, 25) / 10;
+    const y = randomInt(33, 41);
+    const rotate = randomInt(-22, 22);
+    const size = randomInt(20, 24);
+    return {
+      x,
+      markup: `<text x="${x.toFixed(1)}" y="${y}" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="${size}" font-weight="700" fill="#0f172a" transform="rotate(${rotate} ${x.toFixed(1)} ${y})">${escapeXml(ch)}</text>`,
+    };
+  }).filter((g): g is { x: number; markup: string } => g !== null);
+  // Shuffle markup order (Fisher–Yates); visual order is fixed by x.
+  for (let i = glyphs.length - 1; i > 0; i--) {
+    const j = randomInt(0, i);
+    [glyphs[i], glyphs[j]] = [glyphs[j], glyphs[i]];
+  }
+  const text = glyphs.map((g) => g.markup).join("");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -82,7 +105,7 @@ function renderSvg(question: string) {
   <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="9" fill="none" stroke="#cbd5e1"/>
   ${noiseLines}
   ${dots}
-  <text x="${textX}" y="${textY}" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="22" font-weight="700" fill="#0f172a" letter-spacing="1" transform="rotate(${rotate} ${width / 2} ${height / 2})">${escapeXml(question)}</text>
+  ${text}
 </svg>`;
 }
 
@@ -127,6 +150,12 @@ export function verifyCaptcha(id: string | undefined, answer: string | undefined
 
 export function clearCaptchas() {
   captchas.clear();
+}
+
+/** Test hook: the whole point of the obfuscated SVG is that the answer is NOT
+ * recoverable from the payload, so tests read it straight from the store. */
+export function peekCaptchaAnswerForTests(id: string) {
+  return captchas.get(id)?.answer ?? null;
 }
 
 const cleanupTimer = setInterval(() => cleanupExpired(), 60_000);

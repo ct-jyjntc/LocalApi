@@ -1177,11 +1177,16 @@ export const api = {
           body: JSON.stringify({ ids }),
         }),
     },
-    usage: (params?: { limit?: number; offset?: number; user_id?: string }) => {
+    usage: (params?: { limit?: number; offset?: number; user_id?: string; user_query?: string; model?: string; status?: string; date_from?: string; date_to?: string }) => {
       const search = new URLSearchParams();
       if (params?.limit != null) search.set("limit", String(params.limit));
       if (params?.offset != null) search.set("offset", String(params.offset));
       if (params?.user_id) search.set("user_id", params.user_id);
+      if (params?.user_query) search.set("user_query", params.user_query);
+      if (params?.model) search.set("model", params.model);
+      if (params?.status) search.set("status", params.status);
+      if (params?.date_from) search.set("date_from", params.date_from);
+      if (params?.date_to) search.set("date_to", params.date_to);
       const qs = search.toString();
       return request<{ items: UsageRow[]; total: number; limit: number; offset: number }>(
         `/admin/api/commercial/usage${qs ? `?${qs}` : ""}`,
