@@ -156,7 +156,9 @@ test("proxy nodes: CRUD, provider assignment and round-robin across socks proxie
     });
     const firstJson = (await first.json()) as { who?: string };
     assert.equal(first.status, 200);
-    assert.match(first.headers.get("x-provider") || "", new RegExp(`^${proxiedProvider.id}:`));
+    // x-provider is stripped from client responses; the upstream's own `who`
+    // marker below proves which node carried the request.
+    assert.ok(firstJson.who === "A" || firstJson.who === "B");
 
     const second = await fetch(`http://127.0.0.1:${relayPort}/chat`, {
       method: "POST",

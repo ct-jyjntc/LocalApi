@@ -21,7 +21,7 @@ import {
   updatePlan,
 } from "../services/plans";
 import { adjustPoints, CheckinError } from "../services/checkin";
-import { createUser, deleteUser, deleteUsers, listUsersPage, setUsersStatus, updateUser } from "../services/users";
+import { createUser, deleteUser, deleteUsers, getUser, listUsersPage, setUsersStatus, updateUser } from "../services/users";
 import { listRiskRadar, resolveRiskGroup } from "../services/risk-radar";
 import { analyzeRiskGroup, getRiskRadarAIModel, setRiskRadarAIModel } from "../services/risk-ai";
 import { listAuditLogs, writeAudit } from "../services/audit";
@@ -235,6 +235,12 @@ commercialAdminRouter.get("/feedback/unread", (_req, res) => { return res.json({
 commercialAdminRouter.post("/feedback", (req, res) => {
   const body = parseBody(z.object({ user_id: z.string(), subject: z.string().trim().min(2).max(160), body: z.string().trim().min(1).max(5000), attachments: z.array(feedbackAttachmentSchema).max(3).default([]) }), req.body, res);
   if (!body) return;
+  // Validate the target up front: a mistyped user id would otherwise create a
+  // thread that vanishes from the admin list (listAllFeedback INNER JOINs
+  // users) — or a 500 if the FK bites — with no hint why.
+  if (!getUser(body.user_id)) {
+    return res.status(404).json({ error: "User not found", code: "user_not_found" });
+  }
   const thread = createAdminTicket(body.user_id, body.subject, body.body, body.attachments);
   writeAudit({ action: "feedback.create", target_type: "feedback", target_id: thread.id, detail: { user_id: body.user_id, subject: body.subject } });
   return res.status(201).json(thread);

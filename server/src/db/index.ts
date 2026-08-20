@@ -671,6 +671,21 @@ export function initDb() {
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_providers_sort_order ON providers(sort_order)");
 
+  // feedback_threads: track last sender + per-party unread flags for the
+  // badge counts (admin "用户" pill / user "我的反馈").
+  const feedbackCols = (
+    db.prepare("PRAGMA table_info(feedback_threads)").all() as Array<{ name: string }>
+  ).map((c) => c.name);
+  if (!feedbackCols.includes("last_sender_type")) {
+    db.exec("ALTER TABLE feedback_threads ADD COLUMN last_sender_type TEXT NOT NULL DEFAULT 'user'");
+  }
+  if (!feedbackCols.includes("admin_unread")) {
+    db.exec("ALTER TABLE feedback_threads ADD COLUMN admin_unread INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!feedbackCols.includes("user_unread")) {
+    db.exec("ALTER TABLE feedback_threads ADD COLUMN user_unread INTEGER NOT NULL DEFAULT 0");
+  }
+
   const nodeCols = (
     db.prepare("PRAGMA table_info(proxy_nodes)").all() as Array<{ name: string }>
   ).map((c) => c.name);

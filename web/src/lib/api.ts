@@ -423,7 +423,7 @@ export type PromptPresetSummary = { id: string; name: string; filename: string; 
 export type PromptPreset = PromptPresetSummary & { content: string };
 export type FeedbackAttachment = { name: string; type: string; data: string };
 export type FeedbackMessage = { id: string; sender_type: "user" | "admin"; body: string; attachments: FeedbackAttachment[]; created_at: string };
-export type FeedbackThread = { id: string; user_id: string; username?: string; display_name?: string; subject: string; status: "open" | "resolved"; created_at: string; updated_at: string; messages: FeedbackMessage[] };
+export type FeedbackThread = { id: string; user_id: string; username?: string; display_name?: string; subject: string; status: "open" | "resolved"; last_sender_type?: "user" | "admin"; admin_unread?: number; user_unread?: number; created_at: string; updated_at: string; messages: FeedbackMessage[] };
 
 export type PlanRow = {
   id: string;
@@ -1031,8 +1031,11 @@ export const api = {
   commercial: {
     feedback: {
       list: () => request<{ items: FeedbackThread[] }>("/admin/api/commercial/feedback"),
+      unread: () => request<{ count: number }>("/admin/api/commercial/feedback/unread"),
+      create: (userId: string, subject: string, body: string, attachments: FeedbackAttachment[] = []) => request<FeedbackThread>("/admin/api/commercial/feedback", { method: "POST", body: JSON.stringify({ user_id: userId, subject, body, attachments }) }),
       reply: (id: string, body: string, attachments: FeedbackAttachment[] = []) => request<{ messages: FeedbackMessage[] }>(`/admin/api/commercial/feedback/${id}/replies`, { method: "POST", body: JSON.stringify({ body, attachments }) }),
       status: (id: string, status: "open" | "resolved") => request<{ ok: boolean }>(`/admin/api/commercial/feedback/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+      markRead: (id: string) => request<{ ok: boolean }>(`/admin/api/commercial/feedback/${id}/read`, { method: "POST" }),
     },
     users: {
       list: (params?: { limit?: number; offset?: number; q?: string; status?: string }) => {
@@ -1235,8 +1238,10 @@ export const api = {
 export const userApi = {
   feedback: {
     list: () => request<{ items: FeedbackThread[] }>("/user/api/feedback", {}, { auth: "user" }),
+    unread: () => request<{ count: number }>("/user/api/feedback/unread", {}, { auth: "user" }),
     create: (subject: string, body: string, attachments: FeedbackAttachment[]) => request<FeedbackThread>("/user/api/feedback", { method: "POST", body: JSON.stringify({ subject, body, attachments }) }, { auth: "user" }),
     reply: (id: string, body: string, attachments: FeedbackAttachment[]) => request<{ messages: FeedbackMessage[] }>(`/user/api/feedback/${id}/replies`, { method: "POST", body: JSON.stringify({ body, attachments }) }, { auth: "user" }),
+    markRead: (id: string) => request<{ ok: boolean }>(`/user/api/feedback/${id}/read`, { method: "POST" }, { auth: "user" }),
   },
   config: () =>
     request<{

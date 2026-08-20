@@ -3,10 +3,12 @@ import { db, reclaimSqliteSpace, type RequestLog } from "../db";
 import { nowIso } from "../utils/time";
 import {
   clearAllLogBodies,
+  discardLogBodies,
   persistLogBodies,
   persistLogBodiesFromText,
   pruneLogBodies,
   readLogBodies,
+  sweepStaleLogTempFiles,
 } from "./log-bodies";
 
 type LogInput = {
@@ -104,6 +106,7 @@ export function flushLogs(limit = 500) {
       if (logsSincePrune >= 500) {
         logsSincePrune = 0;
         pruneLogBodies(14);
+        sweepStaleLogTempFiles();
       }
     })();
     invalidateDashboardCache();
@@ -118,6 +121,8 @@ export function flushLogs(limit = 500) {
 const logTimer = setInterval(flushLogs, 200);
 logTimer.unref?.();
 process.once("beforeExit", () => flushLogs(Number.MAX_SAFE_INTEGER));
+// Clean up staging files leaked by earlier crashed/erroring processes.
+sweepStaleLogTempFiles();
 
 // L17: strip CR/LF (and other C0 controls) so a crafted path/model/error
 // cannot inject fake log lines into raw dumps or break line-oriented tools.
@@ -146,6 +151,14 @@ export function writeLog(input: LogInput) {
       output: input.output_text,
       reasoning: input.reasoning_text,
     }, createdAt);
+  } else if (input.status_code >= 400) {
+    // Failed requests don't persist bodies — delete the staged temp files
+    // instead of leaking them into the temp dir.
+    discardLogBodies({
+      input: input.input_file,
+      output: input.output_file,
+      reasoning: input.reasoning_file,
+    });
   }
   pendingLogs.push({
     ...input,

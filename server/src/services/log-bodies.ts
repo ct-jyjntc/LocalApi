@@ -93,17 +93,24 @@ export class DiskTextWriter {
   truncated = false;
   private fd: number | null = null;
   private closed = false;
+  /** Set when staging to disk failed (e.g. full tmpfs) — logging is skipped, never the request. */
+  private failed = false;
 
   constructor(kind: string) {
     this.tmpPath = path.join(
       os.tmpdir(),
       `localapi-log-${kind}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`,
     );
-    this.fd = fs.openSync(this.tmpPath, "w");
+    try {
+      this.fd = fs.openSync(this.tmpPath, "w");
+    } catch {
+      this.failed = true;
+      this.fd = null;
+    }
   }
 
   push(text: string | null | undefined) {
-    if (!text || this.closed || this.fd == null) return;
+    if (!text || this.closed || this.failed || this.fd == null) return;
     if (this.preview.length < LOG_PREVIEW_CHARS) {
       this.preview += text.slice(0, LOG_PREVIEW_CHARS - this.preview.length);
     }
@@ -115,16 +122,46 @@ export class DiskTextWriter {
     }
     const remain = LOG_BODY_MAX_BYTES - this.bytes;
     const chunk = buf.length > remain ? buf.subarray(0, remain) : buf;
-    fs.writeSync(this.fd, chunk);
+    try {
+      fs.writeSync(this.fd, chunk);
+    } catch {
+      // Disk/temp failures must never break the proxied request — drop the body.
+      this.abort();
+      return;
+    }
     this.bytes += chunk.length;
     if (buf.length > remain) this.truncated = true;
   }
 
+  private abort() {
+    this.failed = true;
+    if (this.fd != null) {
+      try {
+        fs.closeSync(this.fd);
+      } catch {
+        // ignore
+      }
+      this.fd = null;
+    }
+    this.closed = true;
+    try {
+      fs.unlinkSync(this.tmpPath);
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Returns the staged file path, or null when staging failed. */
   close() {
+    if (this.failed) return null;
     if (this.closed) return this.tmpPath;
     this.closed = true;
     if (this.fd != null) {
-      fs.closeSync(this.fd);
+      try {
+        fs.closeSync(this.fd);
+      } catch {
+        // ignore
+      }
       this.fd = null;
     }
     return this.tmpPath;
@@ -205,9 +242,49 @@ export function persistLogBodiesFromText(
     if (!text) continue;
     const writer = new DiskTextWriter(field);
     writer.push(text);
-    files[field] = writer.close();
+    const file = writer.close();
+    if (file) files[field] = file;
   }
   persistLogBodies(id, files, createdAt);
+}
+
+/** Delete staged temp body files (used for failed requests, whose bodies are not persisted). */
+export function discardLogBodies(files: { input?: string | null; output?: string | null; reasoning?: string | null }) {
+  for (const field of BODY_FIELDS) {
+    const file = files[field];
+    if (!file) continue;
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/** Remove orphaned localapi-log-* staging files in the temp dir (leaked by crashed/erroring requests). */
+export function sweepStaleLogTempFiles(maxAgeMs = 60 * 60 * 1000) {
+  let dir: string;
+  let entries: fs.Dirent[];
+  try {
+    dir = os.tmpdir();
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith("localapi-log-")) continue;
+    const file = path.join(dir, entry.name);
+    try {
+      if (fs.statSync(file).mtimeMs >= cutoff) continue;
+      fs.unlinkSync(file);
+      removed += 1;
+    } catch {
+      // ignore
+    }
+  }
+  return removed;
 }
 
 /** Read one loose body file, transparently handling raw and .zst variants. */

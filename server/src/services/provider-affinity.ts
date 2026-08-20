@@ -200,7 +200,9 @@ export function orderProvidersForConversation(
     : -1;
   const start = preferredIndex >= 0
     ? preferredIndex
-    : 0;
+    // No sticky channel yet: spread new conversations across channels instead
+    // of piling every cold start onto the first one.
+    : Math.floor(random() * providers.length) % providers.length;
   return providers.map((_, offset) => providers[(start + offset) % providers.length]);
 }
 

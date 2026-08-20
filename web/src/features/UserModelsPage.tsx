@@ -4,6 +4,7 @@ import { Layers, Search } from "lucide-react";
 import { userApi, type ModelPrice, type PriceWindow } from "@/lib/api";
 import { EmptyState, EntryIcon, PageHeader, SectionHeader } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { formatCredits } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
@@ -12,6 +13,7 @@ export function UserModelsPage() {
   const { locale } = useI18n();
   const zh = locale === "zh";
   const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<ModelPrice | null>(null);
   const me = useQuery({ queryKey: ["user", "me"], queryFn: userApi.me });
   const prices = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -52,7 +54,7 @@ export function UserModelsPage() {
             <SectionHeader title={group.title} hint={group.hint} />
             <div className="grid gap-x-6 gap-y-1 md:grid-cols-2">
               {group.items.map((price) => (
-                <ModelEntry key={price.model} price={price} zh={zh} />
+                <ModelEntry key={price.model} price={price} zh={zh} onSelect={() => setSelected(price)} />
               ))}
             </div>
           </div>
@@ -69,13 +71,70 @@ export function UserModelsPage() {
           ? "价格单位为账户额度 / 100 万 Token。实际费用按请求发起时的时段价计算；推理 Token 默认计入输出。时区 Asia/Shanghai。"
           : "Prices are account credits per 1M tokens. Charges use the window in effect when the request starts; reasoning tokens are included in output by default. Timezone Asia/Shanghai."}
       </p>
+
+      <Dialog open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelected(null); }}>
+        <DialogContent className="max-w-[480px]">
+          {selected ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="break-all font-mono text-sm">{selected.model}</DialogTitle>
+                <DialogDescription>
+                  {zh ? "每 100 万 Token 的额度价格与能力明细。" : "Credit prices per 1M tokens and capability details."}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {selected.reasoning_enabled ? <Badge variant="default">{zh ? "思考" : "Thinking"}</Badge> : null}
+                {selected.image_input ? <Badge variant="secondary">{zh ? "图片" : "Image"}</Badge> : null}
+                {selected.windows?.length ? <Badge variant="secondary">{zh ? `${selected.windows.length} 时段价` : `${selected.windows.length} windows`}</Badge> : null}
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 rounded-md bg-secondary/35 p-3 text-[11px]">
+                <DetailStat label={zh ? "输入" : "Input"} value={formatCredits(selected.input_price_micros)} />
+                <DetailStat label={zh ? "输出" : "Output"} value={formatCredits(selected.output_price_micros)} />
+                <DetailStat label={zh ? "缓存读取" : "Cache read"} value={formatCredits(selected.cache_read_price_micros)} />
+                <DetailStat label={zh ? "缓存写入" : "Cache write"} value={formatCredits(selected.cache_write_price_micros)} />
+                <DetailStat label={zh ? "上下文窗口" : "Context window"} value={selected.context_window ? formatContext(selected.context_window) : "-"} />
+                <DetailStat label={zh ? "最大输出" : "Max output"} value={selected.max_output_tokens ? formatContext(selected.max_output_tokens) : "-"} />
+                <DetailStat label={zh ? "思考强度" : "Thinking effort"} value={thinkingLabel(selected, zh)} />
+                <DetailStat label={zh ? "图片输入" : "Image input"} value={selected.image_input ? (zh ? "支持" : "Yes") : (zh ? "不支持" : "No")} />
+              </div>
+              {selected.windows?.length ? (
+                <div className="mt-3">
+                  <p className="text-xs font-medium">{zh ? "时段价" : "Time windows"}</p>
+                  <div className="mt-1.5 flex flex-col divide-y divide-border/40 rounded-md border border-border/60 text-[11px]">
+                    {selected.windows.map((window, index) => (
+                      <div key={index} className="flex items-center justify-between gap-2 px-3 py-2">
+                        <span className="shrink-0 font-mono tabular-nums">
+                          {formatWindow(window, zh)}
+                          {selected.active_window_index === index ? (
+                            <span className="ml-1.5 text-foreground">{zh ? "· 当前" : "· now"}</span>
+                          ) : null}
+                        </span>
+                        <span className="min-w-0 text-right font-mono tabular-nums text-muted-foreground">
+                          {`${formatCredits(window.input_price_micros)} / ${formatCredits(window.output_price_micros)} / ${zh ? "读" : "R"} ${formatCredits(window.cache_read_price_micros)} / ${zh ? "写" : "W"} ${formatCredits(window.cache_write_price_micros)}`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    {zh ? "时段价格式：输入 / 输出 / 缓存读 / 缓存写。" : "Window price format: input / output / cache read / cache write."}
+                  </p>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ModelEntry({ price, zh }: { price: ModelPrice; zh: boolean }) {
+function DetailStat({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><p className="text-muted-foreground">{label}</p><p className="mt-1 break-all font-mono tabular-nums text-foreground">{value}</p></div>;
+}
+
+function ModelEntry({ price, zh, onSelect }: { price: ModelPrice; zh: boolean; onSelect: () => void }) {
   return (
-    <div className="flex items-start gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-secondary/40" title={scheduleTitle(price, zh)}>
+    <button type="button" onClick={onSelect} className="flex items-start gap-3 rounded-lg px-2 py-2.5 text-left transition-colors hover:bg-secondary/40" title={scheduleTitle(price, zh)}>
       <EntryIcon icon={Layers} />
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -85,7 +144,7 @@ function ModelEntry({ price, zh }: { price: ModelPrice; zh: boolean }) {
         </div>
         <p className="mt-1 truncate text-[11px] text-muted-foreground">{modelSummary(price, zh)}</p>
       </div>
-    </div>
+    </button>
   );
 }
 

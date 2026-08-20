@@ -29,7 +29,7 @@ import {
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { userApi } from "@/lib/api";
+import { userApi, api } from "@/lib/api";
 import { AnnouncementHost } from "@/components/AnnouncementHost";
 import { useI18n, type Locale, type MessageKey } from "@/lib/i18n";
 import { useBrand } from "@/lib/branding";
@@ -101,7 +101,7 @@ const USER_NAV: NavGroup[] = [
     label: { zh: "控制台", en: "Console" },
     items: [
       { to: "/", label: { zh: "概览", en: "Overview" }, icon: LayoutDashboard, end: true },
-      { to: "/checkin", label: { zh: "每日签到", en: "Check-in" }, icon: CalendarCheck2 },
+      { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
     ],
   },
   {
@@ -136,7 +136,7 @@ const USER_NAV: NavGroup[] = [
     label: { zh: "账户", en: "Account" },
     items: [
       { to: "/settings", label: { zh: "个人设置", en: "Settings" }, icon: Settings },
-      { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
+      { to: "/checkin", label: { zh: "每日签到", en: "Check-in" }, icon: CalendarCheck2 },
       { to: "/feedback", label: { zh: "我的反馈", en: "My feedback" }, icon: MessageSquareText },
     ],
   },
@@ -163,6 +163,32 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
     enabled: mode === "user",
   });
   const checkinEnabled = userConfig.data?.checkin_enabled !== false;
+  // Badge counts: admin sees unread user replies on "用户" pill; user sees unread admin replies on "我的反馈".
+  const adminFeedbackUnread = useQuery({
+    queryKey: ["admin", "feedback", "unread"],
+    queryFn: api.commercial.feedback.unread,
+    refetchInterval: 15_000,
+    enabled: mode === "admin",
+  });
+  const userFeedbackUnread = useQuery({
+    queryKey: ["user", "feedback", "unread"],
+    queryFn: userApi.feedback.unread,
+    refetchInterval: 15_000,
+    enabled: mode === "user",
+  });
+  const badgeCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (mode === "admin" && adminFeedbackUnread.data?.count) {
+      map["users"] = adminFeedbackUnread.data.count;
+    }
+    if (mode === "user" && userFeedbackUnread.data?.count) {
+      // Badge the sidebar item AND the always-visible top "账户" pill —
+      // otherwise a user browsing 控制台 never notices the admin replied.
+      map["/feedback"] = userFeedbackUnread.data.count;
+      map["account"] = userFeedbackUnread.data.count;
+    }
+    return map;
+  }, [mode, adminFeedbackUnread.data, userFeedbackUnread.data]);
   const groups = useMemo(() => {
     const source = mode === "admin" ? ADMIN_NAV : USER_NAV;
     return source
@@ -250,13 +276,18 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
                 to={group.items[0].to}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex h-8 items-center rounded-full px-3.5 text-sm transition-colors",
+                  "flex h-8 items-center gap-1.5 rounded-full px-3.5 text-sm transition-colors",
                   active
                     ? "bg-background font-medium text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {group.label[locale]}
+                {badgeCounts[group.key] ? (
+                  <span className="flex size-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[10px] font-medium text-background">
+                    {badgeCounts[group.key] > 99 ? "99+" : badgeCounts[group.key]}
+                  </span>
+                ) : null}
               </Link>
             );
           })}
@@ -281,7 +312,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
             {!collapsed && activeGroup ? (
               <p className="px-[22px] pb-2 text-[11px] text-muted-foreground">{activeGroup.label[locale]}</p>
             ) : null}
-            <SidebarNav items={activeGroup?.items || []} collapsed={collapsed} flushRight onNavigate={() => undefined} t={t} locale={locale} />
+            <SidebarNav items={activeGroup?.items || []} collapsed={collapsed} flushRight onNavigate={() => undefined} t={t} locale={locale} badgeCounts={badgeCounts} />
           </aside>
         ) : null}
 
@@ -334,7 +365,7 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
               {groups.map((group) => (
                 <div key={group.key} className="mb-4 last:mb-0">
                   <p className="px-2.5 pb-1.5 text-[11px] text-muted-foreground">{group.label[locale]}</p>
-                  <SidebarNav items={group.items} onNavigate={() => setMobileOpen(false)} t={t} locale={locale} />
+                  <SidebarNav items={group.items} onNavigate={() => setMobileOpen(false)} t={t} locale={locale} badgeCounts={badgeCounts} />
                 </div>
               ))}
             </nav>
@@ -396,6 +427,7 @@ function SidebarNav({
   items,
   collapsed = false,
   flushRight = false,
+  badgeCounts,
 }: {
   onNavigate: () => void;
   t: (key: MessageKey) => string;
@@ -406,11 +438,12 @@ function SidebarNav({
       equals the panel's outer margin. Collapsed rail stays symmetric to keep
       icons centered. */
   flushRight?: boolean;
+  badgeCounts?: Record<string, number>;
 }) {
   return (
     <div className={cn("flex flex-col gap-0.5", collapsed || flushRight ? "pl-3 pr-0" : "px-3")}>
       {items.map((item) => (
-        <NavItemLink key={item.to} item={item} collapsed={collapsed} onNavigate={onNavigate} t={t} locale={locale} />
+        <NavItemLink key={item.to} item={item} collapsed={collapsed} onNavigate={onNavigate} t={t} locale={locale} badgeCount={badgeCounts?.[item.to] ?? 0} />
       ))}
     </div>
   );
@@ -422,12 +455,14 @@ function NavItemLink({
   onNavigate,
   t,
   locale,
+  badgeCount = 0,
 }: {
   item: NavItem;
   collapsed?: boolean;
   onNavigate: () => void;
   t: (key: MessageKey) => string;
   locale: Locale;
+  badgeCount?: number;
 }) {
   const label = item.labelKey ? t(item.labelKey) : item.label?.[locale] || item.to;
   return (
@@ -453,6 +488,14 @@ function NavItemLink({
             fillOpacity={isActive ? 0.14 : 0}
           />
           {!collapsed ? <span className="truncate">{label}</span> : null}
+          {!collapsed && badgeCount > 0 ? (
+            <span className="ml-auto flex size-4 min-w-4 items-center justify-center rounded-full bg-foreground px-1 text-[10px] font-medium text-background">
+              {badgeCount > 99 ? "99+" : badgeCount}
+            </span>
+          ) : null}
+          {collapsed && badgeCount > 0 ? (
+            <span className="absolute right-1 top-0.5 size-2 rounded-full bg-foreground" />
+          ) : null}
         </>
       )}
     </NavLink>

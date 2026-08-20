@@ -87,7 +87,9 @@ test("security and billing regressions remain fixed", async () => {
     });
     settleUsage(reservation, { statusCode: 200, promptTokens: 100, completionTokens: 100, totalTokens: 200 });
     assert.equal(getWallet(payer.id)?.balance_micros, 0);
-    assert.equal((db.prepare("SELECT status FROM users WHERE id = ?").get(payer.id) as { status: string }).status, "suspended");
+    // Overrun settles floor the wallet at 0 — accounts are NOT auto-suspended
+    // for hitting zero; suspension is a risk-radar/admin action only.
+    assert.equal((db.prepare("SELECT status FROM users WHERE id = ?").get(payer.id) as { status: string }).status, "active");
 
     const body = { model: "priced", messages: [{ role: "user", content: "hello" }], max_tokens: 10 };
     assert.deepEqual(estimateRequestTokens(body, 1), estimateRequestTokens(body, 100_000));

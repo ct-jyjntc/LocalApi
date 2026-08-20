@@ -485,7 +485,7 @@ export function createResponseLogCollector(params: {
       finish: () => {
         const file = writer.close();
         let extracted = extractFromResponse(null);
-        if (textual && writer.bytes > 0) {
+        if (textual && file && writer.bytes > 0) {
           try {
             extracted = extractFromResponse(fs.readFileSync(file, "utf8"));
           } catch {

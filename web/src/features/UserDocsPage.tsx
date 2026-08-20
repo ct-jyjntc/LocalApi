@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { TABLE_HEAD_CLASS, TABLE_ROW_CLASS } from "@/components/shared";
@@ -6,9 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
-
-const WALLET_BASE_URL = "https://api.rainflowtb.com/v1";
-const CODING_BASE_URL = "https://api.rainflowtb.com/coding/v1";
+import { useBrand } from "@/lib/branding";
 
 type SectionId = "quickstart" | "auth" | "protocols" | "examples" | "errors" | "key-limits";
 
@@ -47,7 +45,7 @@ const DOC_TREE: DocGroup[] = [
 
 const SECTION_IDS: SectionId[] = DOC_TREE.flatMap((group) => group.items.map((item) => item.id));
 
-const CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/chat/completions \\
+const buildCurlExample = (walletBase: string) => `curl ${walletBase}/chat/completions \\
   -H "Authorization: Bearer sk-your-api-key" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -55,10 +53,10 @@ const CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/chat/completions \\
     "messages": [{ "role": "user", "content": "Hello" }]
   }'`;
 
-const PYTHON_EXAMPLE = `import requests
+const buildPythonExample = (walletBase: string) => `import requests
 
 resp = requests.post(
-    "${WALLET_BASE_URL}/chat/completions",
+    "${walletBase}/chat/completions",
     headers={"Authorization": "Bearer sk-your-api-key"},
     json={
         "model": "glm-5.3",
@@ -67,7 +65,7 @@ resp = requests.post(
 )
 print(resp.json())`;
 
-const JS_EXAMPLE = `const resp = await fetch("${WALLET_BASE_URL}/chat/completions", {
+const buildJsExample = (walletBase: string) => `const resp = await fetch("${walletBase}/chat/completions", {
   method: "POST",
   headers: {
     "Authorization": "Bearer sk-your-api-key",
@@ -80,10 +78,10 @@ const JS_EXAMPLE = `const resp = await fetch("${WALLET_BASE_URL}/chat/completion
 });
 console.log(await resp.json());`;
 
-const OPENAI_SDK_EXAMPLE = `from openai import OpenAI
+const buildOpenaiSdkExample = (walletBase: string) => `from openai import OpenAI
 
 client = OpenAI(
-    base_url="${WALLET_BASE_URL}",
+    base_url="${walletBase}",
     api_key="sk-your-api-key",
 )
 
@@ -93,7 +91,7 @@ resp = client.chat.completions.create(
 )
 print(resp)`;
 
-const ANTHROPIC_CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/messages \\
+const buildAnthropicCurlExample = (walletBase: string) => `curl ${walletBase}/messages \\
   -H "x-api-key: sk-your-api-key" \\
   -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
@@ -103,7 +101,7 @@ const ANTHROPIC_CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/messages \\
     "messages": [{ "role": "user", "content": "Hello" }]
   }'`;
 
-const RESPONSES_CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/responses \\
+const buildResponsesCurlExample = (walletBase: string) => `curl ${walletBase}/responses \\
   -H "Authorization: Bearer sk-your-api-key" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -112,26 +110,41 @@ const RESPONSES_CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/responses \\
     "reasoning": { "effort": "high" }
   }'`;
 
-const CLAUDE_CODE_EXAMPLE = `# Claude Code（Anthropic 协议）
-export ANTHROPIC_BASE_URL=https://api.rainflowtb.com
+const buildClaudeCodeExample = (siteBase: string) => `# Claude Code（Anthropic 协议）
+export ANTHROPIC_BASE_URL=${siteBase}
 export ANTHROPIC_AUTH_TOKEN=sk-your-api-key
 
 # Coding 套餐改用：
-# export ANTHROPIC_BASE_URL=https://api.rainflowtb.com/coding`;
-
-const CODE_TABS = [
-  { key: "curl", label: "cURL", code: CURL_EXAMPLE },
-  { key: "python", label: "Python", code: PYTHON_EXAMPLE },
-  { key: "js", label: "JavaScript", code: JS_EXAMPLE },
-  { key: "openai", label: "OpenAI SDK", code: OPENAI_SDK_EXAMPLE },
-] as const;
+# export ANTHROPIC_BASE_URL=${siteBase}/coding`;
 
 export function UserDocsPage() {
   const { locale } = useI18n();
+  const { branding } = useBrand();
   const zh = locale === "zh";
   const [activeId, setActiveId] = useState<SectionId>("quickstart");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(DOC_TREE.map((group) => [group.key, true])),
+  );
+
+  const siteBase = useMemo(() => {
+    const configured = (branding.data?.public_base_url || "").trim().replace(/\/+$/, "");
+    if (configured) return configured;
+    return typeof window === "undefined" ? "" : window.location.origin;
+  }, [branding.data?.public_base_url]);
+  const walletBase = `${siteBase}/v1`;
+  const codingBase = `${siteBase}/coding/v1`;
+
+  const anthropicCurlExample = useMemo(() => buildAnthropicCurlExample(walletBase), [walletBase]);
+  const responsesCurlExample = useMemo(() => buildResponsesCurlExample(walletBase), [walletBase]);
+  const claudeCodeExample = useMemo(() => buildClaudeCodeExample(siteBase), [siteBase]);
+  const codeTabs = useMemo(
+    () => [
+      { key: "curl", label: "cURL", code: buildCurlExample(walletBase) },
+      { key: "python", label: "Python", code: buildPythonExample(walletBase) },
+      { key: "js", label: "JavaScript", code: buildJsExample(walletBase) },
+      { key: "openai", label: "OpenAI SDK", code: buildOpenaiSdkExample(walletBase) },
+    ],
+    [walletBase],
   );
 
   useEffect(() => {
@@ -274,8 +287,8 @@ export function UserDocsPage() {
             </p>
             <div className="mt-3 overflow-hidden rounded-md border border-border/60">
               <div className={TABLE_HEAD_CLASS}><span className="min-w-0 flex-1">Base URL</span><span className="w-40 shrink-0">{zh ? "计费方式" : "Billing"}</span></div>
-              <div className={TABLE_ROW_CLASS}><code className="min-w-0 flex-1 truncate font-mono text-[11px]">{WALLET_BASE_URL}</code><span className="w-40 shrink-0 text-muted-foreground">{zh ? "钱包 / 余额" : "Wallet balance"}</span></div>
-              <div className={TABLE_ROW_CLASS}><code className="min-w-0 flex-1 truncate font-mono text-[11px]">{CODING_BASE_URL}</code><span className="w-40 shrink-0 text-muted-foreground">{zh ? "Coding 套餐" : "Coding plan"}</span></div>
+              <div className={TABLE_ROW_CLASS}><code className="min-w-0 flex-1 truncate font-mono text-[11px]">{walletBase}</code><span className="w-40 shrink-0 text-muted-foreground">{zh ? "钱包 / 余额" : "Wallet balance"}</span></div>
+              <div className={TABLE_ROW_CLASS}><code className="min-w-0 flex-1 truncate font-mono text-[11px]">{codingBase}</code><span className="w-40 shrink-0 text-muted-foreground">{zh ? "Coding 套餐" : "Coding plan"}</span></div>
             </div>
             <p className="mt-3 text-[11px] text-muted-foreground">
               {zh
@@ -339,11 +352,11 @@ export function UserDocsPage() {
             </div>
             <div className="px-4 py-4 sm:px-5">
               <p className="text-xs font-medium text-foreground">{zh ? "Anthropic 协议示例" : "Anthropic example"}</p>
-              <div className="mt-2"><CodeBlock tabs={[{ key: "anthropic", label: "cURL", code: ANTHROPIC_CURL_EXAMPLE }]} onCopy={copy} zh={zh} /></div>
+              <div className="mt-2"><CodeBlock tabs={[{ key: "anthropic", label: "cURL", code: anthropicCurlExample }]} onCopy={copy} zh={zh} /></div>
               <p className="mt-3 text-xs font-medium text-foreground">{zh ? "Responses 协议示例" : "Responses example"}</p>
-              <div className="mt-2"><CodeBlock tabs={[{ key: "responses", label: "cURL", code: RESPONSES_CURL_EXAMPLE }]} onCopy={copy} zh={zh} /></div>
+              <div className="mt-2"><CodeBlock tabs={[{ key: "responses", label: "cURL", code: responsesCurlExample }]} onCopy={copy} zh={zh} /></div>
               <p className="mt-3 text-xs font-medium text-foreground">Claude Code</p>
-              <div className="mt-2"><CodeBlock tabs={[{ key: "claude", label: "shell", code: CLAUDE_CODE_EXAMPLE }]} onCopy={copy} zh={zh} /></div>
+              <div className="mt-2"><CodeBlock tabs={[{ key: "claude", label: "shell", code: claudeCodeExample }]} onCopy={copy} zh={zh} /></div>
               <p className="mt-3 text-[11px] text-muted-foreground">
                 {zh
                   ? "模型支持的思考档位见 GET /models 返回的 reasoning.effort；传入不支持的档位会返回 400（effort_not_supported）。"
@@ -364,7 +377,7 @@ export function UserDocsPage() {
               </p>
             </div>
             <div className="px-4 pb-4 sm:px-5 sm:pb-5">
-              <CodeBlock tabs={CODE_TABS} onCopy={copy} zh={zh} />
+              <CodeBlock tabs={codeTabs} onCopy={copy} zh={zh} />
             </div>
           </Card>
         </section>

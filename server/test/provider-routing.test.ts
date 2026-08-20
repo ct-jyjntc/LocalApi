@@ -159,8 +159,10 @@ test("provider retries fail over while the same conversation keeps its healthy c
       body: JSON.stringify(firstBody),
     });
     assert.equal(firstResponse.status, 200);
-    assert.match(firstResponse.headers.get("x-provider") || "", new RegExp(`^${healthy.id}:`));
-    assert.equal(firstResponse.headers.get("x-retry-attempts"), "2");
+    // Failover proof via upstream counters (the x-provider/x-retry-attempts
+    // headers are deliberately stripped from client responses — they leak
+    // relay internals). Affinity pinned the first attempt to the failing
+    // channel; the 200 means the retry was served by the healthy one.
     assert.equal(failingRequests, 1);
     assert.equal(healthyRequests, 1);
 
@@ -170,7 +172,7 @@ test("provider retries fail over while the same conversation keeps its healthy c
       body: JSON.stringify(continuedBody),
     });
     assert.equal(secondResponse.status, 200);
-    assert.match(secondResponse.headers.get("x-provider") || "", new RegExp(`^${healthy.id}:`));
+    // Same conversation sticks to its healthy channel: no new failing hit.
     assert.equal(failingRequests, 1);
     assert.equal(healthyRequests, 2);
 
@@ -188,14 +190,15 @@ test("provider retries fail over while the same conversation keeps its healthy c
     const timeoutBody = { model: "timeout-model", messages: [{ role: "user", content: "hello" }] };
     const timeoutAffinity = buildProviderAffinityKey({ model: timeoutBody.model, body: timeoutBody, headers: {}, apiKeyId: "test-key", billingMode: "wallet" });
     rememberProviderAffinity(timeoutAffinity, stalling.id);
+    const healthyBefore = healthyRequests;
     const timeoutResponse = await fetch(`http://127.0.0.1:${relayPort}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(timeoutBody),
     });
     assert.equal(timeoutResponse.status, 200);
-    assert.match(timeoutResponse.headers.get("x-provider") || "", new RegExp(`^${timeoutHealthy.id}:`));
-    assert.equal(timeoutResponse.headers.get("x-retry-attempts"), "2");
+    // Stalling channel hit once, then the retry landed on the healthy channel.
+    assert.equal(healthyRequests, healthyBefore + 1);
     assert.equal(stallingRequests, 1);
 
     setSetting("max_retries", "2");
