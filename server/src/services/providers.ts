@@ -3,6 +3,8 @@ import { db, Provider } from "../db";
 import { nowIso } from "../utils/time";
 import { encryptSecret, tryDecryptSecret } from "../utils/secrets";
 import { getProxyLibrary, getProxyNode, listProxyNodesByLibrary } from "./proxies";
+import { REASONING_EFFORT_LEVELS } from "../utils/openai-compat";
+import { PROTOCOL_IDS, ProtocolId } from "../protocol/ir";
 /** Parse stored provider key field into a list of non-empty keys. */
 export function parseProviderKeys(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -38,14 +40,95 @@ export function serializeProviderKeys(keys: string[]): string {
   return encryptSecret(serialized);
 }
 
+export type ModelEffortMap = Record<string, Record<string, string>>;
+
+function safeParseModelEfforts(raw: string | null | undefined): ModelEffortMap {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: ModelEffortMap = {};
+    for (const [model, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const mapping: Record<string, string> = {};
+      for (const [pub, up] of Object.entries(value as Record<string, unknown>)) {
+        const from = pub.trim().toLowerCase();
+        const to = String(up).trim();
+        if (from && to) mapping[from] = to;
+      }
+      if (Object.keys(mapping).length > 0) out[model.trim()] = mapping;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Validate a per-model effort mapping: { publicModel: { publicEffort: upstreamEffort } }.
+ * Both sides accept any non-empty name — new upstream levels shouldn't require
+ * a relay release; REASONING_EFFORT_LEVELS only orders known levels when the
+ * union is advertised via /v1/models. Models not served by the provider are
+ * dropped.
+ */
+export function normalizeModelEfforts(
+  input: Record<string, Record<string, string>> | null | undefined,
+  models: string[],
+): ModelEffortMap {
+  const out: ModelEffortMap = {};
+  if (!input) return out;
+  const served = new Set(models.map((m) => m.trim()));
+  for (const [modelRaw, mappingRaw] of Object.entries(input)) {
+    const model = modelRaw.trim();
+    if (!served.has(model)) continue;
+    const mapping: Record<string, string> = {};
+    for (const [pubRaw, upRaw] of Object.entries(mappingRaw ?? {})) {
+      const pub = pubRaw.trim().toLowerCase();
+      const up = String(upRaw).trim();
+      if (!pub || !up) continue;
+      mapping[pub] = up;
+    }
+    if (Object.keys(mapping).length > 0) out[model] = mapping;
+  }
+  return out;
+}
+
 /** Round-robin pick for multi-key providers. */
 const keyCursor = new Map<string, number>();
 const proxyCursor = new Map<string, number>();
 let providerCache: Provider[] | null = null;
 const providerRuntime = new Map<
   string,
-  { keys: string[]; models: string[]; mappings: Record<string, string>; proxyIds: string[] }
+  { keys: string[]; models: string[]; mappings: Record<string, string>; proxyIds: string[]; efforts: ModelEffortMap; protocols: ProtocolId[] }
 >();
+
+/**
+ * Dialects a channel speaks natively. Unknown entries are dropped; an empty
+ * result falls back to ["openai-completions"] — every channel proxied before
+ * this feature was necessarily chat-completions capable.
+ */
+export function normalizeProtocols(input: unknown): ProtocolId[] {
+  const list = Array.isArray(input) ? input : [];
+  const seen = new Set<ProtocolId>();
+  const out: ProtocolId[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    if (!(PROTOCOL_IDS as readonly string[]).includes(item)) continue;
+    if (seen.has(item as ProtocolId)) continue;
+    seen.add(item as ProtocolId);
+    out.push(item as ProtocolId);
+  }
+  return out.length ? out : ["openai-completions"];
+}
+
+function safeParseProtocols(raw: string | null | undefined): ProtocolId[] {
+  if (!raw) return ["openai-completions"];
+  try {
+    return normalizeProtocols(JSON.parse(raw));
+  } catch {
+    return ["openai-completions"];
+  }
+}
 
 function rebuildProviderRuntime(rows: Provider[]) {
   providerRuntime.clear();
@@ -55,6 +138,8 @@ function rebuildProviderRuntime(rows: Provider[]) {
       models: safeParseModels(row.models),
       mappings: safeParseMappings(row.model_mappings),
       proxyIds: safeParseProxyIds(row.proxy_ids),
+      efforts: safeParseModelEfforts(row.model_efforts),
+      protocols: safeParseProtocols(row.protocols),
     });
   }
 }
@@ -187,10 +272,12 @@ export function createProvider(input: {
   api_keys?: string[];
   models?: string[];
   model_mappings?: Record<string, string>;
+  model_efforts?: Record<string, Record<string, string>>;
   proxy_ids?: string[];
   enabled?: boolean;
   timeout_ms?: number;
   custom_headers?: Record<string, string>;
+  protocols?: string[];
 }): Provider {
   const now = nowIso();
   const id = uuid();
@@ -200,11 +287,13 @@ export function createProvider(input: {
       : serializeProviderKeys(parseProviderKeys(input.api_key ?? ""));
   const models = normalizeModels(input.models ?? []);
   const mappings = normalizeMappings(input.model_mappings ?? {}, models);
+  const efforts = normalizeModelEfforts(input.model_efforts ?? {}, models);
   const proxyIds = normalizeProxyIds(input.proxy_ids ?? []);
+  const protocols = normalizeProtocols(input.protocols ?? ["openai-completions"]);
   db.prepare(
     `INSERT INTO providers (
-      id, name, base_url, api_key, models, model_mappings, proxy_ids, enabled, timeout_ms, sort_order, custom_headers, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, name, base_url, api_key, models, model_mappings, model_efforts, proxy_ids, enabled, timeout_ms, sort_order, custom_headers, protocols, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name,
@@ -212,11 +301,13 @@ export function createProvider(input: {
     keys,
     JSON.stringify(models),
     JSON.stringify(mappings),
+    JSON.stringify(efforts),
     JSON.stringify(proxyIds),
     input.enabled === false ? 0 : 1,
     input.timeout_ms ?? 60000,
     nextSortOrder(),
     JSON.stringify(sanitizeCustomHeaders(input.custom_headers)),
+    JSON.stringify(protocols),
     now,
     now,
   );
@@ -237,6 +328,8 @@ export function updateProvider(
     enabled?: boolean;
     timeout_ms?: number;
     custom_headers?: Record<string, string>;
+    model_efforts?: Record<string, Record<string, string>>;
+    protocols?: string[];
   }>,
 ): Provider | null {
   const existing = getProvider(id);
@@ -278,15 +371,28 @@ export function updateProvider(
         : 0
       : existing.enabled;
   const timeout_ms = input.timeout_ms ?? existing.timeout_ms;
+  const efforts =
+    input.model_efforts !== undefined || input.models !== undefined
+      ? normalizeModelEfforts(
+          input.model_efforts !== undefined
+            ? input.model_efforts
+            : safeParseModelEfforts(existing.model_efforts),
+          models,
+        )
+      : safeParseModelEfforts(existing.model_efforts);
   const customHeaders =
     input.custom_headers !== undefined
       ? sanitizeCustomHeaders(input.custom_headers)
       : safeParseCustomHeaders(existing.custom_headers);
+  const protocols =
+    input.protocols !== undefined
+      ? normalizeProtocols(input.protocols)
+      : safeParseProtocols(existing.protocols);
 
   db.prepare(
     `UPDATE providers SET
-      name = ?, base_url = ?, api_key = ?, models = ?, model_mappings = ?, proxy_ids = ?,
-      enabled = ?, timeout_ms = ?, custom_headers = ?, updated_at = ?
+      name = ?, base_url = ?, api_key = ?, models = ?, model_mappings = ?, model_efforts = ?, proxy_ids = ?,
+      enabled = ?, timeout_ms = ?, custom_headers = ?, protocols = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     name,
@@ -294,10 +400,12 @@ export function updateProvider(
     api_key,
     JSON.stringify(models),
     JSON.stringify(mappings),
+    JSON.stringify(efforts),
     JSON.stringify(proxyIds),
     enabled,
     timeout_ms,
     JSON.stringify(customHeaders),
+    JSON.stringify(protocols),
     nowIso(),
     id,
   );
@@ -337,6 +445,8 @@ export function sanitizeProvider(p: Provider) {
   const model_mappings = runtime?.mappings ?? safeParseMappings(p.model_mappings);
   const proxy_ids = runtime?.proxyIds ?? safeParseProxyIds(p.proxy_ids);
   const custom_headers = safeParseCustomHeaders(p.custom_headers);
+  const model_efforts = runtime?.efforts ?? safeParseModelEfforts(p.model_efforts);
+  const protocols = runtime?.protocols ?? safeParseProtocols(p.protocols);
   return {
     id: p.id,
     name: p.name,
@@ -347,6 +457,8 @@ export function sanitizeProvider(p: Provider) {
     has_api_key: keys.length > 0,
     models,
     model_mappings,
+    model_efforts,
+    protocols,
     proxy_ids,
     enabled: p.enabled === 1,
     timeout_ms: p.timeout_ms,
@@ -365,6 +477,71 @@ export function mapProviderModel(provider: Provider, publicModel: string): strin
     providerRuntime.get(provider.id)?.mappings ?? safeParseMappings(provider.model_mappings);
   const mapped = mappings[model]?.trim();
   return mapped || model;
+}
+
+/** Dialects this channel speaks natively (never empty). */
+export function providerProtocols(provider: Provider): ProtocolId[] {
+  return providerRuntime.get(provider.id)?.protocols ?? safeParseProtocols(provider.protocols);
+}
+
+export function providerSupportsProtocol(provider: Provider, protocol: ProtocolId): boolean {
+  return providerProtocols(provider).includes(protocol);
+}
+
+/**
+ * The dialect to use when talking to this provider: the client's own dialect
+ * when the channel speaks it natively, otherwise the channel's first
+ * (preferred) dialect and the request/response get translated.
+ */
+export function pickProviderProtocol(provider: Provider, clientProtocol: ProtocolId): ProtocolId {
+  const protocols = providerProtocols(provider);
+  return protocols.includes(clientProtocol) ? clientProtocol : protocols[0];
+}
+
+/**
+ * Translate a client-requested reasoning effort into this provider's upstream
+ * spelling for the given public model. Returns the mapped value, the value
+ * itself when the provider has no effort config for the model (accepts
+ * everything, passthrough), or null when the provider has a config for the
+ * model that does not cover the requested effort — such providers are skipped
+ * during routing so the request falls through to one that does support it.
+ */
+export function mapProviderEffort(
+  provider: Provider,
+  publicModel: string,
+  effort: string,
+): string | null {
+  const efforts =
+    providerRuntime.get(provider.id)?.efforts ?? safeParseModelEfforts(provider.model_efforts);
+  const mapping = efforts[publicModel.trim()];
+  if (!mapping) return effort;
+  return mapping[effort.trim().toLowerCase()] ?? null;
+}
+
+/**
+ * Union of the public effort levels all enabled providers accept for a model,
+ * in canonical order. Falls back to the legacy per-model price config when no
+ * provider declares an effort mapping for it.
+ */
+export function supportedEffortsForModel(model: string, legacyFallback: string[] = []): string[] {
+  ensureProviderCache();
+  const target = model.trim();
+  const found = new Set<string>();
+  let anyConfigured = false;
+  for (const provider of providerCache ?? []) {
+    if (provider.enabled !== 1) continue;
+    const models = providerRuntime.get(provider.id)?.models ?? safeParseModels(provider.models);
+    if (!models.includes(target) && !models.includes("*")) continue;
+    const efforts = providerRuntime.get(provider.id)?.efforts ?? safeParseModelEfforts(provider.model_efforts);
+    const mapping = efforts[target];
+    if (!mapping) continue;
+    anyConfigured = true;
+    for (const key of Object.keys(mapping)) found.add(key);
+  }
+  if (!anyConfigured) return legacyFallback;
+  const ordered = REASONING_EFFORT_LEVELS.filter((level) => found.has(level));
+  const extras = [...found].filter((level) => !(REASONING_EFFORT_LEVELS as readonly string[]).includes(level)).sort();
+  return [...ordered, ...extras];
 }
 
 /**

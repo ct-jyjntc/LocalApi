@@ -24,7 +24,7 @@ import {
   listApiKeysPage,
   updateApiKey,
 } from "../services/keys";
-import { clearLogs, getDashboardStats, getLog, listLogsFiltered } from "../services/logs";
+import { clearLogs, clearErrorLogs, getDashboardStats, getLog, listLogsFiltered } from "../services/logs";
 import {
   createProvider,
   deleteProvider,
@@ -112,6 +112,17 @@ const providerSchema = z.object({
   proxy_ids: proxyIdsSchema,
   enabled: z.boolean().optional(),
   timeout_ms: z.coerce.number().int().min(100).max(600_000).optional(),
+  model_efforts: z
+    .record(
+      z.string().trim().min(1).max(200),
+      z.record(z.string().trim().min(1).max(40), z.string().trim().min(1).max(40)),
+    )
+    .optional(),
+  protocols: z
+    .array(z.enum(["openai-completions", "openai-responses", "anthropic-messages"]))
+    .min(1)
+    .max(3)
+    .optional(),
 });
 const providerPatchSchema = providerSchema.partial();
 const providerTestSchema = z.object({
@@ -478,6 +489,9 @@ adminRouter.get("/logs/:id", (req, res) => {
 
 adminRouter.delete("/logs", (_req, res) => {
   res.json({ ok: true, removed: clearLogs() });
+});
+adminRouter.delete("/logs/errors", (_req, res) => {
+  res.json({ ok: true, removed: clearErrorLogs() });
 });
 
 function serializeSettings() {

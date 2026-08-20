@@ -1,9 +1,13 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
+import multer from "multer";
 import { db, getSetting, type User } from "../db";
 import { nowIso } from "../utils/time";
+import { AVATAR_MAX_BYTES, saveUserAvatar, readUserAvatar, clearUserAvatar, getUserAvatarUrl } from "../services/avatars";
+import { BrandIconError } from "../services/branding";
 import { requireUser } from "../middleware/auth";
 import { createApiKey, deleteApiKey, listApiKeysPage, updateApiKey } from "../services/keys";
+import { supportedEffortsForModel } from "../services/providers";
 import {
   PlanTransactionError,
   getActiveSubscription,
@@ -234,15 +238,52 @@ userRouter.post("/logout", (req, res) => {
   return res.json({ ok: true });
 });
 
+// Avatar routes
+const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: AVATAR_MAX_BYTES } });
+
+userRouter.get("/avatar", (req, res) => {
+  const user = requestUser(req);
+  const avatar = readUserAvatar(user.id);
+  if (!avatar) return res.status(404).json({ error: "No avatar" });
+  res.setHeader("content-type", avatar.mime);
+  res.setHeader("cache-control", "public, max-age=3600");
+  return res.send(avatar.buffer);
+});
+
+userRouter.post("/avatar", avatarUpload.single("file"), (req, res) => {
+  const user = requestUser(req);
+  if (!req.file?.buffer?.length) return res.status(400).json({ error: "Image file is required" });
+  try {
+    const url = saveUserAvatar(user.id, req.file.buffer);
+    return res.json({ ok: true, avatar_url: url });
+  } catch (error) {
+    if (error instanceof BrandIconError) return res.status(error.status).json({ error: error.message });
+    return res.status(500).json({ error: "Unable to save avatar" });
+  }
+});
+
+userRouter.delete("/avatar", (req, res) => {
+  const user = requestUser(req);
+  clearUserAvatar(user.id);
+  return res.json({ ok: true });
+});
+
 userRouter.get("/me", (req, res) => {
   const user = requestUser(req);
   return res.json({
-    user: publicUser(user),
+    user: { ...publicUser(user), avatar_url: getUserAvatarUrl(user.id) },
     wallet: getPublicWallet(user.id),
     tier: resolveUserTier(user.id),
     all_tiers: listUserTiers(true),
     subscription: getActiveSubscription(user.id),
-    prices: listModelPrices().filter((price) => price.enabled).map((price) => applyPriceWindows(price)),
+    prices: listModelPrices()
+      .filter((price) => price.enabled)
+      .map((price) => ({
+        // Advertise the union of what providers actually accept for the model
+        // (per-provider effort mappings); legacy per-model list as fallback.
+        ...applyPriceWindows(price),
+        reasoning_effort: supportedEffortsForModel(price.model, price.reasoning_effort),
+      })),
   });
 });
 // L22: require a concrete image/* subtype and a base64 payload (data-URL or
@@ -295,12 +336,19 @@ userRouter.patch("/me/password", (req, res) => {
 
 userRouter.patch("/me/preferences", (req, res) => {
   const body = parseBody(
-    z.object({ training_consent: z.boolean().optional() }),
+    z.object({ training_consent: z.boolean().optional(), display_name: z.string().trim().min(1).max(120).optional() }),
     req.body,
     res,
   );
   if (!body) return;
   const userId = requestUser(req).id;
+  if (body.display_name !== undefined) {
+    db.prepare("UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?").run(
+      body.display_name,
+      nowIso(),
+      userId,
+    );
+  }
   if (body.training_consent !== undefined) {
     db.prepare("UPDATE users SET training_consent = ?, updated_at = ? WHERE id = ?").run(
       body.training_consent ? 1 : 0,

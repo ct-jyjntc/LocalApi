@@ -77,6 +77,22 @@ export type NormalizeResult = {
   changes: string[];
 };
 
+/**
+ * Canonical reasoning-effort levels, ordered low → high. Providers declare
+ * per-model which of these they accept (providers.model_efforts); the relay
+ * uses the list for validation, /v1/models advertising, and UI editors.
+ */
+export const REASONING_EFFORT_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
 export function normalizeOpenAICompatBody(body: unknown, path: string): NormalizeResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { body, changed: false, changes: [] };

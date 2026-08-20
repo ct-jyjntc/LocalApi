@@ -132,13 +132,15 @@ function sanitizeLogText(value: string | null | undefined, max = 2_000): string 
 export function writeLog(input: LogInput) {
   const id = uuid();
   const createdAt = nowIso();
-  if (input.input_file || input.output_file || input.reasoning_file) {
+  // Only persist full input/output bodies for successful requests.
+  // Error requests only store the error field, not the conversation content.
+  if (input.status_code < 400 && (input.input_file || input.output_file || input.reasoning_file)) {
     persistLogBodies(id, {
       input: input.input_file,
       output: input.output_file,
       reasoning: input.reasoning_file,
     }, createdAt);
-  } else {
+  } else if (input.status_code < 400 && (input.input_text || input.output_text || input.reasoning_text)) {
     persistLogBodiesFromText(id, {
       input: input.input_text,
       output: input.output_text,
@@ -331,6 +333,14 @@ export function clearLogs() {
   invalidateDashboardCache();
   const removed = db.prepare("DELETE FROM request_logs").run().changes;
   clearAllLogBodies();
+  reclaimSqliteSpace();
+  return removed;
+}
+
+export function clearErrorLogs() {
+  flushLogs(Number.MAX_SAFE_INTEGER);
+  invalidateDashboardCache();
+  const removed = db.prepare("DELETE FROM request_logs WHERE status_code >= 400").run().changes;
   reclaimSqliteSpace();
   return removed;
 }

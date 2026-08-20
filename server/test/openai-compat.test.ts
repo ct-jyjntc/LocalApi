@@ -91,3 +91,4 @@ test("idempotent when already normalized", () => {
   assert.equal(changed, false);
   assert.deepEqual(changes, []);
 });
+

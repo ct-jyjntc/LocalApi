@@ -22,7 +22,6 @@ const emptyForm = {
   cacheRead: "0",
   cacheWrite: "0",
   reasoningEnabled: false,
-  reasoningEffort: [] as string[],
   imageInput: false,
   contextWindow: "",
   maxOutput: "",
@@ -30,16 +29,6 @@ const emptyForm = {
   windows: [] as PriceWindowForm[],
   promptPresetIds: [] as string[],
 };
-
-const EFFORT_OPTIONS: Array<{ value: string; label: string; en: string }> = [
-  { value: "minimal", label: "最低", en: "Minimal" },
-  { value: "low", label: "低", en: "Low" },
-  { value: "medium", label: "中", en: "Medium" },
-  { value: "high", label: "高", en: "High" },
-  { value: "xhigh", label: "超高", en: "Extra High" },
-  { value: "max", label: "最高", en: "Max" },
-  { value: "ultra", label: "极限", en: "Ultra" },
-];
 
 export function PricingPage() {
   const { locale } = useI18n();
@@ -83,7 +72,6 @@ export function PricingPage() {
       cache_read_price_micros: creditsToMicros(form.cacheRead),
       cache_write_price_micros: creditsToMicros(form.cacheWrite),
       reasoning_enabled: form.reasoningEnabled,
-      reasoning_effort: form.reasoningEffort,
       image_input: form.imageInput,
       context_window: form.contextWindow ? Number(form.contextWindow) : 0,
       max_output_tokens: form.maxOutput ? Number(form.maxOutput) : 0,
@@ -115,7 +103,6 @@ export function PricingPage() {
     cacheRead: formatCreditsInput(price.cache_read_price_micros),
     cacheWrite: formatCreditsInput(price.cache_write_price_micros),
     reasoningEnabled: price.reasoning_enabled,
-    reasoningEffort: price.reasoning_effort,
     imageInput: price.image_input,
     contextWindow: price.context_window ? String(price.context_window) : "",
     maxOutput: price.max_output_tokens ? String(price.max_output_tokens) : "",
@@ -132,15 +119,6 @@ export function PricingPage() {
     })),
   }); setFormOpen(true); };
 
-  const toggleEffort = (value: string) => {
-    setForm((prev) => ({
-      ...prev,
-      reasoningEffort: prev.reasoningEffort.includes(value)
-        ? prev.reasoningEffort.filter((v) => v !== value)
-        : [...prev.reasoningEffort, value],
-    }));
-  };
-
   const togglePreset = (id: string) => {
     setForm((prev) => ({
       ...prev,
@@ -150,17 +128,31 @@ export function PricingPage() {
     }));
   };
 
-  const reasoningLabel = (price: ModelPrice) =>
-    price.reasoning_enabled
-      ? price.reasoning_effort.length
-        ? price.reasoning_effort.join(" / ")
-        : (zh ? "默认" : "Default")
-      : (zh ? "不支持" : "Off");
+  // Effort support is declared per provider (model_efforts); show the union
+  // across enabled providers serving the model.
+  const providerEfforts = useMemo(() => {
+    const union = new Map<string, Set<string>>();
+    for (const provider of providers.data?.items ?? []) {
+      if (!provider.enabled) continue;
+      for (const [model, mapping] of Object.entries(provider.model_efforts ?? {})) {
+        const set = union.get(model) ?? new Set<string>();
+        for (const effort of Object.keys(mapping)) set.add(effort);
+        union.set(model, set);
+      }
+    }
+    return union;
+  }, [providers.data?.items]);
+
+  const reasoningLabel = (price: ModelPrice) => {
+    if (!price.reasoning_enabled) return zh ? "不支持" : "Off";
+    const efforts = [...(providerEfforts.get(price.model) ?? [])];
+    return efforts.length ? efforts.join(" / ") : (zh ? "默认" : "Default");
+  };
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title={zh ? "模型配置" : "Model config"} description={zh ? "价格单位为每 100 万 Token 的额度。可配置分时段价（Asia/Shanghai）；未命中时段时使用默认价。推理 Token 默认包含在输出中。" : "Prices are credits per one million tokens. Optional time-of-day windows use Asia/Shanghai; default rates apply when no window matches. Reasoning is included in output by default."} actions={<Button size="sm" onClick={() => { setForm(emptyForm); setFormOpen(true); }}><Plus />{zh ? "新增配置" : "Add config"}</Button>} />
-      <Dialog open={formOpen} onOpenChange={setFormOpen}><DialogContent className="max-w-[720px]"><DialogHeader><DialogTitle>{form.model ? (zh ? "编辑模型配置" : "Edit model config") : (zh ? "新增模型配置" : "Add model config")}</DialogTitle><DialogDescription>{zh ? "配置价格与思考参数；思考参数会随 /v1/models 返回给客户端。" : "Prices and reasoning settings; reasoning is exposed via /v1/models."}</DialogDescription></DialogHeader>
+      <Dialog open={formOpen} onOpenChange={setFormOpen}><DialogContent className="max-w-[720px]"><DialogHeader><DialogTitle>{form.model ? (zh ? "编辑模型配置" : "Edit model config") : (zh ? "新增模型配置" : "Add model config")}</DialogTitle><DialogDescription>{zh ? "配置价格与能力标记；思考档位的支持与映射在各渠道的模型列表里按渠道配置。" : "Prices and capability flags; per-effort support and mapping live in each provider's model list."}</DialogDescription></DialogHeader>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label={zh ? "模型" : "Model"}>
             <Input list="pricing-models" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
@@ -172,28 +164,8 @@ export function PricingPage() {
           <Field label={zh ? "缓存写入" : "Cache write"}><Input type="number" step="0.000001" value={form.cacheWrite} onChange={(e) => setForm({ ...form, cacheWrite: e.target.value })} /></Field>
           <Field label={zh ? "上下文窗口（Token）" : "Context window (tokens)"}><Input type="number" min="0" step="1000" placeholder="128000" value={form.contextWindow} onChange={(e) => setForm({ ...form, contextWindow: e.target.value })} /></Field>
           <Field label={zh ? "最大输出（Token）" : "Max output (tokens)"}><Input type="number" min="0" step="100" placeholder="16384" value={form.maxOutput} onChange={(e) => setForm({ ...form, maxOutput: e.target.value })} /></Field>
-          <div className="flex items-center justify-between rounded-md bg-secondary/55 px-3 py-2 text-xs"><span className="flex items-center gap-1.5"><Brain className="size-3.5" />{zh ? "支持思考（reasoning_effort）" : "Thinking (reasoning_effort)"}</span><Switch checked={form.reasoningEnabled} onCheckedChange={(reasoningEnabled) => setForm({ ...form, reasoningEnabled, reasoningEffort: reasoningEnabled ? form.reasoningEffort : [] })} /></div>
+          <div className="flex items-center justify-between rounded-md bg-secondary/55 px-3 py-2 text-xs"><span className="flex items-center gap-1.5"><Brain className="size-3.5" />{zh ? "思考模型（reasoning）" : "Thinking model (reasoning)"}</span><Switch checked={form.reasoningEnabled} onCheckedChange={(reasoningEnabled) => setForm({ ...form, reasoningEnabled })} /></div>
           <div className="flex items-center justify-between rounded-md bg-secondary/55 px-3 py-2 text-xs"><span className="flex items-center gap-1.5"><ImageIcon className="size-3.5" />{zh ? "支持图像输入（vision）" : "Image input (vision)"}</span><Switch checked={form.imageInput} onCheckedChange={(imageInput) => setForm({ ...form, imageInput })} /></div>
-          {form.reasoningEnabled ? (
-            <div className="flex flex-col gap-1.5 sm:col-span-2">
-              <Label>{zh ? "支持的思考档位（可多选，不选则交上游默认）" : "Supported efforts (multi-select; empty = upstream default)"}</Label>
-              <div className="flex gap-2">
-                {EFFORT_OPTIONS.map((option) => {
-                  const active = form.reasoningEffort.includes(option.value);
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => toggleEffort(option.value)}
-                      className={`h-8 rounded-full border px-4 text-xs transition-colors ${active ? "border-foreground bg-foreground text-background" : "border-border bg-card text-muted-foreground hover:border-muted-foreground/40"}`}
-                    >
-                      {zh ? option.label : option.en}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
           <div className="flex items-center justify-between rounded-md bg-secondary/55 px-3 py-2 text-xs sm:col-span-2"><span>{zh ? "向用户开放此模型" : "Make this model available"}</span><Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} /></div>
           <div className="flex flex-col gap-1.5 sm:col-span-2">
             <Label>{zh ? "提示词预设（作为 system 注入，不计入用户用量）" : "Prompt presets (injected as system, not billed to users)"}</Label>

@@ -36,8 +36,11 @@ function asText(value: unknown): string | null {
           const obj = item as Record<string, unknown>;
           if (typeof obj.text === "string") return obj.text;
           if (typeof obj.content === "string") return obj.content;
+          // Nested content arrays (responses-API input items, anthropic
+          // blocks) recurse so their text parts are not lost.
+          if (Array.isArray(obj.content)) return asText(obj.content);
           if (obj.type === "text" && typeof obj.text === "string") return obj.text;
-          if (obj.type === "image_url") return "[image]";
+          if (obj.type === "image_url" || obj.type === "input_image") return "[image]";
           if (obj.type === "input_audio") return "[audio]";
         }
         return null;
@@ -247,8 +250,7 @@ function extractFromJson(
   }
 
   // Anthropic Messages API
-  if (Array.isArray(data.content)) {
-    const texts: string[] = [];
+  if (Array.isArray(data.content)) {    const texts: string[] = [];
     const reasons: string[] = [];
     const tools: string[] = [];
     for (const item of data.content as unknown[]) {
@@ -257,6 +259,45 @@ function extractFromJson(
       if (part.type === "text" && typeof part.text === "string") texts.push(part.text);
       if (part.type === "thinking" && typeof part.thinking === "string") reasons.push(part.thinking);
       if (part.type === "tool_use") tools.push(`[tool] ${String(part.name || "unknown")}\n${JSON.stringify(part.input ?? {})}`);
+    }
+    if (!output && (texts.length || tools.length)) output = [...texts, ...tools].join("\n");
+    if (!reasoning && reasons.length) reasoning = reasons.join("\n");
+  }
+
+  // OpenAI Responses API: top-level output[] holds message items whose
+  // content[] carries output_text parts, plus reasoning items with summaries.
+  if (Array.isArray(data.output)) {
+    const texts: string[] = [];
+    const reasons: string[] = [];
+    const tools: string[] = [];
+    for (const item of data.output as unknown[]) {
+      if (!item || typeof item !== "object") continue;
+      const part = item as Record<string, unknown>;
+      if (part.type === "message" && Array.isArray(part.content)) {
+        for (const block of part.content as unknown[]) {
+          if (!block || typeof block !== "object") continue;
+          const b = block as Record<string, unknown>;
+          if ((b.type === "output_text" || b.type === "text") && typeof b.text === "string") {
+            texts.push(b.text);
+          }
+        }
+      } else if (part.type === "reasoning") {
+        const summary = Array.isArray(part.summary) ? part.summary : [];
+        for (const s of summary) {
+          if (s && typeof s === "object" && typeof (s as Record<string, unknown>).text === "string") {
+            reasons.push((s as Record<string, unknown>).text as string);
+          }
+        }
+        if (Array.isArray(part.content)) {
+          for (const c of part.content as unknown[]) {
+            if (c && typeof c === "object" && typeof (c as Record<string, unknown>).text === "string") {
+              reasons.push((c as Record<string, unknown>).text as string);
+            }
+          }
+        }
+      } else if (part.type === "function_call") {
+        tools.push(`[tool] ${String(part.name || "unknown")}\n${String(part.arguments ?? "")}`);
+      }
     }
     if (!output && (texts.length || tools.length)) output = [...texts, ...tools].join("\n");
     if (!reasoning && reasons.length) reasoning = reasons.join("\n");
@@ -368,6 +409,12 @@ function extractFromSse(text: string): ReturnType<typeof extractFromResponse> {
         const message = data.message as Record<string, unknown>;
         if (message.usage && typeof message.usage === "object") usageRaw = mergeUsage(usageRaw, message.usage);
       }
+      // responses-API terminal events (response.completed / .incomplete)
+      // carry the full response object, usage included.
+      if (data.response && typeof data.response === "object") {
+        const response = data.response as Record<string, unknown>;
+        if (response.usage && typeof response.usage === "object") usageRaw = mergeUsage(usageRaw, response.usage);
+      }
       if (Array.isArray(data.choices) && data.choices[0]) {
         const choice = data.choices[0] as Record<string, unknown>;
         const delta =
@@ -477,6 +524,11 @@ export function createResponseLogCollector(params: {
       if (data.message && typeof data.message === "object") {
         const message = data.message as Record<string, unknown>;
         if (message.usage && typeof message.usage === "object") usageRaw = mergeUsage(usageRaw, message.usage);
+      }
+      // responses-API terminal events carry the full response object.
+      if (data.response && typeof data.response === "object") {
+        const response = data.response as Record<string, unknown>;
+        if (response.usage && typeof response.usage === "object") usageRaw = mergeUsage(usageRaw, response.usage);
       }
 
       if (Array.isArray(data.choices) && data.choices[0]) {

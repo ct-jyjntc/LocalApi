@@ -8,7 +8,6 @@ import {
   CreditCard,
   KeyRound,
   LayoutDashboard,
-  LogOut,
   Menu,
   MessageSquareText,
   PanelsTopLeft,
@@ -115,7 +114,6 @@ const USER_NAV: NavGroup[] = [
     label: { zh: "订阅", en: "Subscription" },
     items: [
       { to: "/plan", label: { zh: "套餐详情", en: "Plan details" }, icon: Package },
-      { to: "/payments", label: { zh: "账户充值", en: "Top up" }, icon: CreditCard },
     ],
   },
   {
@@ -125,8 +123,9 @@ const USER_NAV: NavGroup[] = [
   },
   {
     key: "billing",
-    label: { zh: "账单", en: "Billing" },
+    label: { zh: "费用", en: "Costs" },
     items: [
+      { to: "/payments", label: { zh: "账户充值", en: "Top up" }, icon: CreditCard },
       { to: "/orders", label: { zh: "订单", en: "Orders" }, icon: ReceiptText },
       { to: "/usage", label: { zh: "用量明细", en: "Usage" }, icon: ChartNoAxesCombined },
       { to: "/ledger", label: { zh: "钱包流水", en: "Wallet" }, icon: WalletCards },
@@ -136,9 +135,9 @@ const USER_NAV: NavGroup[] = [
     key: "account",
     label: { zh: "账户", en: "Account" },
     items: [
+      { to: "/settings", label: { zh: "个人设置", en: "Settings" }, icon: Settings },
       { to: "/keys", labelKey: "nav.keys", icon: KeyRound },
       { to: "/feedback", label: { zh: "我的反馈", en: "My feedback" }, icon: MessageSquareText },
-      { to: "/settings", label: { zh: "个人设置", en: "Settings" }, icon: Settings },
     ],
   },
 ];
@@ -241,6 +240,10 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
         <nav className="hidden h-full items-center gap-1 lg:flex" aria-label={locale === "zh" ? "主导航" : "Primary"}>
           {groups.map((group) => {
             const active = group.key === activeGroup?.key;
+            // Account group renders as avatar, not a text pill
+            if (group.key === "account") {
+              return null;
+            }
             return (
               <Link
                 key={group.key}
@@ -258,22 +261,8 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
             );
           })}
         </nav>
-        {onLogout ? (
-          <div className="ml-auto flex items-center gap-1">
-            <span className="mx-1 hidden h-4 w-px bg-border sm:block" aria-hidden />
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onLogout}
-              aria-label={logoutLabel}
-              className="gap-2 text-muted-foreground hover:text-foreground"
-            >
-              <LogOut className="size-4" strokeWidth={1.75} />
-              <span className="hidden sm:inline">{logoutLabel}</span>
-            </Button>
-          </div>
-        ) : null}
+        {mode === "user" ? <div className="ml-auto" /> : null}
+        {mode === "user" ? <UserAvatar /> : null}
       </header>
 
       <AnnouncementHost />
@@ -349,20 +338,6 @@ export function AppShell({ mode = "admin", onLogout }: { mode?: "admin" | "user"
                 </div>
               ))}
             </nav>
-            {onLogout ? (
-              <div className="shrink-0 border-t border-border/60 p-3">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={onLogout}
-                  aria-label={logoutLabel}
-                  className="h-8 w-full justify-start gap-2.5 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-secondary/55 hover:text-foreground"
-                >
-                  <LogOut className="size-4 shrink-0" strokeWidth={1.75} />
-                  <span>{logoutLabel}</span>
-                </Button>
-              </div>
-            ) : null}
           </aside>
         </div>
       ) : null}
@@ -481,5 +456,44 @@ function NavItemLink({
         </>
       )}
     </NavLink>
+  );
+}
+
+function UserAvatar() {
+  const me = useQuery({ queryKey: ["user", "me"], queryFn: userApi.me, staleTime: 60_000 });
+  const avatarUrl = me.data?.user?.avatar_url;
+  const displayName = me.data?.user?.display_name || me.data?.user?.username || "";
+  const initials = displayName.slice(0, 2).toUpperCase() || "U";
+  // Fetch avatar as blob (img tag can't send auth headers)
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!avatarUrl) { setBlobUrl(null); return; }
+    let revoke: string | null = null;
+    const token = localStorage.getItem("localapi_user_token");
+    fetch(`/user/api/avatar`, { headers: token ? { "x-user-token": token } : {} })
+      .then((r) => r.ok ? r.blob() : null)
+      .then((blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          revoke = url;
+          setBlobUrl(url);
+        }
+      })
+      .catch(() => {});
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [avatarUrl]);
+  return (
+    <Link
+      to="/settings"
+      className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1 ring-border/60 transition-shadow hover:ring-foreground/30"
+      aria-label="Account"
+      title={displayName}
+    >
+      {blobUrl ? (
+        <img src={blobUrl} alt={displayName} className="size-full object-cover" />
+      ) : (
+        <span className="text-xs font-medium text-muted-foreground">{initials}</span>
+      )}
+    </Link>
   );
 }

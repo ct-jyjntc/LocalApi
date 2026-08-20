@@ -165,7 +165,7 @@ function AuthedApp({ mode, onLogout }: { mode: AuthMode; onLogout: () => void })
               <Route path="checkin" element={<UserCheckinPage />} />
               <Route path="docs" element={<UserDocsPage />} />
               <Route path="feedback" element={<UserFeedbackPage />} />
-              <Route path="settings" element={<UserSettingsPage />} />
+              <Route path="settings" element={<UserSettingsPage onLogout={onLogout} />} />
             </>
           )}
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -99,7 +99,10 @@ export function upsertModelPrice(input: {
     input.cache_read_price_micros ?? 0,
     input.cache_write_price_micros ?? 0,
     input.reasoning_enabled === false ? 0 : 1,
-    JSON.stringify(input.reasoning_effort ?? []),
+    // Legacy field: no longer edited in the UI (effort support is declared
+    // per provider via model_efforts). Preserve the stored value when the
+    // caller omits it; it still serves as the /v1/models fallback.
+    JSON.stringify(input.reasoning_effort ?? existing?.reasoning_effort ?? []),
     input.image_input === false ? 0 : 1,
     input.context_window ?? 0,
     input.max_output_tokens ?? 0,
@@ -190,7 +193,7 @@ export function estimateRequestTokens(body: unknown, _requestBytes = 0) {
   const chars = estimateTokenizableChars(body);
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const requested = Number(
-    record.max_tokens ?? record.max_completion_tokens ?? record.maxOutputTokens ?? 4096,
+    record.max_tokens ?? record.max_completion_tokens ?? record.maxOutputTokens ?? record.max_output_tokens ?? 4096,
   );
   return {
     prompt: Math.max(1, Math.ceil(chars / 4)),

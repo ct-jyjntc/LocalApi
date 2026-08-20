@@ -30,7 +30,14 @@ const emptyForm = {
   enabled: true,
   timeout_ms: 60000,
   custom_headers: "",
+  protocols: ["openai-completions"] as string[],
 };
+
+const PROTOCOL_OPTIONS = [
+  { id: "openai-completions", label: "OpenAI Completions" },
+  { id: "openai-responses", label: "OpenAI Responses" },
+  { id: "anthropic-messages", label: "Anthropic Messages" },
+] as const;
 
 /** Parse "Key: Value" lines into a Record. */
 function parseCustomHeaders(raw: string): Record<string, string> {
@@ -45,19 +52,22 @@ function parseCustomHeaders(raw: string): Record<string, string> {
   return out;
 }
 
-/** Parse "public" or "public => upstream" lines from the models editor. */
+/** Parse "public" / "public => upstream" lines, with optional effort mapping after "|". */
 function parseModelsEditor(raw: string): {
   models: string[];
   model_mappings: Record<string, string>;
+  model_efforts: Record<string, Record<string, string>>;
 } {
   const models: string[] = [];
   const model_mappings: Record<string, string> = {};
+  const model_efforts: Record<string, Record<string, string>> = {};
   const seen = new Set<string>();
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const match = trimmed.match(/^(.+?)\s*(?:=>|->|=)\s*(.+)$/);
-    const publicName = (match ? match[1] : trimmed).trim();
+    const [modelPart, effortPart] = trimmed.split("|").map((part) => part.trim());
+    const match = modelPart.match(/^(.+?)\s*(?:=>|->|=)\s*(.+)$/);
+    const publicName = (match ? match[1] : modelPart).trim();
     const upstreamName = (match ? match[2] : "").trim();
     if (!publicName || seen.has(publicName)) continue;
     seen.add(publicName);
@@ -65,18 +75,38 @@ function parseModelsEditor(raw: string): {
     if (upstreamName && upstreamName !== publicName) {
       model_mappings[publicName] = upstreamName;
     }
+    if (effortPart) {
+      // "low, max:high" → { low: "low", max: "high" } (bare effort = identity)
+      const mapping: Record<string, string> = {};
+      for (const entry of effortPart.split(",")) {
+        const item = entry.trim();
+        if (!item) continue;
+        const pair = item.split(":");
+        const from = (pair[0] || "").trim();
+        const to = (pair.length > 1 ? pair[1] : pair[0] || "").trim();
+        if (from && to) mapping[from] = to;
+      }
+      if (Object.keys(mapping).length > 0) model_efforts[publicName] = mapping;
+    }
   }
-  return { models, model_mappings };
+  return { models, model_mappings, model_efforts };
 }
 
 function formatModelsEditor(
   models: string[],
   mappings: Record<string, string> = {},
+  efforts: Record<string, Record<string, string>> = {},
 ): string {
   return models
     .map((model) => {
       const upstream = mappings[model]?.trim();
-      return upstream && upstream !== model ? `${model} => ${upstream}` : model;
+      let line = upstream && upstream !== model ? `${model} => ${upstream}` : model;
+      const effortMap = efforts[model];
+      if (effortMap && Object.keys(effortMap).length > 0) {
+        const parts = Object.entries(effortMap).map(([from, to]) => (from === to ? from : `${from}:${to}`));
+        line += ` | ${parts.join(", ")}`;
+      }
+      return line;
     })
     .join("\n");
 }
@@ -162,7 +192,7 @@ export function ProvidersPage() {
 
   const save = useMutation({
     mutationFn: async () => {
-      const { models, model_mappings } = parseModelsEditor(form.models);
+      const { models, model_mappings, model_efforts } = parseModelsEditor(form.models);
       const keys = parseKeys(form.api_keys);
 
       if (editing) {
@@ -172,10 +202,12 @@ export function ProvidersPage() {
           ...(keys.length > 0 ? { api_keys: keys } : {}),
           models,
           model_mappings,
+          model_efforts,
           proxy_ids: form.proxy_ids,
           enabled: form.enabled,
           timeout_ms: form.timeout_ms,
           custom_headers: parseCustomHeaders(form.custom_headers),
+          protocols: form.protocols,
         });
       }
 
@@ -185,20 +217,12 @@ export function ProvidersPage() {
         api_keys: keys,
         models,
         model_mappings,
+        model_efforts,
         proxy_ids: form.proxy_ids,
         enabled: form.enabled,
         timeout_ms: form.timeout_ms,
         custom_headers: parseCustomHeaders(form.custom_headers),
-      });
-
-      return api.providers.create({
-        name: form.name,
-        base_url: form.base_url,
-        api_keys: keys,
-        models,
-        model_mappings,
-        enabled: form.enabled,
-        timeout_ms: form.timeout_ms,
+        protocols: form.protocols,
       });
     },
     onSuccess: () => {
@@ -255,11 +279,12 @@ export function ProvidersPage() {
       name: p.name,
       base_url: p.base_url,
       api_keys: existingKeys.join("\n"),
-      models: formatModelsEditor(p.models, p.model_mappings || {}),
+      models: formatModelsEditor(p.models, p.model_mappings || {}, p.model_efforts || {}),
       proxy_ids: p.proxy_ids ?? [],
       enabled: p.enabled,
       timeout_ms: p.timeout_ms,
       custom_headers: Object.entries(p.custom_headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n"),
+      protocols: p.protocols?.length ? p.protocols : ["openai-completions"],
     });
     setOpen(true);
   }
@@ -427,6 +452,42 @@ export function ProvidersPage() {
                 }
               />
             </Field>
+            <div className="sm:col-span-2">
+              <Field label={zh ? "支持协议" : "Protocols"}>
+                <div className="flex flex-wrap gap-2">
+                  {PROTOCOL_OPTIONS.map((option) => {
+                    const active = form.protocols.includes(option.id);
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          // First checked entry is the preferred dialect used
+                          // when a foreign client dialect must be translated.
+                          const next = active
+                            ? form.protocols.filter((id) => id !== option.id)
+                            : [...form.protocols, option.id];
+                          if (next.length === 0) return;
+                          setForm({ ...form, protocols: next });
+                        }}
+                        className={`rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
+                          active
+                            ? "border-foreground/40 bg-foreground/10 text-foreground"
+                            : "border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {zh
+                  ? "该渠道上游支持的 API 协议。客户端用其他协议请求时自动转换；未勾选的协议不会被使用。"
+                  : "API dialects this channel's upstream supports. Requests in other dialects are translated automatically."}
+              </p>
+            </div>
             <div className="sm:col-span-2">
               <Field label={t("providers.models")}>
                 <Textarea

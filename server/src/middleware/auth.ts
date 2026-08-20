@@ -51,7 +51,9 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
 }
 
 export function requireApiKey(req: Request, res: Response, next: NextFunction) {
-  const auth = req.header("authorization");
+  // Anthropic-style clients authenticate with x-api-key instead of an
+  // Authorization bearer; accept both against the same key store.
+  const auth = req.header("authorization") ?? req.header("x-api-key");
   const key = authenticateApiKey(auth);
   if (!key) {
     return res.status(401).json({

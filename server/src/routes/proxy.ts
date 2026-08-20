@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { requireApiKey } from "../middleware/auth";
-import { listProviders } from "../services/providers";
+import { listProviders, supportedEffortsForModel } from "../services/providers";
 import { handleProxyHttp } from "../services/proxy";
 import { lookupCache, storeCache } from "../services/cache";
 import type { ApiKey } from "../db";
@@ -10,6 +10,7 @@ import { maintainActiveSubscription } from "../services/plans";
 import { normalizeOpenAICompatBody } from "../utils/openai-compat";
 import { applyModelLimits, ModelLimitError } from "../utils/model-limits";
 import { resolveModelPromptInjection } from "../services/prompt-presets";
+import { getBrandName } from "../services/branding";
 import { getClientIp } from "../utils/client-ip";
 
 export const proxyRouter = Router();
@@ -119,6 +120,9 @@ v1.get("/models", requireApiKey, async (req: Request, res: Response) => {
   }
 
   const providers = listProviders().filter((p) => p.enabled === 1);
+  // owned_by shows the platform brand (like OpenAI's "openai") — never the
+  // channel name, which would leak the backend supplier.
+  const owner = getBrandName();
   const data: Array<{
     id: string;
     object: string;
@@ -128,21 +132,30 @@ v1.get("/models", requireApiKey, async (req: Request, res: Response) => {
     context_window?: number;
     max_output_tokens?: number;
   }> = [];
+  const seenModels = new Set<string>();
 
   for (const p of providers) {
     try {
       const models = JSON.parse(p.models) as string[];
       for (const m of models) {
-        if (m === "*") continue;
+        if (m === "*" || seenModels.has(m)) continue;
+        seenModels.add(m);
         const price = getModelPrice(m);
         if (apiKey?.user_id && (!isModelAllowedForKey(apiKey, m, { includeSubscription: billingMode === "coding" }) || !price?.enabled)) continue;
         data.push({
           id: m,
           object: "model",
-          owned_by: p.name,
+          owned_by: owner,
           ...(price
             ? {
-                reasoning: { enabled: price.reasoning_enabled, effort: price.reasoning_effort },
+                reasoning: {
+                  enabled: price.reasoning_enabled,
+                  // Advertised effort levels are the union of what the enabled
+                  // providers accept for this model (per-provider mappings),
+                  // falling back to the legacy per-model list when no provider
+                  // declares one.
+                  effort: supportedEffortsForModel(m, price.reasoning_effort),
+                },
                 image_input: price.image_input,
                 ...(price.context_window > 0 ? { context_window: price.context_window } : {}),
                 ...(price.max_output_tokens > 0 ? { max_output_tokens: price.max_output_tokens } : {}),
@@ -155,21 +168,8 @@ v1.get("/models", requireApiKey, async (req: Request, res: Response) => {
     }
   }
 
-  if (data.length === 0 && providers.length > 0 && !apiKey?.user_id) {
-    await handleProxyHttp(
-      {
-        method: "GET",
-        path: "/v1/models",
-        query: req.query as Record<string, unknown>,
-        headers: req.headers as Record<string, string | string[] | undefined>,
-        apiKeyId: apiKey?.id,
-        apiKeyName: apiKey?.name,
-        apiKey,
-      },
-      res,
-    );
-    return;
-  }
+  // No upstream fallback: proxying the provider's own /v1/models would leak
+  // its native model catalogue. An empty aggregate is just an empty list.
 
   const payload = JSON.stringify({ object: "list", data });
   if (!apiKey?.user_id) {
@@ -281,8 +281,13 @@ async function handleProxy(req: Request, res: Response) {
 }
 
 v1.post("/chat/completions", requireApiKey, handleProxy);
-// Only allow chat/completions and models on the proxy. Other /v1/* paths
-// (responses, messages, completions, embeddings, etc.) are rejected to
+// openai-responses and anthropic-messages dialects share the same transparent
+// proxy pipeline; per-protocol differences (effort knob location, usage field
+// names, SSE event shapes) are handled inside the pipeline.
+v1.post("/responses", requireApiKey, handleProxy);
+v1.post("/messages", requireApiKey, handleProxy);
+// Only the paths above and models are allowed on the proxy. Other /v1/* paths
+// (completions, embeddings, etc.) are rejected to
 // prevent oversized / unsupported request formats from reaching upstreams.
 v1.all("/{*rest}", (_req, res) => {
   res.status(404).json({ error: { message: "Not Found", type: "invalid_request_error" } });

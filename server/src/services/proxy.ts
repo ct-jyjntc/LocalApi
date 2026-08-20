@@ -11,14 +11,27 @@ import {
   getProvider,
   listProviders,
   listProvidersForModel,
+  mapProviderEffort,
   mapProviderModel,
   pickProviderKey,
+  pickProviderProtocol,
   pickProviderProxy,
+  providerSupportsProtocol,
+  supportedEffortsForModel,
 } from "./providers";
 import { getProxyNode } from "./proxies";
 import { tryDecryptSecret } from "../utils/secrets";
 import { createResponseLogCollector, extractIO } from "../utils/content";
 import { createUpstreamTimeout, upstreamTimeoutError } from "./upstream-timeout";
+import { extractRequestEffort, rewriteRequestEffort } from "../utils/reasoning-effort";
+import {
+  PROTOCOL_PATHS,
+  ProtocolId,
+  createSseTranslator,
+  protocolForPath,
+  translateRequestBody,
+  translateResponseBody,
+} from "../protocol";
 import { AccessError, beginRequestAccess, RequestAccess } from "./access";
 import {
   buildProviderAffinityKey,
@@ -102,6 +115,15 @@ type UpstreamHandle = {
   clearTimeout: () => void;
   didTimeout: () => boolean;
   onBodyChunk: (streaming: boolean) => void;
+  /** Set when the upstream dialect differs from the client's: responses must be translated back. */
+  translator: { from: ProtocolId; to: ProtocolId } | null;
+  /**
+   * Set when the channel maps the public model to a different upstream name
+   * and no translator will regenerate the response: the raw upstream payload
+   * still carries the upstream's real model name, so pipeResponseToClient
+   * must echo the public name back to the client.
+   */
+  echoModel: { from: string; to: string } | null;
 };
 
 /** After first stream byte, abort if no further data for this long (upstream stall). */
@@ -159,7 +181,10 @@ function headersToObject(
   for (const [k, v] of Object.entries(headers)) {
     if (v === undefined) continue;
     const key = k.toLowerCase();
-    if (HOP_BY_HOP.has(key) || key === "authorization") continue;
+    // Never forward the station's own credential headers upstream: x-api-key
+    // is accepted as an auth header for Anthropic-style clients, so it holds
+    // the caller's LocalAPI key, not something an upstream should see.
+    if (HOP_BY_HOP.has(key) || key === "authorization" || key === "x-api-key") continue;
     out[key] = Array.isArray(v) ? v.join(",") : v;
   }
   return out;
@@ -316,29 +341,49 @@ function withMappedModel(provider: Provider, ctx: ProxyContext): ProxyContext {
   const publicModel = pickModel(ctx.body, ctx.query);
   if (!publicModel) return ctx;
   const upstreamModel = mapProviderModel(provider, publicModel);
-  if (upstreamModel === publicModel) return ctx;
 
   const nextQuery =
-    typeof ctx.query.model === "string"
+    typeof ctx.query.model === "string" && upstreamModel !== publicModel
       ? { ...ctx.query, model: upstreamModel }
       : ctx.query;
 
   if (ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body)) {
-    const nextBody = {
-      ...(ctx.body as Record<string, unknown>),
-      model: upstreamModel,
-    };
-    // If we rewrote JSON, drop the original raw/stream body so upstream gets the mapped model.
-    return {
-      ...ctx,
-      query: nextQuery,
-      body: nextBody,
-      rawBody: Buffer.from(JSON.stringify(nextBody)),
-      bodyStream: undefined,
-    };
+    // Per-provider rewrites: model name mapping plus reasoning-effort mapping
+    // (public effort → this provider's upstream spelling). Runs per attempt,
+    // so a failover to another provider gets that provider's mapping.
+    let nextBody: Record<string, unknown> = ctx.body as Record<string, unknown>;
+    let changed = false;
+    if (upstreamModel !== publicModel) {
+      nextBody = { ...nextBody, model: upstreamModel };
+      changed = true;
+    }
+    const requestedEffort = extractRequestEffort(nextBody, ctx.path);
+    if (requestedEffort) {
+      const mappedEffort = mapProviderEffort(provider, publicModel, requestedEffort);
+      // null means "unsupported" — those providers were filtered out before
+      // the attempt loop; a null here only happens when it is, so keep the
+      // original value as a defensive passthrough.
+      if (mappedEffort && mappedEffort !== requestedEffort) {
+        const rewritten = rewriteRequestEffort(nextBody, ctx.path, mappedEffort);
+        if (rewritten.changed) {
+          nextBody = rewritten.body as Record<string, unknown>;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      // If we rewrote JSON, drop the original raw/stream body so upstream gets the adapted body.
+      return {
+        ...ctx,
+        query: nextQuery,
+        body: nextBody,
+        rawBody: Buffer.from(JSON.stringify(nextBody)),
+        bodyStream: undefined,
+      };
+    }
   }
 
-  return { ...ctx, query: nextQuery };
+  return nextQuery === ctx.query ? ctx : { ...ctx, query: nextQuery };
 }
 
 async function openUpstream(
@@ -347,8 +392,39 @@ async function openUpstream(
   path: string,
   externalSignal?: AbortSignal,
 ): Promise<UpstreamHandle> {
-  const mappedCtx = withMappedModel(provider, ctx);
-  const url = buildUpstreamUrl(provider, path, mappedCtx.query);
+  let mappedCtx = withMappedModel(provider, ctx);
+  let upstreamPath = path;
+  // Dialect translation: the channel speaks its own preferred protocol when
+  // it doesn't natively support the client's. The request body is translated
+  // here; the response is translated back in pipeResponseToClient.
+  let translator: UpstreamHandle["translator"] = null;
+  const clientProtocol = protocolForPath(upstreamPath);
+  if (clientProtocol && mappedCtx.body && typeof mappedCtx.body === "object" && !mappedCtx.bodyStream) {
+    const targetProtocol = pickProviderProtocol(provider, clientProtocol);
+    if (targetProtocol !== clientProtocol) {
+      const translated = translateRequestBody(clientProtocol, targetProtocol, mappedCtx.body);
+      if (translated) {
+        upstreamPath = PROTOCOL_PATHS[targetProtocol];
+        mappedCtx = {
+          ...mappedCtx,
+          body: translated,
+          rawBody: Buffer.from(JSON.stringify(translated)),
+          bodyStream: undefined,
+        };
+        translator = { from: targetProtocol, to: clientProtocol };
+      }
+    }
+  }
+  // Without a translator, a provider model mapping means the upstream's raw
+  // response echoes ITS model name — remember the pair so the pipe can swap
+  // it back to the public name (top-level and nested SSE/JSON positions).
+  const publicModel = pickModel(ctx.body, ctx.query);
+  const upstreamModel = publicModel ? mapProviderModel(provider, publicModel) : null;
+  const echoModel =
+    !translator && publicModel && upstreamModel && upstreamModel !== publicModel
+      ? { from: upstreamModel, to: publicModel }
+      : null;
+  const url = buildUpstreamUrl(provider, upstreamPath, mappedCtx.query);
   const headers = buildUpstreamHeaders(provider, mappedCtx);
   const controller = new AbortController();
   const timeout = createUpstreamTimeout(controller, provider.timeout_ms);
@@ -392,6 +468,8 @@ async function openUpstream(
       clearTimeout: timeout.clear,
       didTimeout: timeout.didTimeout,
       onBodyChunk: timeout.onBodyChunk,
+      translator,
+      echoModel,
     };
   } catch (error) {
     const timedOut = timeout.didTimeout();
@@ -780,8 +858,11 @@ async function pipeResponseToClient(params: {
   try {
   // For non-streaming JSON responses, buffer and rewrite usage to strip
   // injected prompt preset tokens so the client sees only their own usage.
+  // Dialect translation also needs the full body buffered before rewriting.
+  const translator = handle.translator;
+  const echoModel = handle.echoModel;
   const isJson = !streamingResponse && /json/i.test(upstream.headers.get("content-type") || "");
-  if (isJson && injected > 0) {
+  if (isJson && (injected > 0 || translator || echoModel)) {
     const chunks: Buffer[] = [];
     try {
       for await (const value of body) {
@@ -796,6 +877,17 @@ async function pipeResponseToClient(params: {
       handle.clearTimeout();
       clearIdle();
       let responseBuffer = Buffer.concat(chunks);
+      // Translate the upstream dialect back into the client's dialect first;
+      // the usage rewrite below then works on the client-side field names.
+      if (translator) {
+        const translatedBody = translateResponseBody(
+          translator.from,
+          translator.to,
+          responseBuffer.toString("utf8"),
+          clientModel ?? "",
+        );
+        if (translatedBody !== null) responseBuffer = Buffer.from(translatedBody, "utf8");
+      }
       // Rewrite model field to match client's requested model name
       // and fix usage to hide injected tokens
       try {
@@ -803,6 +895,14 @@ async function pipeResponseToClient(params: {
         // Fix model field: always echo back the client's requested model
       if (clientModel && typeof json.model === "string" && json.model !== clientModel) {
         json.model = clientModel;
+      }
+      // Scrub the upstream's real model name out of error messages too —
+      // providers echo it inside error.message (e.g. "model `x` not found").
+      if (echoModel && json.error && typeof json.error === "object" && !Array.isArray(json.error)) {
+        const err = json.error as Record<string, unknown>;
+        if (typeof err.message === "string" && err.message.includes(echoModel.from)) {
+          err.message = err.message.split(echoModel.from).join(echoModel.to);
+        }
       }
       // Rewrite usage to subtract injected tokens
       if (json.usage && typeof json.usage === "object") {
@@ -843,8 +943,29 @@ async function pipeResponseToClient(params: {
     }
   } else {
     // Original streaming/binary path — pipe chunks through directly.
-    // For SSE streams with injected tokens, rewrite each complete data line.
+    // For SSE streams with injected tokens or a dialect mismatch, rewrite
+    // each complete data line.
     const isSseWithInjection = streamingResponse && injected > 0;
+    const sseTranslator =
+      streamingResponse && translator
+        ? createSseTranslator(
+            translator.from,
+            translator.to,
+            clientModel ?? "",
+            injected > 0
+              ? (u) => {
+                  const prompt = adjustPromptTokens(u.prompt);
+                  return {
+                    ...u,
+                    prompt,
+                    cached: adjustCachedTokens(u.cached ?? 0, u.prompt, prompt),
+                    total: prompt + u.completion,
+                  };
+                }
+              : undefined,
+          )
+        : null;
+    const needsSseRewrite = isSseWithInjection || sseTranslator !== null || (streamingResponse && echoModel !== null);
     // Chunks may split anywhere — mid-line or mid-multibyte-character — so
     // buffer through a streaming TextDecoder and only rewrite complete lines.
     const sseDecoder = new TextDecoder();
@@ -852,6 +973,16 @@ async function pipeResponseToClient(params: {
     // Regexes can't reliably match usage because prompt_tokens_details and
     // completion_tokens_details nest braces; parse each SSE frame as JSON.
     const rewriteSseLine = (line: string): string => {
+      if (sseTranslator) {
+        // Translation fully regenerates the SSE ceremony — only data:
+        // payloads feed through; source event:/comment lines are dropped
+        // (blank frame separators pass through untouched below). Each emitted
+        // element is a whole frame (event: + data: lines), so frames are
+        // joined with a blank line — without it clients concatenate the next
+        // frame's JSON into the previous data payload and fail to parse.
+        if (!line.startsWith("data:")) return line.trim() === "" || line.startsWith(":") ? line : "";
+        return sseTranslator.translateData(line.slice(5).trim()).join("\n\n");
+      }
       if (!line.startsWith("data:")) return line;
       const payload = line.slice(5).trim();
       if (!payload || payload === "[DONE]") return line;
@@ -865,10 +996,23 @@ async function pipeResponseToClient(params: {
       }
       let changed = false;
       // Echo back the client's requested model so the upstream's real model
-      // name never leaks.
-      if (clientModel && typeof frame.model === "string" && frame.model !== clientModel) {
-        frame.model = clientModel;
-        changed = true;
+      // name never leaks — top-level (chat/completions) and nested in
+      // message (anthropic message_start) / response (responses lifecycle).
+      if (clientModel) {
+        if (typeof frame.model === "string" && frame.model !== clientModel) {
+          frame.model = clientModel;
+          changed = true;
+        }
+        for (const key of ["message", "response"] as const) {
+          const nested = frame[key];
+          if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+            const n = nested as Record<string, unknown>;
+            if (typeof n.model === "string" && n.model !== clientModel) {
+              n.model = clientModel;
+              changed = true;
+            }
+          }
+        }
       }
       const usage = frame.usage;
       if (usage && typeof usage === "object" && !Array.isArray(usage)) {
@@ -925,9 +1069,10 @@ async function pipeResponseToClient(params: {
         clearIdle();
         const rawChunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
         // Collector gets the ORIGINAL chunk for accurate billing/logging;
-        // the rewritten chunk is only sent to the client.
+        // the rewritten chunk is only sent to the client. (The collector
+        // parses all three dialects, so source-dialect bytes are fine.)
         responseCollector.push(rawChunk);
-        const chunk = isSseWithInjection ? rewriteSseChunk(rawChunk) : rawChunk;
+        const chunk = needsSseRewrite ? rewriteSseChunk(rawChunk) : rawChunk;
         if (chunk.length === 0) {
           // Entire chunk buffered as an incomplete SSE line; nothing to send yet.
           armIdle();
@@ -944,9 +1089,17 @@ async function pipeResponseToClient(params: {
         }
         armIdle();
       }
-      if (isSseWithInjection && !clientClosed) {
-        // Flush any trailing partial line (final frame without newline).
-        const tail = rewriteSseChunk(Buffer.alloc(0), true);
+      if (needsSseRewrite && !clientClosed) {
+        // Flush any trailing partial line (final frame without newline), then
+        // let the translator emit deferred trailing frames (e.g. an anthropic
+        // message_delta held back until usage arrived).
+        let tail = rewriteSseChunk(Buffer.alloc(0), true);
+        if (sseTranslator) {
+          const endLines = sseTranslator.end();
+          if (endLines.length) {
+            tail = Buffer.concat([tail, Buffer.from(`${endLines.join("\n\n")}\n\n`, "utf8")]);
+          }
+        }
         if (tail.length > 0) {
           if (responseBytes === 0) {
             handle.onBodyChunk(streamingResponse);
@@ -1179,6 +1332,44 @@ export async function handleProxyHttp(
     });
     return;
   }
+
+  // Reasoning-effort routing: providers that declare a per-model effort
+  // mapping only accept the public efforts listed there. A request whose
+  // effort a provider doesn't cover skips it and falls through to a provider
+  // that does; if none do, reject before any billing/access reservation.
+  // The effort knob lives in a protocol-specific place (flat reasoning_effort
+  // for chat completions, reasoning.effort for responses, output_config.effort
+  // for anthropic messages) — extractRequestEffort handles that.
+  const requestedEffort = extractRequestEffort(ctx.body, path);
+  let effortCandidates = providerCandidates;
+  if (requestedEffort && model) {
+    effortCandidates = providerCandidates.filter(
+      (provider) => mapProviderEffort(provider, model, requestedEffort) !== null,
+    );
+    if (effortCandidates.length === 0) {
+      const supported = supportedEffortsForModel(model);
+      const message = supported.length
+        ? `Model ${model} does not support reasoning effort "${requestedEffort}". Supported: ${supported.join(", ")}`
+        : `Model ${model} does not support reasoning effort "${requestedEffort}"`;
+      writeLog({
+        method: ctx.method,
+        path: logPath,
+        model,
+        api_key_id: ctx.apiKeyId,
+        api_key_name: ctx.apiKeyName,
+        status_code: 400,
+        latency_ms: Date.now() - started,
+        cached: false,
+        error: message,
+        input_text: baseIo.input_text,
+        input_file: baseIo.input_file,
+        stream,
+      });
+      res.status(400).json({ error: { message, type: "invalid_request_error", code: "effort_not_supported" } });
+      return;
+    }
+  }
+
   const affinityKey = buildProviderAffinityKey({
     model,
     body: ctx.body,
@@ -1187,7 +1378,18 @@ export async function handleProxyHttp(
     userId: ctx.apiKey?.user_id,
     billingMode: ctx.billingMode,
   });
-  const providerOrder = orderProvidersForConversation(providerCandidates, affinityKey);
+  const providerOrder = orderProvidersForConversation(effortCandidates, affinityKey);
+  // Prefer channels that natively speak the client's dialect; channels that
+  // need translation still serve as fallback (stable partition keeps the
+  // affinity order within each group).
+  const clientProtocol = protocolForPath(path);
+  if (clientProtocol) {
+    providerOrder.sort(
+      (a, b) =>
+        Number(!providerSupportsProtocol(b, clientProtocol)) -
+        Number(!providerSupportsProtocol(a, clientProtocol)),
+    );
+  }
 
   let access: RequestAccess | null = null;
   let accessReleased = false;
@@ -1430,13 +1632,15 @@ export async function handleProxyHttp(
     });
 
     if (!res.headersSent) {
+      // Keep the client-facing failure generic: lastError can carry upstream
+      // hostnames/error text and the attempt count exposes retry internals.
+      // Full detail stays in the server log written above.
       res.status(failStatus === 499 ? 400 : failStatus).json({
         error: {
           message: clientGone
             ? "Client disconnected"
-            : `Upstream request failed after ${attempts} attempt(s): ${lastError || "unknown"}`,
+            : "Upstream request failed, please try again later",
           type: clientGone ? "client_abort" : failStatus === 504 ? "timeout_error" : "proxy_error",
-          attempts,
         },
       });
     }

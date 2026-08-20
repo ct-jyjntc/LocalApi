@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { KeyRound, Moon, Sun, Languages, ChevronRight } from "lucide-react";
+import { useState, useEffect } from "react";
+import { KeyRound, Moon, Sun, Languages, ChevronRight, LogOut } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { userApi } from "@/lib/api";
@@ -27,7 +27,7 @@ function formatLimit(value: number | null | undefined) {
   return value.toLocaleString();
 }
 
-export function UserSettingsPage() {
+export function UserSettingsPage({ onLogout }: { onLogout?: () => void }) {
   const { locale, setLocale } = useI18n();
   const zh = locale === "zh";
   const { theme, setTheme } = useTheme();
@@ -36,6 +36,8 @@ export function UserSettingsPage() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [password, setPassword] = useState({ current: "", next: "", confirm: "" });
   const [tierOpen, setTierOpen] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [displayName, setDisplayName] = useState("");
 
   const changePassword = useMutation({
     mutationFn: () => userApi.changePassword(password.current, password.next),
@@ -47,7 +49,17 @@ export function UserSettingsPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const updatePrefs = useMutation({
+  const saveName = useMutation({
+    mutationFn: () => userApi.updatePreferences({ display_name: displayName.trim() }),
+    onSuccess: () => {
+      toast.success(zh ? "昵称已更新" : "Display name updated");
+      setEditingName(false);
+      qc.invalidateQueries({ queryKey: ["user", "me"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const savePreferences = useMutation({
     mutationFn: (prefs: { training_consent?: boolean }) => userApi.updatePreferences(prefs),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["user", "me"] });
@@ -56,6 +68,20 @@ export function UserSettingsPage() {
   });
 
   const user = me.data?.user;
+  const avatarUrl = user?.avatar_url;
+  const [avatarBlobUrl, setAvatarBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!avatarUrl) { setAvatarBlobUrl(null); return; }
+    let revoke: string | null = null;
+    const token = localStorage.getItem("localapi_user_token");
+    fetch(`/user/api/avatar`, { headers: token ? { "x-user-token": token } : {} })
+      .then((r) => r.ok ? r.blob() : null)
+      .then((blob) => {
+        if (blob) { const url = URL.createObjectURL(blob); revoke = url; setAvatarBlobUrl(url); }
+      })
+      .catch(() => {});
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [avatarUrl]);
   const wallet = me.data?.wallet;
   const tier = me.data?.tier;
   const allTiers = me.data?.all_tiers ?? [];
@@ -82,23 +108,83 @@ export function UserSettingsPage() {
       <PageHeader
         title={zh ? "个人设置" : "Personal settings"}
         description={zh ? "账户资料、余额层级、外观与隐私。" : "Profile, wallet tier, appearance, and privacy."}
+        actions={
+          onLogout ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-2 text-muted-foreground hover:text-destructive"
+              onClick={onLogout}
+            >
+              <LogOut className="size-4" strokeWidth={1.75} />
+              <span className="hidden sm:inline">{zh ? "退出登录" : "Sign out"}</span>
+            </Button>
+          ) : undefined
+        }
       />
 
       <div className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
         {/* Account */}
         <Card className="flex flex-col gap-5 p-4 sm:p-5">
           <div className="flex items-center gap-3">
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-medium">
-              {initials}
-            </div>
+            <label className="group relative flex size-11 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-secondary text-sm font-medium transition-shadow hover:ring-2 hover:ring-foreground/30">
+              {avatarBlobUrl ? (
+                <img src={avatarBlobUrl} alt={user?.display_name || ""} className="size-full object-cover" />
+              ) : (
+                <span>{initials}</span>
+              )}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    await userApi.uploadAvatar(file);
+                    await qc.invalidateQueries({ queryKey: ["user", "me"] });
+                    toast.success(zh ? "头像已更新" : "Avatar updated");
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : "Upload failed");
+                  }
+                }}
+              />
+              <span className="absolute inset-0 flex items-center justify-center bg-foreground/0 text-[10px] text-transparent transition-colors group-hover:bg-foreground/40 group-hover:text-background">
+                {zh ? "更换" : "Change"}
+              </span>
+            </label>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-medium tracking-tight">
-                  {user?.display_name || "—"}
-                </h2>
+                {editingName ? (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      autoFocus
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && displayName.trim()) saveName.mutate(); if (e.key === "Escape") setEditingName(false); }}
+                      className="h-7 w-40 text-sm"
+                      placeholder={zh ? "输入昵称" : "Display name"}
+                    />
+                    <Button size="sm" variant="secondary" disabled={!displayName.trim() || saveName.isPending} onClick={() => saveName.mutate()}>
+                      {zh ? "保存" : "Save"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingName(false)}>
+                      {zh ? "取消" : "Cancel"}
+                    </Button>
+                  </div>
+                ) : (
+                  <h2 className="truncate text-base font-medium tracking-tight">
+                    {user?.display_name || "—"}
+                  </h2>
+                )}
                 <Badge variant={user?.status === "active" ? "success" : "secondary"}>
                   {user?.status || "—"}
                 </Badge>
+                {!editingName ? (
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" onClick={() => { setDisplayName(user?.display_name || ""); setEditingName(true); }}>
+                    {zh ? "编辑" : "Edit"}
+                  </Button>
+                ) : null}
               </div>
               <p className="mt-0.5 truncate text-xs text-muted-foreground">
                 @{user?.username || "—"}
@@ -228,8 +314,8 @@ export function UserSettingsPage() {
           </div>
           <Switch
             checked={Boolean(user?.training_consent)}
-            disabled={updatePrefs.isPending}
-            onCheckedChange={(checked) => updatePrefs.mutate({ training_consent: checked })}
+            disabled={savePreferences.isPending}
+            onCheckedChange={(checked) => savePreferences.mutate({ training_consent: checked })}
             aria-label={zh ? "训练数据授权" : "Training consent"}
           />
         </div>

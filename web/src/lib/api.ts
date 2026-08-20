@@ -149,6 +149,8 @@ export type Provider = {
   timeout_ms: number;
   sort_order: number;
   custom_headers: Record<string, string>;
+  model_efforts?: Record<string, Record<string, string>>;
+  protocols?: string[];
   created_at: string;
   updated_at: string;
 };
@@ -386,6 +388,7 @@ export type UserPublic = {
   linuxdo_uid: string | null;
   training_consent: boolean;
   tier: TierSummary;
+  avatar_url?: string | null;
 };
 
 export type PriceWindow = {
@@ -942,6 +945,10 @@ export const api = {
       request<{ ok: boolean; removed: number }>("/admin/api/logs", {
         method: "DELETE",
       }),
+    clearErrors: () =>
+      request<{ ok: boolean; removed: number }>("/admin/api/logs/errors", {
+        method: "DELETE",
+      }),
   },
   settings: {
     get: () => request<Settings>("/admin/api/settings"),
@@ -1114,7 +1121,7 @@ export const api = {
     },
     prices: {
       list: () => request<{ items: ModelPrice[] }>("/admin/api/commercial/prices"),
-      upsert: (model: string, body: Omit<ModelPrice, "model" | "created_at" | "updated_at">) =>
+      upsert: (model: string, body: Omit<ModelPrice, "model" | "created_at" | "updated_at" | "reasoning_effort"> & { reasoning_effort?: string[] }) =>
         request<ModelPrice>(`/admin/api/commercial/prices/${encodeURIComponent(model)}`, {
           method: "PUT",
           body: JSON.stringify(body),
@@ -1251,7 +1258,23 @@ export const userApi = {
       { method: "POST", body: JSON.stringify({ username, password, display_name, captcha_id, captcha_answer }) },
       { auth: false },
     ),
+  updatePreferences: (body: { display_name?: string; training_consent?: boolean }) =>
+    request<{ ok: boolean }>("/user/api/me/preferences", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }, { auth: "user" }),
   logout: () => request<{ ok: boolean }>("/user/api/logout", { method: "POST" }, { auth: "user" }),
+  uploadAvatar: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ ok: boolean; avatar_url: string }>(
+      "/user/api/avatar",
+      { method: "POST", body: fd },
+      { auth: "user" },
+    );
+  },
+  deleteAvatar: () =>
+    request<{ ok: boolean }>("/user/api/avatar", { method: "DELETE" }, { auth: "user" }),
   linuxdoExchange: (code: string) =>
     request<{ token: string; expires_at: string }>(
       "/user/api/auth/linuxdo/exchange",
@@ -1303,12 +1326,6 @@ export const userApi = {
     request<{ ok: boolean }>(
       "/user/api/me/password",
       { method: "PATCH", body: JSON.stringify({ current_password, new_password }) },
-      { auth: "user" },
-    ),
-  updatePreferences: (preferences: { training_consent?: boolean }) =>
-    request<{ ok: boolean }>(
-      "/user/api/me/preferences",
-      { method: "PATCH", body: JSON.stringify(preferences) },
       { auth: "user" },
     ),
   usage: (params?: { limit?: number; offset?: number }) => {

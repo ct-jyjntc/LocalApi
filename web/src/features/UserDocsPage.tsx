@@ -10,7 +10,7 @@ import { useI18n } from "@/lib/i18n";
 const WALLET_BASE_URL = "https://api.rainflowtb.com/v1";
 const CODING_BASE_URL = "https://api.rainflowtb.com/coding/v1";
 
-type SectionId = "quickstart" | "auth" | "examples" | "errors" | "key-limits";
+type SectionId = "quickstart" | "auth" | "protocols" | "examples" | "errors" | "key-limits";
 
 type DocGroup = {
   key: string;
@@ -30,7 +30,10 @@ const DOC_TREE: DocGroup[] = [
   {
     key: "call",
     title: { zh: "调用", en: "Calling" },
-    items: [{ id: "examples", title: { zh: "调用示例", en: "Examples" } }],
+    items: [
+      { id: "protocols", title: { zh: "协议与端点", en: "Protocols" } },
+      { id: "examples", title: { zh: "调用示例", en: "Examples" } },
+    ],
   },
   {
     key: "reference",
@@ -89,6 +92,32 @@ resp = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello"}],
 )
 print(resp)`;
+
+const ANTHROPIC_CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/messages \\
+  -H "x-api-key: sk-your-api-key" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "glm-5.3",
+    "max_tokens": 1024,
+    "messages": [{ "role": "user", "content": "Hello" }]
+  }'`;
+
+const RESPONSES_CURL_EXAMPLE = `curl ${WALLET_BASE_URL}/responses \\
+  -H "Authorization: Bearer sk-your-api-key" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "glm-5.3",
+    "input": "Hello",
+    "reasoning": { "effort": "high" }
+  }'`;
+
+const CLAUDE_CODE_EXAMPLE = `# Claude Code（Anthropic 协议）
+export ANTHROPIC_BASE_URL=https://api.rainflowtb.com
+export ANTHROPIC_AUTH_TOKEN=sk-your-api-key
+
+# Coding 套餐改用：
+# export ANTHROPIC_BASE_URL=https://api.rainflowtb.com/coding`;
 
 const CODE_TABS = [
   { key: "curl", label: "cURL", code: CURL_EXAMPLE },
@@ -153,6 +182,13 @@ export function UserDocsPage() {
       status: "403",
       code: "model_not_allowed",
       desc: zh ? "该模型不在你的可用范围内；错误消息里会列出可用模型。" : "The model is not allowed for your account; the error message lists the available models.",
+    },
+    {
+      status: "400",
+      code: "effort_not_supported",
+      desc: zh
+        ? "该模型不支持请求的思考档位；错误消息会列出支持的档位。"
+        : "The model doesn't support the requested reasoning effort; the error message lists the supported levels.",
     },
     {
       status: "429",
@@ -243,8 +279,8 @@ export function UserDocsPage() {
             </div>
             <p className="mt-3 text-[11px] text-muted-foreground">
               {zh
-                ? "目前仅支持 POST /chat/completions 与 GET /models，兼容 OpenAI 格式。"
-                : "Only POST /chat/completions and GET /models are supported, in OpenAI-compatible format."}
+                ? "支持 OpenAI Completions、OpenAI Responses、Anthropic Messages 三种协议与 GET /models。"
+                : "OpenAI Completions, OpenAI Responses and Anthropic Messages are supported alongside GET /models."}
             </p>
           </Card>
         </section>
@@ -260,8 +296,60 @@ export function UserDocsPage() {
               <Button variant="secondary" size="icon" onClick={() => copy("Authorization: Bearer <your-api-key>")} aria-label={zh ? "复制" : "Copy"}><Copy /></Button>
             </div>
             <p className="mt-3 text-[11px] text-muted-foreground">
-              {zh ? "Key 在「API Keys」页创建，带 sk- 前缀。" : "Create keys on the API Keys page; they use the sk- prefix."}
+              {zh
+                ? "Anthropic 风格客户端（如 Claude Code）也可以直接用 x-api-key: <your-api-key> 请求头，两者等价。"
+                : "Anthropic-style clients (e.g. Claude Code) may send x-api-key: <your-api-key> instead; both are equivalent."}
             </p>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              {zh ? "Key 在「API Keys」页创建。" : "Create keys on the API Keys page."}
+            </p>
+          </Card>
+        </section>
+
+        <section id="protocols" className="scroll-mt-6">
+          <Card className="overflow-hidden">
+            <div className="p-4 pb-3 sm:p-5 sm:pb-3">
+              <p className="text-sm font-medium">{zh ? "协议与端点" : "Protocols & endpoints"}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {zh
+                  ? "三种主流协议任选其一接入。"
+                  : "Pick any of the three mainstream dialects."}
+              </p>
+            </div>
+            <div className={TABLE_HEAD_CLASS}><span className="w-44 shrink-0">{zh ? "端点" : "Endpoint"}</span><span className="min-w-0 flex-1">{zh ? "协议 / 说明" : "Dialect / notes"}</span></div>
+            <div className={`${TABLE_ROW_CLASS} h-auto min-h-9 py-2`}>
+              <code className="w-44 shrink-0 break-all font-mono text-[11px]">POST /chat/completions</code>
+              <span className="min-w-0 flex-1 text-muted-foreground">
+                {zh ? "OpenAI Completions。思考强度用顶层 reasoning_effort。" : "OpenAI Completions. Reasoning effort via top-level reasoning_effort."}
+              </span>
+            </div>
+            <div className={`${TABLE_ROW_CLASS} h-auto min-h-9 py-2`}>
+              <code className="w-44 shrink-0 break-all font-mono text-[11px]">POST /responses</code>
+              <span className="min-w-0 flex-1 text-muted-foreground">
+                {zh ? "OpenAI Responses。思考强度用 reasoning.effort，输出上限用 max_output_tokens。" : "OpenAI Responses. Reasoning effort via reasoning.effort; output cap is max_output_tokens."}
+              </span>
+            </div>
+            <div className={`${TABLE_ROW_CLASS} h-auto min-h-9 py-2`}>
+              <code className="w-44 shrink-0 break-all font-mono text-[11px]">POST /messages</code>
+              <span className="min-w-0 flex-1 text-muted-foreground">
+                {zh
+                  ? "Anthropic Messages（Claude Code 等）。思考强度用 output_config.effort，max_tokens 必填；请带 anthropic-version 请求头。"
+                  : "Anthropic Messages (Claude Code etc.). Reasoning effort via output_config.effort; max_tokens is required; send the anthropic-version header."}
+              </span>
+            </div>
+            <div className="px-4 py-4 sm:px-5">
+              <p className="text-xs font-medium text-foreground">{zh ? "Anthropic 协议示例" : "Anthropic example"}</p>
+              <div className="mt-2"><CodeBlock tabs={[{ key: "anthropic", label: "cURL", code: ANTHROPIC_CURL_EXAMPLE }]} onCopy={copy} zh={zh} /></div>
+              <p className="mt-3 text-xs font-medium text-foreground">{zh ? "Responses 协议示例" : "Responses example"}</p>
+              <div className="mt-2"><CodeBlock tabs={[{ key: "responses", label: "cURL", code: RESPONSES_CURL_EXAMPLE }]} onCopy={copy} zh={zh} /></div>
+              <p className="mt-3 text-xs font-medium text-foreground">Claude Code</p>
+              <div className="mt-2"><CodeBlock tabs={[{ key: "claude", label: "shell", code: CLAUDE_CODE_EXAMPLE }]} onCopy={copy} zh={zh} /></div>
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                {zh
+                  ? "模型支持的思考档位见 GET /models 返回的 reasoning.effort；传入不支持的档位会返回 400（effort_not_supported）。"
+                  : "See reasoning.effort in GET /models for the levels a model supports; an unsupported level fails with 400 effort_not_supported."}
+              </p>
+            </div>
           </Card>
         </section>
 

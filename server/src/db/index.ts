@@ -48,6 +48,8 @@ export function initDb() {
       timeout_ms INTEGER NOT NULL DEFAULT 60000,
       sort_order INTEGER NOT NULL DEFAULT 0,
       custom_headers TEXT NOT NULL DEFAULT '{}',
+      model_efforts TEXT NOT NULL DEFAULT '{}',
+      protocols TEXT NOT NULL DEFAULT '["openai-completions"]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -651,6 +653,22 @@ export function initDb() {
   if (!providerCols.includes("custom_headers")) {
     db.exec("ALTER TABLE providers ADD COLUMN custom_headers TEXT NOT NULL DEFAULT '{}'");
   }
+  // Replaced by per-model effort mapping (model_efforts) — drop the aborted
+  // dialect/cap columns where a previous build created them.
+  if (providerCols.includes("param_style")) {
+    db.exec("ALTER TABLE providers DROP COLUMN param_style");
+  }
+  if (providerCols.includes("max_effort")) {
+    db.exec("ALTER TABLE providers DROP COLUMN max_effort");
+  }
+  if (!providerCols.includes("model_efforts")) {
+    db.exec("ALTER TABLE providers ADD COLUMN model_efforts TEXT NOT NULL DEFAULT '{}'");
+  }
+  // Dialects the channel speaks natively; first entry is the preferred
+  // fallback when the client's dialect must be translated.
+  if (!providerCols.includes("protocols")) {
+    db.exec(`ALTER TABLE providers ADD COLUMN protocols TEXT NOT NULL DEFAULT '["openai-completions"]'`);
+  }
   db.exec("CREATE INDEX IF NOT EXISTS idx_providers_sort_order ON providers(sort_order)");
 
   const nodeCols = (
@@ -1159,6 +1177,8 @@ export type Provider = {
   timeout_ms: number;
   sort_order: number;
   custom_headers: string;
+  model_efforts: string;
+  protocols: string;
   created_at: string;
   updated_at: string;
 };

@@ -56,8 +56,17 @@ export function applyModelLimits(body: unknown, path: string): ApplyModelLimitsR
   const maxOutput = Number(price.max_output_tokens) || 0;
   const contextWindow = Number(price.context_window) || 0;
 
+  // Each dialect names the output cap differently: chat/completions and
+  // anthropic-messages use max_tokens (or OpenAI's max_completion_tokens),
+  // the responses API uses max_output_tokens. Clamp all of them, and when a
+  // default must be injected use the dialect's own spelling so strict
+  // upstreams never see a field they do not know.
+  const OUTPUT_KEYS = ["max_tokens", "max_completion_tokens", "maxOutputTokens", "max_output_tokens"] as const;
+  const defaultOutputKey = path === "/v1/responses" ? "max_output_tokens" : "max_tokens";
+  const hasOutputKey = (r: JsonObject) => OUTPUT_KEYS.some((key) => key in r);
+
   if (maxOutput > 0) {
-    for (const key of ["max_tokens", "max_completion_tokens", "maxOutputTokens"] as const) {
+    for (const key of OUTPUT_KEYS) {
       if (key in record) {
         const next = clampPositiveInt(record[key], maxOutput);
         if (next !== undefined && next !== Number(record[key])) {
@@ -66,15 +75,17 @@ export function applyModelLimits(body: unknown, path: string): ApplyModelLimitsR
         }
       }
     }
-    if (!("max_tokens" in record) && !("max_completion_tokens" in record) && !("maxOutputTokens" in record)) {
-      record.max_tokens = maxOutput;
-      changes.push("default:max_tokens");
+    if (!hasOutputKey(record)) {
+      record[defaultOutputKey] = maxOutput;
+      changes.push(`default:${defaultOutputKey}`);
     }
   }
 
   if (contextWindow > 0) {
     const promptTokens = estimatePromptTokens(record);
-    const requestedOut = Number(record.max_tokens ?? record.max_completion_tokens ?? record.maxOutputTokens ?? 0);
+    const requestedOut = Number(
+      record.max_tokens ?? record.max_completion_tokens ?? record.maxOutputTokens ?? record.max_output_tokens ?? 0,
+    );
     const reservedOut = Number.isFinite(requestedOut) && requestedOut > 0 ? Math.floor(requestedOut) : 0;
     if (promptTokens > contextWindow) {
       throw new ModelLimitError(
@@ -85,7 +96,7 @@ export function applyModelLimits(body: unknown, path: string): ApplyModelLimitsR
     }
     if (promptTokens + reservedOut > contextWindow) {
       const allowedOut = Math.max(1, contextWindow - promptTokens);
-      for (const key of ["max_tokens", "max_completion_tokens", "maxOutputTokens"] as const) {
+      for (const key of OUTPUT_KEYS) {
         if (key in record) {
           const next = clampPositiveInt(record[key], allowedOut);
           if (next !== undefined && next !== Number(record[key])) {
@@ -94,9 +105,9 @@ export function applyModelLimits(body: unknown, path: string): ApplyModelLimitsR
           }
         }
       }
-      if (!("max_tokens" in record) && !("max_completion_tokens" in record) && !("maxOutputTokens" in record)) {
-        record.max_tokens = allowedOut;
-        changes.push("default:max_tokens:context");
+      if (!hasOutputKey(record)) {
+        record[defaultOutputKey] = allowedOut;
+        changes.push(`default:${defaultOutputKey}:context`);
       }
     }
   }

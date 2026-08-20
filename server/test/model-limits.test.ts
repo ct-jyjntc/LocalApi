@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { applyModelLimits, ModelLimitError } from "../src/utils/model-limits";
 
-test("model limits: clamp max output and reject oversized context", () => {
+test("model limits: clamp max output and reject oversized context", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "localapi-model-limits-"));
   process.env.LOCALAPI_DATA_DIR = dir;
   process.env.SECRETS_KEY = "model-limits-test-secret";
@@ -58,6 +58,21 @@ test("model limits: clamp max output and reject oversized context", () => {
       "/v1/chat/completions",
     );
     assert.equal((unset.body as Record<string, unknown>).max_tokens, 32);
+
+    // responses dialect: max_output_tokens is the output cap field, and an
+    // injected default uses the dialect's own spelling (strict upstreams
+    // reject unknown fields like max_tokens on /v1/responses).
+    const responsesClamped = applyModelLimits(
+      { model: "capped-model", input: "hi", max_output_tokens: 999 },
+      "/v1/responses",
+    );
+    assert.equal((responsesClamped.body as Record<string, unknown>).max_output_tokens, 32);
+    const responsesDefault = applyModelLimits(
+      { model: "capped-model", input: "hi" },
+      "/v1/responses",
+    ).body as Record<string, unknown>;
+    assert.equal(responsesDefault.max_output_tokens, 32);
+    assert.equal(responsesDefault.max_tokens, undefined);
 
     const unlimited = applyModelLimits(
       {

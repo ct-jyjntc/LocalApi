@@ -95,6 +95,16 @@ export function LogsPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const clearErrors = useMutation({
+    mutationFn: () => api.logs.clearErrors(),
+    onSuccess: (r) => {
+      toast.success(`已删除 ${r.removed} 条错误日志`);
+      qc.invalidateQueries({ queryKey: ["admin", "logs"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const resetFilters = () => {
     setDraft(EMPTY_FILTERS);
     setFilters(EMPTY_FILTERS);
@@ -107,24 +117,45 @@ export function LogsPage() {
         title={t("logs.title")}
         description={t("logs.desc")}
         actions={
-          <Button
-            variant="secondary"
-            size="sm"
-            className="text-muted-foreground"
-            onClick={async () => {
-              if (
-                await dialogs.confirm({
-                  title: t("logs.clear"),
-                  description: t("logs.clearConfirm"),
-                  confirmText: t("logs.clear"),
-                  destructive: true,
-                })
-              )
-                clear.mutate();
-            }}
-          >
-            {t("logs.clear")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              disabled={clearErrors.isPending}
+              onClick={async () => {
+                if (
+                  await dialogs.confirm({
+                    title: "删除全部错误日志",
+                    description: "将永久删除所有状态码 ≥ 400 的请求日志，此操作不可撤销。",
+                    confirmText: "删除",
+                    destructive: true,
+                  })
+                )
+                  clearErrors.mutate();
+              }}
+            >
+              {clearErrors.isPending ? "删除中…" : "清空错误"}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={async () => {
+                if (
+                  await dialogs.confirm({
+                    title: t("logs.clear"),
+                    description: t("logs.clearConfirm"),
+                    confirmText: t("logs.clear"),
+                    destructive: true,
+                  })
+                )
+                  clear.mutate();
+              }}
+            >
+              {t("logs.clear")}
+            </Button>
+          </div>
         }
       />
 
